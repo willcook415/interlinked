@@ -1661,6 +1661,7 @@ GameObject:
   - component: {fileID: 1292970985}
   - component: {fileID: 1292970984}
   - component: {fileID: 1292970983}
+  - component: {fileID: 1292970986}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -1711,7 +1712,7 @@ Camera:
   far clip plane: 1000
   field of view: 60
   orthographic: 1
-  orthographic size: 5
+  orthographic size: 10
   m_Depth: -1
   m_CullingMask:
     serializedVersion: 2
@@ -1742,6 +1743,29 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1292970986
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1292970982}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4957779feac214e4f9076054f960d0b9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Interlinked.Map.CameraController2D
+  enableKeyboardPan: 1
+  enableMouseDragPan: 1
+  basePanSpeed: 10
+  zoomPanFactor: 0.1
+  dragMouseButton: 1
+  zoomSpeed: 5
+  minZoom: 3
+  maxZoom: 30
+  limitBounds: 0
+  minPosition: {x: -100, y: -100}
+  maxPosition: {x: 100, y: 100}
 --- !u!1 &1337936317
 GameObject:
   m_ObjectHideFlags: 0
