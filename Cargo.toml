@@ -1,0 +1,22 @@
+[workspace]
+members = [
+  "crates/interlinked-engine",
+  "crates/interlinked-cli",
+  "crates/interlinked-osm",
+  "apps/interlinked-desktop/src-tauri"
+]
+resolver = "2"
+
+[profile.dev]
+opt-level = 1
+# Mitigate intermittent MSVC unresolved anonymous LLVM symbol link failures
+# observed during rapid desktop dev rebuilds.
+incremental = false
+
+[profile.dev.package.interlinked-engine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.interlinked-desktop]
+opt-level = 2
+codegen-units = 1

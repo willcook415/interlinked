@@ -1,0 +1,127 @@
+.il-page-shell {
+  position: relative;
+  isolation: isolate;
+  min-height: 100%;
+  width: 100%;
+  padding: clamp(var(--il-space-6), 3.4vw, var(--il-space-12));
+  display: grid;
+  align-content: start;
+  gap: var(--il-space-6);
+  overflow: hidden;
+}
+
+.il-page-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 2.8rem,
+      var(--il-grid-major) 2.8rem,
+      var(--il-grid-major) 2.9rem,
+      transparent 2.9rem,
+      transparent 100%
+    ),
+    var(--il-bg-atmosphere);
+}
+
+.il-page-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 39px,
+      var(--il-grid-minor) 39px,
+      var(--il-grid-minor) 40px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 39px,
+      var(--il-grid-minor) 39px,
+      var(--il-grid-minor) 40px
+    );
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.il-page-shell.is-centered {
+  align-content: center;
+}
+
+.il-page-shell-inner {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: var(--il-space-6);
+  position: relative;
+}
+
+.il-page-shell-inner::before {
+  content: "";
+  position: absolute;
+  inset: -0.75rem -0.75rem auto -0.75rem;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(70, 99, 137, 0.8) 10%,
+    rgba(70, 99, 137, 0.8) 90%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+.il-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--il-radius-xl);
+  border: 1px solid var(--il-color-border-dark);
+  background:
+    linear-gradient(168deg, rgba(37, 53, 74, 0.97) 0%, rgba(26, 40, 57, 0.98) 60%, rgba(20, 31, 46, 0.98) 100%);
+  box-shadow: var(--il-shadow-panel);
+  padding: clamp(var(--il-space-6), 5vw, var(--il-space-8));
+}
+
+.il-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 48px,
+      rgba(154, 177, 208, 0.07) 48px,
+      rgba(154, 177, 208, 0.07) 49px
+    ),
+    linear-gradient(90deg, rgba(86, 131, 194, 0.22) 0 4px, transparent 4px),
+    radial-gradient(120% 100% at 95% 0%, rgba(116, 169, 241, 0.16) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.il-hero-content {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: var(--il-space-4);
+}
+
+.il-hero .il-type-eyebrow {
+  color: rgba(201, 219, 243, 0.82);
+}
+
+.il-hero .il-type-hero {
+  color: var(--il-color-ink-050);
+}
+
+.il-hero .il-type-body-lg {
+  color: rgba(211, 225, 246, 0.92);
+}

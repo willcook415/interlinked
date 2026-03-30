@@ -1,0 +1,30 @@
+# Rust / Cargo
+target/
+**/*.rs.bk
+
+# JavaScript / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Project-local large/generated data
+data/
+.tmp_pydeps/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+
+# Logs and env
+*.log
+.env
+.env.*
+
+# Common large geodata artifacts
+*.pbf
+*.tif
+*.tiff
+*.mbtiles
+*.gpkg

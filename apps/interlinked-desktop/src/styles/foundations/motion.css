@@ -1,0 +1,38 @@
+.il-motion-interactive {
+  transition:
+    transform var(--il-motion-base) var(--il-ease-emphasis),
+    box-shadow var(--il-motion-base) var(--il-ease-emphasis),
+    border-color var(--il-motion-fast) var(--il-ease-standard),
+    background-color var(--il-motion-fast) var(--il-ease-standard),
+    color var(--il-motion-fast) var(--il-ease-standard),
+    opacity var(--il-motion-fast) var(--il-ease-standard);
+}
+
+.il-motion-interactive:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.il-motion-interactive:active:not(:disabled) {
+  transform: translateY(0);
+  transition-duration: var(--il-motion-fast);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .il-motion-interactive {
+    transition: none;
+  }
+
+  .il-motion-interactive:hover:not(:disabled),
+  .il-motion-interactive:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+:root.pref-reduced-motion .il-motion-interactive {
+  transition: none;
+}
+
+:root.pref-reduced-motion .il-motion-interactive:hover:not(:disabled),
+:root.pref-reduced-motion .il-motion-interactive:active:not(:disabled) {
+  transform: none;
+}

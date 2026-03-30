@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# Mitigate intermittent MSVC incremental-link unresolved symbol failures
+# (LNK2019/LNK1120 on anonymous LLVM symbols) during rapid dev rebuilds.
+rustflags = ["-C", "link-arg=/INCREMENTAL:NO"]

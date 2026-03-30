@@ -1,0 +1,1173 @@
+/*
+  Interlinked Control Room Theme
+  Applies the system language to legacy screen classes without touching logic.
+*/
+
+:root {
+  --il-surface-light-1: linear-gradient(
+    165deg,
+    rgba(248, 252, 255, 0.96) 0%,
+    rgba(234, 242, 252, 0.95) 58%,
+    rgba(222, 233, 247, 0.96) 100%
+  );
+  --il-surface-light-2: linear-gradient(
+    165deg,
+    rgba(242, 248, 255, 0.96) 0%,
+    rgba(227, 237, 249, 0.95) 60%,
+    rgba(214, 226, 241, 0.96) 100%
+  );
+  --il-surface-dark-1: linear-gradient(
+    168deg,
+    rgba(32, 47, 66, 0.96) 0%,
+    rgba(24, 36, 52, 0.97) 62%,
+    rgba(17, 27, 40, 0.98) 100%
+  );
+  --il-surface-dark-2: linear-gradient(
+    168deg,
+    rgba(42, 60, 84, 0.94) 0%,
+    rgba(31, 46, 67, 0.96) 62%,
+    rgba(22, 35, 52, 0.97) 100%
+  );
+  --il-edge-bright: rgba(126, 151, 183, 0.78);
+  --il-edge-mid: rgba(95, 116, 146, 0.72);
+  --il-edge-dark: rgba(75, 95, 123, 0.72);
+}
+
+body {
+  font-family: var(--il-font-ui);
+  color: var(--il-color-ink-900);
+}
+
+button:not(.il-button),
+input,
+select,
+textarea {
+  font-family: var(--il-font-ui);
+}
+
+button:not(.il-button) {
+  border-radius: var(--il-radius-sm);
+  border: 1px solid var(--il-edge-mid);
+  background: linear-gradient(180deg, rgba(250, 253, 255, 0.96), rgba(234, 244, 255, 0.96));
+  color: var(--il-color-ink-900);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(104, 125, 152, 0.16);
+  transition:
+    transform var(--il-motion-base) var(--il-ease-emphasis),
+    box-shadow var(--il-motion-base) var(--il-ease-emphasis),
+    border-color var(--il-motion-fast) var(--il-ease-standard),
+    background-color var(--il-motion-fast) var(--il-ease-standard),
+    color var(--il-motion-fast) var(--il-ease-standard);
+}
+
+button:not(.il-button):hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--il-color-brand-600);
+  color: var(--il-color-brand-700);
+  box-shadow: var(--il-shadow-hover);
+}
+
+button:not(.il-button):active:not(:disabled) {
+  transform: translateY(0);
+}
+
+button:not(.il-button).primary,
+button:not(.il-button).active,
+.hud-center button.active,
+.hud-menu button:first-child,
+.build-actions button:first-child,
+.action-row button,
+.scenario-panel > button,
+.onboarding-actions .primary,
+.settings-actions .primary,
+.alert-card-actions .primary,
+.editor-drawer-footer button.primary {
+  border-color: var(--il-color-brand-600);
+  background: linear-gradient(180deg, var(--il-color-brand-500), var(--il-color-brand-700));
+  color: #f3f8ff;
+  box-shadow: var(--il-shadow-glow-brand);
+}
+
+button:not(.il-button).danger-button {
+  border-color: rgba(150, 63, 77, 0.62);
+  background: linear-gradient(180deg, rgba(253, 243, 245, 0.96), rgba(244, 225, 229, 0.96));
+  color: #7a1f31;
+}
+
+button:not(.il-button).danger-button:hover:not(:disabled) {
+  border-color: #8f2437;
+  background: linear-gradient(180deg, #b1364a, #8f2235);
+  color: #fff;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid var(--il-edge-mid);
+  border-radius: var(--il-radius-sm);
+  background: linear-gradient(180deg, rgba(252, 254, 255, 0.98), rgba(239, 246, 254, 0.98));
+  color: var(--il-color-ink-900);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--il-color-focus-ring);
+  outline-offset: 2px;
+}
+
+label,
+small,
+.form-screen > header p,
+.hint-line {
+  letter-spacing: 0.05em;
+}
+
+.form-screen,
+.gateway-screen {
+  position: relative;
+  overflow: hidden;
+}
+
+.form-screen::before,
+.gateway-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 44px,
+      rgba(77, 100, 130, 0.08) 44px,
+      rgba(77, 100, 130, 0.08) 45px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 44px,
+      rgba(77, 100, 130, 0.08) 44px,
+      rgba(77, 100, 130, 0.08) 45px
+    );
+  opacity: 0.32;
+}
+
+.form-screen > * {
+  position: relative;
+}
+
+.form-screen > header h2 {
+  font-family: var(--il-font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.08;
+}
+
+.form-card,
+.slot-card,
+.workspace-card,
+.country-section,
+.county-selected,
+.run-chip,
+.missions-drawer li,
+.financial-kpi-grid article,
+.financial-chart-grid article,
+.financial-breakdown-grid section,
+.financial-table-row,
+.app-status-card,
+.session-boot-card,
+.app-crash-card,
+.command-palette-row,
+.schedule-band-card,
+.inspector-stat,
+.inspector-section,
+.inspector-read-field,
+.station-line-card,
+.inspector-stop-row,
+.direction-card,
+.journey-chip,
+.rolling-order-card,
+.rolling-vehicle-row,
+.interchange-member-row,
+.interchange-suggestion-row,
+.transfer-link-row {
+  position: relative;
+  border: 1px solid var(--il-edge-mid);
+  border-radius: var(--il-radius-md);
+  background: var(--il-surface-light-1);
+  color: var(--il-color-ink-900);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 8px 16px rgba(17, 34, 56, 0.12);
+}
+
+.form-card::before,
+.slot-card::before,
+.workspace-card::before,
+.country-section::before,
+.inspector-section::before,
+.schedule-band-card::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 12px;
+  height: 12px;
+  border-top: 1px solid rgba(103, 124, 154, 0.84);
+  border-left: 1px solid rgba(103, 124, 154, 0.84);
+  pointer-events: none;
+}
+
+.form-card::after,
+.slot-card::after,
+.workspace-card::after,
+.country-section::after,
+.inspector-section::after,
+.schedule-band-card::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 12px;
+  height: 12px;
+  border-right: 1px solid rgba(103, 124, 154, 0.84);
+  border-bottom: 1px solid rgba(103, 124, 154, 0.84);
+  pointer-events: none;
+}
+
+.form-card,
+.slot-card,
+.workspace-card,
+.country-section,
+.county-selected,
+.run-chip,
+.missions-drawer li,
+.inspector-section,
+.inspector-stat,
+.inspector-read-field,
+.schedule-band-card,
+.rolling-order-card,
+.rolling-vehicle-row,
+.interchange-member-row,
+.interchange-suggestion-row,
+.transfer-link-row,
+.station-line-card,
+.inspector-stop-row,
+.direction-card,
+.journey-chip {
+  padding: 0.74rem 0.82rem;
+}
+
+.slot-card p,
+.country-row span,
+.run-chip span,
+.missions-drawer p,
+.financial-table-row,
+.field-caption,
+.line-color-field span,
+.inspector-section-head span,
+.inspector-stop-row p,
+.direction-card p,
+.station-line-card p,
+.journey-row span,
+.journey-chip span,
+.rolling-vehicle-row small,
+.rolling-vehicle-row span,
+.transfer-link-row span,
+.transfer-link-row small {
+  color: var(--il-color-ink-600);
+}
+
+.form-error,
+.global-error,
+.build-inline-error,
+.station-capacity-alert {
+  border-radius: var(--il-radius-sm);
+  border: 1px solid rgba(176, 80, 96, 0.55);
+  background: linear-gradient(180deg, rgba(252, 239, 242, 0.96), rgba(248, 225, 230, 0.96));
+  color: #8e2438;
+}
+
+.form-hint,
+.build-status-line {
+  border-radius: var(--il-radius-sm);
+  border: 1px solid rgba(73, 120, 184, 0.44);
+  background: linear-gradient(180deg, rgba(237, 245, 255, 0.95), rgba(226, 238, 253, 0.95));
+  color: var(--il-color-brand-700);
+}
+
+.pill,
+.timeline-state,
+.status,
+.vehicle-direction-badge {
+  border-radius: 6px;
+  border: 1px solid var(--il-edge-mid);
+  background: rgba(233, 242, 253, 0.92);
+  color: var(--il-color-ink-700);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.status.active,
+.timeline-state.running,
+.hud-state.running {
+  border-color: rgba(36, 122, 81, 0.5);
+  background: rgba(204, 235, 219, 0.66);
+  color: #1c5f3d;
+}
+
+.status.blocked,
+.timeline-state.paused,
+.hud-state.paused {
+  border-color: rgba(162, 111, 44, 0.6);
+  background: rgba(236, 217, 185, 0.66);
+  color: #714813;
+}
+
+.session-shell {
+  background: var(--il-bg-atmosphere);
+}
+
+.session-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 54px,
+      rgba(67, 93, 126, 0.07) 54px,
+      rgba(67, 93, 126, 0.07) 55px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 54px,
+      rgba(67, 93, 126, 0.07) 54px,
+      rgba(67, 93, 126, 0.07) 55px
+    );
+  z-index: 0;
+  opacity: 0.2;
+}
+
+.map-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: transparent;
+}
+
+.session-hud,
+.side-hud,
+.hud-menu,
+.build-workspace,
+.line-inspector-sheet,
+.station-inspector-sheet,
+.editor-drawer-sheet,
+.scenario-panel,
+.fleet-menu,
+.filters-panel,
+.missions-drawer,
+.diagnostics-overlay,
+.onboarding-card,
+.alerts-sheet,
+.settings-sheet,
+.command-palette,
+.financial-dashboard-sheet,
+.line-delete-dialog,
+.country-info-drawer {
+  border-radius: var(--il-radius-lg);
+  border: 1px solid var(--il-edge-dark);
+  background: var(--il-surface-dark-1);
+  color: #e8f1ff;
+  box-shadow: var(--il-shadow-panel);
+}
+
+.session-hud,
+.side-hud,
+.hud-menu,
+.build-workspace,
+.line-inspector-sheet,
+.station-inspector-sheet,
+.editor-drawer-sheet,
+.scenario-panel,
+.fleet-menu,
+.filters-panel,
+.missions-drawer,
+.settings-sheet,
+.command-palette,
+.financial-dashboard-sheet,
+.alerts-sheet,
+.line-delete-dialog,
+.country-info-drawer {
+  overflow: hidden;
+}
+
+.session-hud::before,
+.side-hud::before,
+.hud-menu::before,
+.build-workspace::before,
+.line-inspector-sheet::before,
+.station-inspector-sheet::before,
+.editor-drawer-sheet::before,
+.scenario-panel::before,
+.fleet-menu::before,
+.filters-panel::before,
+.missions-drawer::before,
+.settings-sheet::before,
+.command-palette::before,
+.financial-dashboard-sheet::before,
+.alerts-sheet::before,
+.line-delete-dialog::before,
+.country-info-drawer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(113, 156, 214, 0.22) 0 4px, transparent 4px),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 48px,
+      rgba(148, 177, 214, 0.07) 48px,
+      rgba(148, 177, 214, 0.07) 49px
+    );
+}
+
+.session-hud > *,
+.side-hud > *,
+.hud-menu > *,
+.build-workspace > *,
+.line-inspector-sheet > *,
+.station-inspector-sheet > *,
+.editor-drawer-sheet > *,
+.scenario-panel > *,
+.fleet-menu > *,
+.filters-panel > *,
+.missions-drawer > *,
+.settings-sheet > *,
+.command-palette > *,
+.financial-dashboard-sheet > *,
+.alerts-sheet > *,
+.line-delete-dialog > *,
+.country-info-drawer > * {
+  position: relative;
+  z-index: 1;
+}
+
+.session-hud {
+  border-radius: var(--il-radius-xl);
+  grid-template-columns: 1fr auto 1fr;
+  background: var(--il-surface-dark-2);
+}
+
+.session-hud.is-paused {
+  border-color: rgba(160, 113, 48, 0.86);
+  background: var(--il-surface-dark-2);
+}
+
+.session-hud.is-build,
+.side-hud.is-build {
+  border-color: rgba(98, 140, 201, 0.75);
+}
+
+.hud-left p,
+.hud-build-tag,
+.hud-state,
+.hud-time,
+.pill,
+.hud-right .budget-pill,
+.hud-right button.pill,
+.hud-menu button,
+.side-hud button,
+.build-workspace-head p,
+.inspector-head p,
+.station-modal-head p,
+.editor-drawer-head p,
+.filters-head p,
+.alerts-head p,
+.financial-dashboard-head p,
+.settings-head p,
+.command-palette-head p,
+.onboarding-card p,
+.session-boot-card span,
+.app-status-card span {
+  color: rgba(214, 228, 246, 0.88);
+}
+
+.hud-time,
+.hud-state,
+.pill,
+.hud-right .budget-pill,
+.hud-right button.pill,
+.timeline-state,
+.side-hud button,
+.hud-menu button,
+.fleet-menu-actions button,
+.settings-head button,
+.command-palette-head button,
+.financial-dashboard-head-actions button {
+  border: 1px solid rgba(132, 157, 193, 0.62);
+  border-radius: 7px;
+  background: rgba(18, 35, 56, 0.66);
+}
+
+.hud-center button,
+.side-hud button,
+.build-workspace button,
+.line-inspector-sheet button,
+.station-inspector-sheet button,
+.editor-drawer-sheet button,
+.settings-sheet button,
+.command-palette button,
+.alerts-sheet button,
+.financial-dashboard-sheet button,
+.country-info-drawer button,
+.scenario-panel button,
+.filters-panel button,
+.missions-drawer button,
+.fleet-menu button,
+.line-delete-dialog button,
+.status-toast button,
+.onboarding-card button,
+.app-crash-card button,
+.session-boot-card button,
+.app-status-card button {
+  border-radius: var(--il-radius-sm);
+}
+
+.hud-left strong,
+.build-workspace-head strong,
+.financial-dashboard-head h4,
+.settings-head h4,
+.command-palette-head h4,
+.alerts-head h4,
+.inspector-head h4,
+.station-modal-head h4,
+.editor-drawer-head h4,
+.country-info-head h4,
+.scenario-panel h4 {
+  font-family: var(--il-font-display);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.country-info-overlay,
+.settings-overlay,
+.command-palette-overlay,
+.alerts-overlay,
+.financial-dashboard-overlay,
+.app-status-overlay,
+.session-boot-overlay,
+.line-delete-overlay {
+  background: rgba(7, 13, 22, 0.62);
+  backdrop-filter: blur(6px);
+}
+
+.country-info-drawer {
+  width: min(1380px, calc(100vw - 2rem));
+  background: var(--il-surface-dark-1);
+}
+
+.country-section,
+.county-selected,
+.county-row,
+.selected-county-card,
+.selected-county-grid p,
+.selected-county-head p,
+.country-section-head h5,
+.country-section-head span,
+.county-row span,
+.county-row small {
+  color: #e7f0fd;
+}
+
+.country-section,
+.county-selected,
+.county-row,
+.selected-county-card {
+  border-color: rgba(120, 147, 182, 0.56);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.county-row.active {
+  border-color: rgba(108, 156, 219, 0.9);
+  background: rgba(35, 71, 118, 0.42);
+}
+
+.selected-county-grid p,
+.selected-county-head p,
+.country-section-head h5,
+.country-section-head span,
+.county-row small {
+  color: rgba(204, 220, 242, 0.88);
+}
+
+.build-workspace,
+.line-inspector-sheet,
+.station-inspector-sheet,
+.editor-drawer-sheet {
+  border-color: rgba(90, 124, 170, 0.72);
+}
+
+.build-workspace,
+.line-inspector-sheet,
+.station-inspector-sheet,
+.editor-drawer-sheet,
+.country-info-drawer,
+.financial-dashboard-sheet,
+.alerts-sheet,
+.settings-sheet,
+.command-palette,
+.missions-drawer,
+.filters-panel,
+.scenario-panel,
+.fleet-menu {
+  overflow: auto;
+}
+
+.line-inspector-sheet,
+.station-inspector-sheet {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.build-stage-card,
+.build-step-section,
+.build-selected-line-card,
+.build-draft-card,
+.build-draft-grid > div,
+.build-line-breakdown,
+.build-line-row,
+.build-mode-tile,
+.build-action-stack button,
+.build-line-actions button,
+.inspector-tab-row button,
+.build-workspace-footer button,
+.build-line-focus,
+.line-draw-status,
+.line-color-field,
+.line-color-hex,
+.inspector-read-field,
+.inspector-stat,
+.inspector-section,
+.station-capacity-hero,
+.rolling-order-card,
+.rolling-vehicle-row,
+.schedule-band-card,
+.inspector-stop-row,
+.direction-card,
+.station-line-card,
+.journey-chip,
+.interchange-member-row,
+.interchange-suggestion-row,
+.transfer-link-row,
+.tube-remove-stop,
+.alert-card,
+.alerts-empty,
+.fleet-menu-row,
+.command-palette-row,
+.settings-section,
+.financial-kpi-grid article,
+.financial-chart-grid article,
+.financial-breakdown-grid section,
+.financial-table-row,
+.app-crash-message {
+  border-color: rgba(118, 147, 181, 0.5);
+  background: rgba(255, 255, 255, 0.045);
+  color: #eaf2ff;
+}
+
+.station-capacity-hero {
+  border-color: rgba(71, 146, 101, 0.6);
+  background: rgba(29, 86, 56, 0.34);
+}
+
+.inspector-tab-row button.active {
+  border-color: rgba(121, 167, 227, 0.86);
+  background: rgba(39, 79, 130, 0.62);
+  color: #f2f8ff;
+}
+
+.station-capacity-hero.is-warning,
+.schedule-band-card.is-warning,
+.alert-card.severity-warn {
+  border-color: rgba(172, 124, 58, 0.66);
+  background: rgba(121, 79, 21, 0.34);
+}
+
+.station-capacity-hero.is-critical,
+.alert-card.severity-critical,
+.build-inline-error,
+.app-crash-message {
+  border-color: rgba(177, 81, 97, 0.7);
+  background: rgba(123, 30, 47, 0.35);
+  color: #ffe9ed;
+}
+
+.build-step-number,
+.line-draw-dot {
+  border-radius: 6px;
+}
+
+.build-mode-icon,
+.build-line-chip,
+.station-line-swatch,
+.tube-node,
+.tube-connection-swatch {
+  border-color: rgba(129, 159, 194, 0.7);
+}
+
+.fare-toggle,
+.settings-section label,
+.filters-panel label,
+.missions-drawer p,
+.command-palette-row small,
+.fleet-menu p,
+.financial-filter-row label,
+.financial-chart-head span,
+.financial-kpi-grid article small,
+.station-capacity-hero span,
+.station-capacity-hero small,
+.schedule-band-row label,
+.schedule-band-metrics span,
+.field-caption,
+.tube-label p,
+.hint-line {
+  color: rgba(198, 214, 236, 0.84);
+}
+
+.fare-toggle input[type="checkbox"],
+.settings-toggle input[type="checkbox"],
+.filters-panel input[type="checkbox"] {
+  accent-color: var(--il-color-brand-500);
+}
+
+.command-palette input,
+.settings-sheet input,
+.settings-sheet select,
+.financial-filter-row select,
+.line-color-hex,
+.fare-policy-sheet select,
+.schedule-band-row input {
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf5ff;
+  border-color: rgba(131, 161, 197, 0.6);
+}
+
+.line-color-read,
+.journey-row,
+.station-line-neighbours,
+.inspector-actions,
+.inspector-section-head,
+.station-line-head,
+.alert-card-actions,
+.financial-chart-head,
+.financial-dashboard-head,
+.country-section-head,
+.selected-county-head,
+.action-row,
+.build-stage-header,
+.editor-drawer-head,
+.settings-head,
+.command-palette-head,
+.alerts-head,
+.filters-head,
+.financial-dashboard-head-actions,
+.fleet-menu-actions,
+.onboarding-actions,
+.session-boot-actions,
+.app-crash-actions,
+.settings-actions {
+  align-items: center;
+}
+
+.command-palette-row kbd,
+.settings-shortcuts span:nth-child(odd),
+.alerts-group-head span,
+.tube-connection-chip,
+.status,
+.timeline-state,
+.vehicle-direction-badge,
+.pill {
+  border: 1px solid rgba(129, 159, 194, 0.65);
+  background: rgba(14, 30, 49, 0.72);
+  color: #dbe8fb;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.alerts-group-head span {
+  padding: 0.2rem 0.5rem;
+}
+
+.map-cursor-hint {
+  border-radius: 6px;
+  border-color: rgba(147, 178, 214, 0.62);
+  background: rgba(12, 26, 42, 0.93);
+  color: #eaf3ff;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.map-canvas .maplibregl-ctrl-group {
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1px solid rgba(94, 119, 149, 0.7);
+  box-shadow: 0 10px 18px rgba(10, 23, 40, 0.25);
+}
+
+.map-canvas .maplibregl-ctrl button {
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(121, 146, 179, 0.5);
+  background: rgba(227, 238, 251, 0.92);
+  color: var(--il-color-ink-900);
+  letter-spacing: 0;
+}
+
+.map-canvas .maplibregl-ctrl button:last-child {
+  border-bottom: 0;
+}
+
+.map-canvas .maplibregl-ctrl button:hover {
+  background: rgba(201, 221, 245, 0.96);
+  color: var(--il-color-brand-700);
+}
+
+.app-crash-screen {
+  background: var(--il-bg-atmosphere);
+}
+
+.app-crash-card,
+.app-status-card,
+.session-boot-card {
+  border-radius: var(--il-radius-lg);
+  border: 1px solid var(--il-edge-dark);
+  background: var(--il-surface-dark-1);
+  color: #e8f1ff;
+}
+
+.app-crash-card p,
+.session-boot-card span,
+.app-status-card span {
+  color: rgba(204, 221, 245, 0.88);
+}
+
+.app-crash-card h1 {
+  font-family: var(--il-font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.paused-banner,
+.offline-banner,
+.status-toast {
+  position: fixed;
+  border-radius: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  width: auto;
+  max-width: calc(100vw - 2rem);
+}
+
+.paused-banner {
+  left: 50%;
+  top: 6.2rem;
+  transform: translateX(-50%);
+  z-index: 116;
+  border-color: rgba(166, 117, 52, 0.72);
+  background: rgba(43, 32, 15, 0.88);
+  color: #ffd89f;
+}
+
+.offline-banner {
+  left: 50%;
+  bottom: 4.4rem;
+  transform: translateX(-50%);
+  z-index: 118;
+  border-color: rgba(158, 111, 49, 0.62);
+  background: rgba(58, 36, 10, 0.9);
+  color: #ffd19a;
+}
+
+.status-toast {
+  left: 50%;
+  bottom: 3.8rem;
+  transform: translateX(-50%);
+  z-index: 620;
+  border-color: rgba(111, 153, 209, 0.66);
+  background: rgba(17, 35, 58, 0.9);
+  color: #e9f2ff;
+}
+
+/* Layout guardrails: keep legacy interaction placement stable */
+.session-shell {
+  overflow: hidden;
+}
+
+.session-main {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.map-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.map-canvas .maplibregl-map,
+.map-canvas .maplibregl-canvas-container,
+.map-canvas .maplibregl-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.session-hud {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  max-width: calc(100vw - 2rem);
+  box-sizing: border-box;
+  z-index: 120;
+}
+
+.side-hud {
+  position: absolute;
+  top: 6.8rem;
+  left: 1rem;
+  z-index: 115;
+  width: 190px;
+}
+
+.build-workspace {
+  position: absolute;
+  top: 6.8rem;
+  left: 1rem;
+  z-index: 40;
+  width: min(420px, calc(100vw - 2rem));
+  max-height: calc(100vh - 8rem);
+}
+
+.line-inspector-sheet,
+.station-inspector-sheet,
+.editor-drawer-sheet {
+  position: absolute;
+  top: 6.8rem;
+  right: 0.9rem;
+  z-index: 45;
+  width: min(430px, calc(100% - 1.8rem));
+  max-height: calc(100vh - 8rem);
+}
+
+.editor-drawer-sheet {
+  z-index: 60;
+}
+
+.scenario-panel {
+  position: absolute;
+  top: 6.4rem;
+  right: 0.9rem;
+  z-index: 28;
+  width: 320px;
+  max-height: calc(100% - 7.3rem);
+}
+
+.hud-menu {
+  position: fixed;
+  top: 5.4rem;
+  right: 1rem;
+  width: 220px;
+  z-index: 600;
+}
+
+.fleet-menu {
+  position: fixed;
+  top: 5.4rem;
+  right: 14.4rem;
+  z-index: 610;
+  width: min(420px, calc(100vw - 2rem));
+}
+
+.filters-panel,
+.missions-drawer {
+  position: fixed;
+  right: 1rem;
+  width: min(360px, calc(100vw - 2rem));
+  z-index: 80;
+}
+
+.filters-panel {
+  top: 5.4rem;
+}
+
+.missions-drawer {
+  bottom: 5.5rem;
+}
+
+.session-hud.is-paused .hud-left p,
+.session-hud.is-paused .hud-left strong {
+  color: #f3e7d4;
+}
+
+@media (max-width: 1180px) {
+  .session-hud {
+    grid-template-columns: 1fr;
+  }
+
+  .build-workspace {
+    left: 1rem;
+    width: min(400px, calc(100vw - 2rem));
+  }
+
+  .side-hud {
+    top: auto;
+    bottom: 1rem;
+    left: 1rem;
+    width: min(360px, calc(100vw - 2rem));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .fleet-menu {
+    right: 1rem;
+    top: 8.9rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .session-hud,
+  .side-hud,
+  .build-workspace,
+  .line-inspector-sheet,
+  .station-inspector-sheet,
+  .editor-drawer-sheet,
+  .alerts-sheet,
+  .settings-sheet,
+  .command-palette,
+  .financial-dashboard-sheet,
+  .country-info-drawer,
+  .scenario-panel,
+  .fleet-menu,
+  .onboarding-card {
+    border-radius: var(--il-radius-md);
+  }
+
+  .build-workspace {
+    top: auto;
+    bottom: 1rem;
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+  }
+
+  .side-hud {
+    bottom: 1rem;
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .line-inspector-sheet,
+  .station-inspector-sheet,
+  .editor-drawer-sheet {
+    top: auto;
+    bottom: 0.8rem;
+    left: 0.8rem;
+    right: 0.8rem;
+    width: auto;
+  }
+
+  .filters-panel,
+  .missions-drawer {
+    right: 0.7rem;
+    left: 0.7rem;
+    width: auto;
+  }
+
+  .filters-panel {
+    top: auto;
+    bottom: 4.9rem;
+  }
+
+  .missions-drawer {
+    bottom: 4.9rem;
+  }
+
+  .fleet-menu {
+    top: auto;
+    right: 0.7rem;
+    left: 0.7rem;
+    bottom: 5.2rem;
+    width: auto;
+  }
+}
+
+/* On desktop-density windows, keep inspector/panel docking stable. */
+@media (min-width: 420px) {
+  .build-workspace {
+    top: 6.8rem;
+    bottom: auto;
+    left: 1rem;
+    right: auto;
+    width: min(420px, calc(100vw - 2rem));
+  }
+
+  .line-inspector-sheet,
+  .station-inspector-sheet,
+  .editor-drawer-sheet {
+    top: 6.8rem;
+    bottom: auto;
+    left: auto;
+    right: 0.9rem;
+    width: min(430px, calc(100% - 1.8rem));
+    max-height: calc(100vh - 8rem);
+  }
+
+  .side-hud {
+    top: 6.8rem;
+    bottom: auto;
+    left: 1rem;
+    right: auto;
+    width: 190px;
+    grid-template-columns: 1fr;
+  }
+
+  .filters-panel {
+    top: 5.4rem;
+    bottom: auto;
+    left: auto;
+    right: 1rem;
+    width: min(360px, calc(100vw - 2rem));
+  }
+
+  .missions-drawer {
+    bottom: 5.5rem;
+    left: auto;
+    right: 1rem;
+    width: min(360px, calc(100vw - 2rem));
+  }
+
+  .fleet-menu {
+    top: 5.4rem;
+    bottom: auto;
+    right: 14.4rem;
+    left: auto;
+    width: min(420px, calc(100vw - 2rem));
+  }
+}

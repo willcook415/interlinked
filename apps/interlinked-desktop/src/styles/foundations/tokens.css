@@ -1,0 +1,129 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap");
+
+:root {
+  /* Typography */
+  --il-font-display: "IBM Plex Sans Condensed", "Bahnschrift Condensed", "Segoe UI", Arial, sans-serif;
+  --il-font-ui: "IBM Plex Sans", "Segoe UI", "Inter", Arial, sans-serif;
+
+  --il-type-hero: clamp(2.4rem, 4.8vw, 3.85rem);
+  --il-type-title: clamp(1.22rem, 1.7vw, 1.62rem);
+  --il-type-heading: 1.04rem;
+  --il-type-body-lg: 1rem;
+  --il-type-body: 0.89rem;
+  --il-type-meta: 0.74rem;
+
+  --il-line-tight: 1.08;
+  --il-line-base: 1.42;
+
+  /* Palette */
+  --il-color-canvas-000: #e3e9f2;
+  --il-color-canvas-100: #d8e0eb;
+  --il-color-canvas-200: #cad5e4;
+  --il-color-canvas-900: #1c2736;
+
+  --il-color-surface-000: #f5f8fd;
+  --il-color-surface-100: rgba(244, 249, 255, 0.95);
+  --il-color-surface-200: rgba(232, 239, 249, 0.95);
+  --il-color-surface-300: rgba(215, 226, 240, 0.95);
+  --il-color-surface-dark-100: #243245;
+  --il-color-surface-dark-200: #1d2a3a;
+  --il-color-surface-dark-300: #172230;
+
+  --il-color-border-100: #aebdd2;
+  --il-color-border-200: #8ca0ba;
+  --il-color-border-300: #6f86a3;
+  --il-color-border-dark: #4d6078;
+
+  --il-color-ink-900: #0f1d30;
+  --il-color-ink-700: #293f5a;
+  --il-color-ink-600: #3f5877;
+  --il-color-ink-500: #567091;
+  --il-color-ink-050: #f3f8ff;
+
+  --il-color-brand-500: #0f4f9d;
+  --il-color-brand-600: #0a3f7f;
+  --il-color-brand-700: #082f61;
+  --il-color-brand-soft: rgba(15, 79, 157, 0.14);
+  --il-color-signal-500: #a5691e;
+  --il-color-signal-600: #865115;
+  --il-color-signal-soft: rgba(165, 105, 30, 0.14);
+
+  --il-color-success: #1c7048;
+  --il-color-warning: #8e5815;
+  --il-color-danger: #a23044;
+
+  --il-color-focus-ring: #4a8ff0;
+
+  /* Surfaces */
+  --il-bg-atmosphere:
+    radial-gradient(140% 95% at 8% -10%, rgba(58, 90, 140, 0.2) 0%, transparent 58%),
+    radial-gradient(120% 88% at 100% 0%, rgba(34, 56, 87, 0.14) 0%, transparent 52%),
+    linear-gradient(180deg, var(--il-color-canvas-100) 0%, var(--il-color-canvas-000) 100%);
+  --il-panel-glass: linear-gradient(
+    170deg,
+    rgba(249, 252, 255, 0.96) 0%,
+    rgba(233, 241, 250, 0.93) 64%,
+    rgba(220, 231, 245, 0.95) 100%
+  );
+  --il-grid-major: rgba(46, 73, 108, 0.16);
+  --il-grid-minor: rgba(46, 73, 108, 0.07);
+
+  /* Radius */
+  --il-radius-sm: 7px;
+  --il-radius-md: 10px;
+  --il-radius-lg: 13px;
+  --il-radius-xl: 18px;
+  --il-radius-pill: 10px;
+
+  /* Spacing */
+  --il-space-1: 0.22rem;
+  --il-space-2: 0.44rem;
+  --il-space-3: 0.68rem;
+  --il-space-4: 1rem;
+  --il-space-5: 1.2rem;
+  --il-space-6: 1.45rem;
+  --il-space-8: 1.9rem;
+  --il-space-10: 2.35rem;
+  --il-space-12: 2.9rem;
+
+  /* Elevation */
+  --il-shadow-soft: 0 10px 20px rgba(17, 31, 51, 0.11);
+  --il-shadow-panel: 0 16px 34px rgba(15, 31, 53, 0.18);
+  --il-shadow-hover: 0 18px 36px rgba(11, 29, 52, 0.24);
+  --il-shadow-glow-brand: 0 0 0 1px rgba(15, 79, 157, 0.34), 0 12px 22px rgba(10, 55, 113, 0.3);
+
+  /* Motion */
+  --il-motion-fast: 130ms;
+  --il-motion-base: 190ms;
+  --il-motion-slow: 250ms;
+  --il-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --il-ease-emphasis: cubic-bezier(0.24, 0.86, 0.32, 1);
+
+  /* Legacy alias layer for existing screens */
+  --bg: var(--il-color-canvas-100);
+  --bg-soft: var(--il-color-canvas-000);
+  --panel: var(--il-color-surface-000);
+  --panel-alt: var(--il-color-surface-300);
+  --line: var(--il-color-border-100);
+  --line-strong: var(--il-color-border-200);
+  --text: var(--il-color-ink-900);
+  --muted: var(--il-color-ink-600);
+  --brand: var(--il-color-brand-500);
+  --brand-strong: var(--il-color-brand-600);
+  --ok: var(--il-color-success);
+  --warn: var(--il-color-warning);
+  --critical: var(--il-color-danger);
+}
+
+:root.pref-high-contrast {
+  --il-color-canvas-000: #d8e1ee;
+  --il-color-canvas-100: #cdd8e8;
+  --il-color-surface-100: rgba(249, 252, 255, 0.99);
+  --il-color-border-100: #8197b6;
+  --il-color-border-200: #607ba0;
+  --il-color-ink-900: #051223;
+  --il-color-ink-700: #1b3556;
+  --il-color-brand-500: #0049b3;
+  --il-color-brand-600: #00388a;
+  --il-color-focus-ring: #2370e7;
+}

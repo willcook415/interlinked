@@ -1,0 +1,37 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  height: 100%;
+}
+
+body {
+  font-family: var(--il-font-ui);
+  color: var(--il-color-ink-900);
+  background: var(--il-bg-atmosphere);
+  text-rendering: geometricPrecision;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--il-color-focus-ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgba(20, 83, 166, 0.18);
+  color: var(--il-color-ink-900);
+}

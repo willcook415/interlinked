@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "meta": {
+      "name": "scenario_disrupted_network",
+      "seed": 31,
+      "time_period_hours": 1.0,
+      "crs": { "type": "local", "origin_lon": -1.5491, "origin_lat": 53.8008 }
+    },
+    "params": {
+      "walk_weight": 1.0,
+      "wait_weight": 2.4,
+      "ivt_weight": 1.0,
+      "transfer_penalty_s": 260.0,
+      "access_walk_speed_mps": 1.4,
+      "access_radius_m": 950.0,
+      "gravity_beta": 0.00035,
+      "trips_per_person": 0.75,
+      "route_choice_k": 4,
+      "route_choice_theta": 0.002,
+      "assignment_max_iters": 10,
+      "assignment_convergence_rel": 0.01,
+      "capacity_enabled": true,
+      "queue_max_extra_wait_s": 3600.0,
+      "debug_sample_origin_zone": null,
+      "debug_sample_dest_zone": null,
+      "demand_profile": [
+        { "label": "AM Peak", "start_s": 25200.0, "end_s": 32400.0, "multiplier": 1.35 },
+        { "label": "Interpeak", "start_s": 32400.0, "end_s": 57600.0, "multiplier": 0.85 },
+        { "label": "PM Peak", "start_s": 57600.0, "end_s": 68400.0, "multiplier": 1.25 }
+      ]
+    },
+    "world": {
+      "zones": [
+        { "id": "Z1", "x": 0.0, "y": 0.0, "population": 2000.0, "jobs": 250.0 },
+        { "id": "Z2", "x": 900.0, "y": 100.0, "population": 1400.0, "jobs": 900.0 },
+        { "id": "Z3", "x": 1800.0, "y": 100.0, "population": 1000.0, "jobs": 1500.0 },
+        { "id": "Z4", "x": 2600.0, "y": 0.0, "population": 800.0, "jobs": 2300.0 },
+        { "id": "Z5", "x": 900.0, "y": -800.0, "population": 1200.0, "jobs": 1000.0 }
+      ],
+      "stops": [
+        { "id": "S1", "x": 0.0, "y": 0.0, "interchange_id": null, "stop_type": "bus_stop" },
+        { "id": "S2_bus", "x": 900.0, "y": 100.0, "interchange_id": "INT_S2", "stop_type": "bus_bay" },
+        { "id": "S2_rail", "x": 930.0, "y": 130.0, "interchange_id": "INT_S2", "stop_type": "rail_platform" },
+        { "id": "S3", "x": 1800.0, "y": 100.0, "interchange_id": null, "stop_type": "rail_platform" },
+        { "id": "S4", "x": 2600.0, "y": 0.0, "interchange_id": null, "stop_type": "rail_platform" },
+        { "id": "S5", "x": 900.0, "y": -800.0, "interchange_id": null, "stop_type": "bus_stop" }
+      ],
+      "links": [
+        { "id": "LB1", "from_stop": "S1", "to_stop": "S2_bus", "distance_m": 910.0, "mode": "bus", "speed_mps": 9.0, "geometry": null, "capacity_per_hour": null },
+        { "id": "LB2", "from_stop": "S2_bus", "to_stop": "S5", "distance_m": 900.0, "mode": "bus", "speed_mps": 9.0, "geometry": null, "capacity_per_hour": null },
+        { "id": "LR1", "from_stop": "S2_rail", "to_stop": "S3", "distance_m": 870.0, "mode": "rail", "speed_mps": 14.0, "geometry": null, "capacity_per_hour": null },
+        { "id": "LR2", "from_stop": "S3", "to_stop": "S4", "distance_m": 810.0, "mode": "rail", "speed_mps": 14.0, "geometry": null, "capacity_per_hour": null }
+      ],
+      "services": [
+        { "id": "BUS_A", "mode": "bus", "stop_sequence": ["S1", "S2_bus", "S5"], "headway_s": 420.0, "dwell_s": 25.0, "vehicle_capacity": 45.0, "board_penalty_s": 15.0 },
+        { "id": "RAIL_A", "mode": "rail", "stop_sequence": ["S2_rail", "S3", "S4"], "headway_s": 720.0, "dwell_s": 35.0, "vehicle_capacity": 90.0, "board_penalty_s": 80.0 }
+      ],
+      "transfers": [],
+      "transfer_rules": [
+        { "from_mode": "bus", "to_mode": "rail", "base_time_s": 130.0, "penalty_s": 90.0, "walk_speed_mps": 1.1, "max_distance_m": 180.0 },
+        { "from_mode": "rail", "to_mode": "bus", "base_time_s": 120.0, "penalty_s": 80.0, "walk_speed_mps": 1.1, "max_distance_m": 180.0 }
+      ]
+    }
+  }
+}

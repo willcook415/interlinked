@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "name": "flat_minimal_valid",
+    "seed": 123,
+    "time_period_hours": 1.0,
+    "crs": {
+      "type": "local",
+      "origin_lon": -1.5491,
+      "origin_lat": 53.8008
+    }
+  },
+  "params": {
+    "walk_weight": 1.0,
+    "wait_weight": 2.0,
+    "ivt_weight": 1.0,
+    "transfer_penalty_s": 300.0,
+    "access_walk_speed_mps": 1.4,
+    "access_radius_m": 1200.0,
+    "gravity_beta": 0.0003,
+    "trips_per_person": 0.5,
+    "route_choice_k": 3,
+    "route_choice_theta": 0.002,
+    "assignment_max_iters": 5,
+    "assignment_convergence_rel": 0.01,
+    "capacity_enabled": true,
+    "queue_max_extra_wait_s": 3600.0,
+    "debug_sample_origin_zone": null,
+    "debug_sample_dest_zone": null
+  },
+  "world": {
+    "zones": [
+      { "id": "Z1", "x": 0.0, "y": 0.0, "population": 1000.0, "jobs": 200.0 },
+      { "id": "Z2", "x": 1000.0, "y": 0.0, "population": 500.0, "jobs": 1200.0 }
+    ],
+    "stops": [
+      { "id": "S1", "x": 0.0, "y": 0.0, "interchange_id": null, "stop_type": "bus_stop" },
+      { "id": "S2", "x": 1000.0, "y": 0.0, "interchange_id": null, "stop_type": "bus_stop" }
+    ],
+    "links": [
+      {
+        "id": "L1",
+        "from_stop": "S1",
+        "to_stop": "S2",
+        "distance_m": 1000.0,
+        "mode": "bus",
+        "speed_mps": 10.0,
+        "geometry": null,
+        "capacity_per_hour": null
+      }
+    ],
+    "services": [
+      {
+        "id": "BUS_1",
+        "mode": "bus",
+        "stop_sequence": ["S1", "S2"],
+        "headway_s": 300.0,
+        "dwell_s": 20.0,
+        "vehicle_capacity": 50.0,
+        "board_penalty_s": 0.0
+      }
+    ],
+    "transfers": [],
+    "transfer_rules": null
+  }
+}

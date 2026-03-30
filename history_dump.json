@@ -1,0 +1,2410 @@
+{
+  "cfg": {
+    "enabled": true,
+    "max_frames": 500,
+    "record_board_loads": true,
+    "record_queue_map": false
+  },
+  "frames": [
+    {
+      "t_s": 60.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 190.88871926736928,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 190.88871926736928,
+        "max_queue": 110.88871926736928,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 110.88871926736928,
+          "queue_start": 0.0,
+          "queue_end": 110.88871926736928,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 76.03797892619608,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 110.88871926736928,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 120.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 31.944011829438015,
+        "share_trips_served": 0.2281715130674144,
+        "total_trips": 31.944011829438015,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 188.0559816311785,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 248.9447008985478,
+        "share_boardings_served": 0.691283515006506
+      },
+      "queue_summary": {
+        "total_queue": 248.9447008985478,
+        "max_queue": 218.9447008985478,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 108.05598163117851,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 218.9447008985478,
+          "queue_start": 110.88871926736928,
+          "queue_end": 218.9447008985478,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 150.13350918757564,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 108.05598163117851,
+              "served": 0.0,
+              "queue_end": 218.9447008985478,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 180.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 33.356996821918074,
+        "share_trips_served": 0.23826426301370052,
+        "total_trips": 33.356996821918074,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 186.64300331419958,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 325.5877042127474,
+        "share_boardings_served": 0.5893604263044525
+      },
+      "queue_summary": {
+        "total_queue": 325.5877042127474,
+        "max_queue": 325.5877042127474,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 106.64300331419956,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 325.5877042127474,
+          "queue_start": 218.9447008985478,
+          "queue_end": 325.5877042127474,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 223.2601400315982,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 106.64300331419956,
+              "served": 0.0,
+              "queue_end": 325.5877042127474,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 240.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 60.0,
+        "share_trips_served": 0.42857142857142855,
+        "total_trips": 60.0,
+        "mean_generalized_cost_s": 674.2799551751365,
+        "mean_in_vehicle_time_s": 110.0,
+        "mean_wait_time_s": 178.53924769096304,
+        "mean_walk_time_s": 207.2014597932104,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 189.78203200324037,
+        "total_boardings_served": 350.0,
+        "total_boardings_denied": 165.36973621598776,
+        "share_boardings_served": 1.8442209534041876
+      },
+      "queue_summary": {
+        "total_queue": 165.36973621598776,
+        "max_queue": 85.36973621598776,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 109.78203200324037,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 85.36973621598776,
+          "queue_start": 325.5877042127474,
+          "queue_end": 85.36973621598776,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 58.53924769096304,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 109.78203200324037,
+              "served": 350.0,
+              "queue_end": 85.36973621598776,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 300.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 31.61316970420127,
+        "share_trips_served": 0.22580835503000907,
+        "total_trips": 31.61316970420127,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 188.3868245817029,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 223.75656079769067,
+        "share_boardings_served": 0.6900694902026936
+      },
+      "queue_summary": {
+        "total_queue": 223.75656079769067,
+        "max_queue": 193.75656079769067,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 108.38682458170291,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 193.75656079769067,
+          "queue_start": 85.36973621598776,
+          "queue_end": 193.75656079769067,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 132.86164168984502,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 108.38682458170291,
+              "served": 0.0,
+              "queue_end": 193.75656079769067,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 360.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 33.025977961010454,
+        "share_trips_served": 0.2358998425786461,
+        "total_trips": 33.025977961010454,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 186.97402216304096,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 300.7305829607316,
+        "share_boardings_served": 0.5883170224796268
+      },
+      "queue_summary": {
+        "total_queue": 300.7305829607316,
+        "max_queue": 300.7305829607316,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 106.97402216304096,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 300.7305829607316,
+          "queue_start": 193.75656079769067,
+          "queue_end": 300.7305829607316,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 206.21525688735883,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 106.97402216304096,
+              "served": 0.0,
+              "queue_end": 300.7305829607316,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 420.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 491.6193022281009,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 491.6193022281009,
+        "max_queue": 411.6193022281009,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 411.6193022281009,
+          "queue_start": 300.7305829607316,
+          "queue_end": 411.6193022281009,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 282.2532358135549,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 411.6193022281009,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 480.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 140.0,
+        "share_trips_served": 1.0,
+        "total_trips": 140.0,
+        "mean_generalized_cost_s": 1040.967684082385,
+        "mean_in_vehicle_time_s": 199.39207020496346,
+        "mean_wait_time_s": 220.57987712910935,
+        "mean_walk_time_s": 202.0872086903363,
+        "mean_transfer_time_s": 105.29190672535528,
+        "mean_transfer_penalty_s": 62.12208890682334,
+        "mean_transfers": 0.3451227161490186,
+        "mean_boardings": 1.3451227161490187,
+        "total_boardings_attempted": 188.31195645253104,
+        "total_boardings_served": 480.0,
+        "total_boardings_denied": 199.9312586806319,
+        "share_boardings_served": 2.5489618877227085
+      },
+      "queue_summary": {
+        "total_queue": 199.9312586806319,
+        "max_queue": 169.9312586806319,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 108.31195645253105,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 169.9312586806319,
+          "queue_start": 411.6193022281009,
+          "queue_end": 169.9312586806319,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 116.52429166671902,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 108.31195645253105,
+              "served": 350.0,
+              "queue_end": 169.9312586806319,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 540.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 32.71376061727128,
+        "share_trips_served": 0.23366971869479483,
+        "total_trips": 32.71376061727128,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 187.28623087186284,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 277.2174895524947,
+        "share_boardings_served": 0.5873362899553444
+      },
+      "queue_summary": {
+        "total_queue": 277.2174895524947,
+        "max_queue": 277.2174895524947,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 107.28623087186284,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 277.2174895524947,
+          "queue_start": 169.9312586806319,
+          "queue_end": 277.2174895524947,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 190.09199283599636,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 107.28623087186284,
+              "served": 0.0,
+              "queue_end": 277.2174895524947,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 600.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 468.10620881986404,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 468.10620881986404,
+        "max_queue": 388.10620881986404,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 388.10620881986404,
+          "queue_start": 277.2174895524947,
+          "queue_end": 388.10620881986404,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 266.1299717621925,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 388.10620881986404,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 660.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 35.60188807932228,
+        "share_trips_served": 0.2542992005665877,
+        "total_trips": 35.60188807932228,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 184.3981121423937,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 522.5043209622577,
+        "share_boardings_served": 0.7049963716527258
+      },
+      "queue_summary": {
+        "total_queue": 522.5043209622577,
+        "max_queue": 492.50432096225774,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 104.3981121423937,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 492.50432096225774,
+          "queue_start": 388.10620881986404,
+          "queue_end": 492.50432096225774,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 337.71724865983384,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 104.3981121423937,
+              "served": 0.0,
+              "queue_end": 492.50432096225774,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 720.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 140.0,
+        "share_trips_served": 1.0,
+        "total_trips": 140.0,
+        "mean_generalized_cost_s": 1092.0175808734439,
+        "mean_in_vehicle_time_s": 198.57221148676993,
+        "mean_wait_time_s": 248.89833194770088,
+        "mean_walk_time_s": 202.01608929257526,
+        "mean_transfer_time_s": 103.01802548504966,
+        "mean_transfer_penalty_s": 60.78050191341575,
+        "mean_transfers": 0.3376694550745319,
+        "mean_boardings": 1.3376694550745318,
+        "total_boardings_attempted": 187.26645417793003,
+        "total_boardings_served": 460.0,
+        "total_boardings_denied": 249.77077514018777,
+        "share_boardings_served": 2.4563929616723237
+      },
+      "queue_summary": {
+        "total_queue": 249.77077514018777,
+        "max_queue": 249.77077514018777,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 79.99999999999999,
+          "served_from_arrivals": 109.99999999999999,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 79.99999999999999,
+              "served": 109.99999999999999,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 107.26645417793006,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 249.77077514018777,
+          "queue_start": 492.50432096225774,
+          "queue_end": 249.77077514018777,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 171.27138866755735,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 107.26645417793006,
+              "served": 350.0,
+              "queue_end": 249.77077514018777,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 780.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 440.6594944075571,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 440.6594944075571,
+        "max_queue": 360.6594944075571,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 360.6594944075571,
+          "queue_start": 249.77077514018777,
+          "queue_end": 360.6594944075571,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 247.30936759375342,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 360.6594944075571,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 840.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 35.23537703598454,
+        "share_trips_served": 0.2516812645427467,
+        "total_trips": 35.23537703598454,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 184.7646231714347,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 495.42411757899174,
+        "share_boardings_served": 0.7035978953578084
+      },
+      "queue_summary": {
+        "total_queue": 495.42411757899174,
+        "max_queue": 465.42411757899174,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 104.76462317143469,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 465.42411757899174,
+          "queue_start": 360.6594944075571,
+          "queue_end": 465.42411757899174,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 319.14796633988004,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 104.76462317143469,
+              "served": 0.0,
+              "queue_end": 465.42411757899174,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 900.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 36.63813271974358,
+        "share_trips_served": 0.26170094799816845,
+        "total_trips": 36.63813271974358,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 183.36186727668326,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 568.785984855675,
+        "share_boardings_served": 0.5999066307173665
+      },
+      "queue_summary": {
+        "total_queue": 568.785984855675,
+        "max_queue": 568.785984855675,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 103.36186727668326,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 568.785984855675,
+          "queue_start": 465.42411757899174,
+          "queue_end": 568.785984855675,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 390.0246753296057,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 103.36186727668326,
+              "served": 0.0,
+              "queue_end": 568.785984855675,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 960.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 60.0,
+        "share_trips_served": 0.42857142857142855,
+        "total_trips": 60.0,
+        "mean_generalized_cost_s": 1003.42930575962,
+        "mean_in_vehicle_time_s": 110.0,
+        "mean_wait_time_s": 343.11392298320476,
+        "mean_walk_time_s": 207.2014597932104,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 186.58848616149862,
+        "total_boardings_served": 350.0,
+        "total_boardings_denied": 405.3744710171736,
+        "share_boardings_served": 1.875785624291218
+      },
+      "queue_summary": {
+        "total_queue": 405.3744710171736,
+        "max_queue": 325.3744710171736,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 106.58848616149861,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 325.3744710171736,
+          "queue_start": 568.785984855675,
+          "queue_end": 325.3744710171736,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 223.11392298320476,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 106.58848616149861,
+              "served": 350.0,
+              "queue_end": 325.3744710171736,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 1020.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 34.76537890886369,
+        "share_trips_served": 0.24832413506331205,
+        "total_trips": 34.76537890886369,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 185.23462128035803,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 460.6090922975317,
+        "share_boardings_served": 0.7018126476650453
+      },
+      "queue_summary": {
+        "total_queue": 460.6090922975317,
+        "max_queue": 430.6090922975317,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 105.23462128035803,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 430.6090922975317,
+          "queue_start": 325.3744710171736,
+          "queue_end": 430.6090922975317,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 295.27480614687886,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 105.23462128035803,
+              "served": 0.0,
+              "queue_end": 430.6090922975317,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 1080.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 36.17088895317781,
+        "share_trips_served": 0.25836349252269863,
+        "total_trips": 36.17088895317781,
+        "mean_generalized_cost_s": 482.48845784711904,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 183.82911104350617,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 534.4382033410378,
+        "share_boardings_served": 0.5983818306882129
+      },
+      "queue_summary": {
+        "total_queue": 534.4382033410378,
+        "max_queue": 534.4382033410378,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 103.82911104350617,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 534.4382033410378,
+          "queue_start": 430.6090922975317,
+          "queue_end": 534.4382033410378,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 366.4719108624259,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 103.82911104350617,
+              "served": 0.0,
+              "queue_end": 534.4382033410378,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 1140.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 725.3269226084071,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 725.3269226084071,
+        "max_queue": 645.3269226084071,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 645.3269226084071,
+          "queue_start": 534.4382033410378,
+          "queue_end": 645.3269226084071,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 442.509889788622,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 645.3269226084071,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 1200.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 140.0,
+        "share_trips_served": 1.0,
+        "total_trips": 140.0,
+        "mean_generalized_cost_s": 1252.3574444194776,
+        "mean_in_vehicle_time_s": 197.00197732264124,
+        "mean_wait_time_s": 334.3766914561879,
+        "mean_walk_time_s": 201.87987788734355,
+        "mean_transfer_time_s": 98.6629751215352,
+        "mean_transfer_penalty_s": 58.21102782665967,
+        "mean_transfers": 0.32339459903699813,
+        "mean_boardings": 1.3233945990369982,
+        "total_boardings_attempted": 185.2642169396787,
+        "total_boardings_served": 480.0,
+        "total_boardings_denied": 430.59113954808583,
+        "share_boardings_served": 2.5908942802283623
+      },
+      "queue_summary": {
+        "total_queue": 430.59113954808583,
+        "max_queue": 400.59113954808583,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 105.26421693967872,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 400.59113954808583,
+          "queue_start": 645.3269226084071,
+          "queue_end": 400.59113954808583,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 274.69106711868744,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 105.26421693967872,
+              "served": 350.0,
+              "queue_end": 400.59113954808583,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 1260.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 35.768854379111765,
+        "share_trips_served": 0.2554918169936555,
+        "total_trips": 35.768854379111765,
+        "mean_generalized_cost_s": 482.48845784711904,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 184.23114584914003,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 504.82228539722587,
+        "share_boardings_served": 0.5970760236712357
+      },
+      "queue_summary": {
+        "total_queue": 504.82228539722587,
+        "max_queue": 504.82228539722587,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 104.23114584914003,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 504.82228539722587,
+          "queue_start": 400.59113954808583,
+          "queue_end": 504.82228539722587,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 346.16385284381204,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 104.23114584914003,
+              "served": 0.0,
+              "queue_end": 504.82228539722587,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 1320.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 695.7110046645952,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 695.7110046645952,
+        "max_queue": 615.7110046645952,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 615.7110046645952,
+          "queue_start": 504.82228539722587,
+          "queue_end": 615.7110046645952,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 422.20183177000814,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 615.7110046645952,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 1380.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 38.663974588262896,
+        "share_trips_served": 0.2761712470590207,
+        "total_trips": 38.663974588262896,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 181.3360254070649,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 747.0470300716601,
+        "share_boardings_served": 0.716901121595528
+      },
+      "queue_summary": {
+        "total_queue": 747.0470300716601,
+        "max_queue": 717.0470300716601,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 101.33602540706491,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 717.0470300716601,
+          "queue_start": 615.7110046645952,
+          "queue_end": 717.0470300716601,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 491.6893920491383,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 101.33602540706491,
+              "served": 0.0,
+              "queue_end": 717.0470300716601,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 1440.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 140.0,
+        "share_trips_served": 1.0,
+        "total_trips": 140.0,
+        "mean_generalized_cost_s": 1290.6046137784022,
+        "mean_in_vehicle_time_s": 196.25720662395705,
+        "mean_wait_time_s": 355.9993550818266,
+        "mean_walk_time_s": 201.81527206882254,
+        "mean_transfer_time_s": 96.59735078591952,
+        "mean_transfer_penalty_s": 56.992312137903745,
+        "mean_transfers": 0.3166239563216875,
+        "mean_boardings": 1.3166239563216875,
+        "total_boardings_attempted": 184.31463013921572,
+        "total_boardings_served": 460.0,
+        "total_boardings_denied": 471.3616602108758,
+        "share_boardings_served": 2.495732431291834
+      },
+      "queue_summary": {
+        "total_queue": 471.3616602108758,
+        "max_queue": 471.3616602108758,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 104.31463013921572,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 471.3616602108758,
+          "queue_start": 717.0470300716601,
+          "queue_end": 471.3616602108758,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 323.21942414460057,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 104.31463013921572,
+              "served": 350.0,
+              "queue_end": 471.3616602108758,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 1500.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 0.0,
+        "share_trips_served": 0.0,
+        "total_trips": 0.0,
+        "mean_generalized_cost_s": 0.0,
+        "mean_in_vehicle_time_s": 0.0,
+        "mean_wait_time_s": 0.0,
+        "mean_walk_time_s": 0.0,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 0.0,
+        "total_boardings_attempted": 190.88871926736928,
+        "total_boardings_served": 0.0,
+        "total_boardings_denied": 662.2503794782451,
+        "share_boardings_served": 0.0
+      },
+      "queue_summary": {
+        "total_queue": 662.2503794782451,
+        "max_queue": 582.2503794782451,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 110.88871926736928,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 582.2503794782451,
+          "queue_start": 471.3616602108758,
+          "queue_end": 582.2503794782451,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 399.25740307079667,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 110.88871926736928,
+              "served": 0.0,
+              "queue_end": 582.2503794782451,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 1560.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 38.21197997181933,
+        "share_trips_served": 0.2729427140844238,
+        "total_trips": 38.21197997181933,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 181.78802002374908,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 714.0383995019943,
+        "share_boardings_served": 0.7151186309362773
+      },
+      "queue_summary": {
+        "total_queue": 714.0383995019943,
+        "max_queue": 684.0383995019943,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 101.78802002374908,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 684.0383995019943,
+          "queue_start": 582.2503794782451,
+          "queue_end": 684.0383995019943,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 469.0549025156532,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 101.78802002374908,
+              "served": 0.0,
+              "queue_end": 684.0383995019943,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    },
+    {
+      "t_s": 1620.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 39.587882689345896,
+        "share_trips_served": 0.282770590638185,
+        "total_trips": 39.587882689345896,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 180.41211730550435,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 784.4505168074986,
+        "share_boardings_served": 0.6097151435439858
+      },
+      "queue_summary": {
+        "total_queue": 784.4505168074986,
+        "max_queue": 784.4505168074986,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 100.41211730550437,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 784.4505168074986,
+          "queue_start": 684.0383995019943,
+          "queue_end": 784.4505168074986,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 537.9089258108562,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 100.41211730550437,
+              "served": 0.0,
+              "queue_end": 784.4505168074986,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        }
+      ]
+    },
+    {
+      "t_s": 1680.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 60.0,
+        "share_trips_served": 0.42857142857142855,
+        "total_trips": 60.0,
+        "mean_generalized_cost_s": 1295.2102995251619,
+        "mean_in_vehicle_time_s": 110.0,
+        "mean_wait_time_s": 489.00441986597576,
+        "mean_walk_time_s": 207.2014597932104,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 183.6809288303826,
+        "total_boardings_served": 350.0,
+        "total_boardings_denied": 618.1314456378813,
+        "share_boardings_served": 1.905478169283444
+      },
+      "queue_summary": {
+        "total_queue": 618.1314456378813,
+        "max_queue": 538.1314456378813,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 80.0,
+          "queue_start": 0.0,
+          "queue_end": 80.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 55.38461538461539,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 0.0,
+              "queue_end": 80.0,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 30.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 103.68092883038261,
+          "served_from_arrivals": 350.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 538.1314456378813,
+          "queue_start": 784.4505168074986,
+          "queue_end": 538.1314456378813,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 350.0,
+          "extra_wait_s": 369.00441986597576,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 103.68092883038261,
+              "served": 350.0,
+              "queue_end": 538.1314456378813,
+              "departures": 1,
+              "capacity": 350.0
+            }
+          ],
+          "time_to_next_departure_s_end": 240.0
+        }
+      ]
+    },
+    {
+      "t_s": 1740.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 37.61671782787951,
+        "share_trips_served": 0.2686908416277108,
+        "total_trips": 37.61671782787951,
+        "mean_generalized_cost_s": 524.0269193855805,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 65.76923076923077,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 182.3832821680108,
+        "total_boardings_served": 130.0,
+        "total_boardings_denied": 670.5147278058921,
+        "share_boardings_served": 0.7127846283643722
+      },
+      "queue_summary": {
+        "total_queue": 670.5147278058921,
+        "max_queue": 640.5147278058921,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 130.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 30.0,
+          "queue_start": 80.0,
+          "queue_end": 30.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 20.76923076923077,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 130.0,
+              "queue_end": 30.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 60.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 102.38328216801081,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 640.5147278058921,
+          "queue_start": 538.1314456378813,
+          "queue_end": 640.5147278058921,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 439.21009906689744,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 102.38328216801081,
+              "served": 0.0,
+              "queue_end": 640.5147278058921,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 180.0
+        }
+      ]
+    },
+    {
+      "t_s": 1800.0,
+      "kpis": {
+        "total_trips_attempted": 140.0,
+        "total_trips_served": 38.99925354424798,
+        "share_trips_served": 0.2785660967446284,
+        "total_trips": 38.99925354424798,
+        "mean_generalized_cost_s": 482.488457847119,
+        "mean_in_vehicle_time_s": 200.0,
+        "mean_wait_time_s": 45.0,
+        "mean_walk_time_s": 192.48845784711892,
+        "mean_transfer_time_s": 0.0,
+        "mean_transfer_penalty_s": 0.0,
+        "mean_transfers": 0.0,
+        "mean_boardings": 1.0,
+        "total_boardings_attempted": 181.00074645090405,
+        "total_boardings_served": 110.0,
+        "total_boardings_denied": 741.5154742567961,
+        "share_boardings_served": 0.6077323003186464
+      },
+      "queue_summary": {
+        "total_queue": 741.5154742567961,
+        "max_queue": 741.5154742567961,
+        "queued_keys": 2
+      },
+      "board_loads": [
+        {
+          "service_id": "BUS_1",
+          "stop_id": "S1",
+          "arrivals": 80.0,
+          "served_from_arrivals": 110.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 0.0,
+          "queue_start": 30.0,
+          "queue_end": 0.0,
+          "headway_s": 90.0,
+          "vehicle_capacity": 130.0,
+          "departures_in_period": 1.0,
+          "capacity_in_period": 130.0,
+          "extra_wait_s": 0.0,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 80.0,
+              "served": 110.0,
+              "queue_end": 0.0,
+              "departures": 1,
+              "capacity": 130.0
+            }
+          ],
+          "time_to_next_departure_s_end": 90.0
+        },
+        {
+          "service_id": "RAIL_1",
+          "stop_id": "S2_rail",
+          "arrivals": 101.00074645090405,
+          "served_from_arrivals": 0.0,
+          "served_from_queue": 0.0,
+          "denied_boardings": 741.5154742567961,
+          "queue_start": 640.5147278058921,
+          "queue_end": 741.5154742567961,
+          "headway_s": 240.0,
+          "vehicle_capacity": 350.0,
+          "departures_in_period": 0.0,
+          "capacity_in_period": 0.0,
+          "extra_wait_s": 508.4677537760887,
+          "time_bins": [
+            {
+              "bin_index": 0,
+              "arrivals": 101.00074645090405,
+              "served": 0.0,
+              "queue_end": 741.5154742567961,
+              "departures": 0,
+              "capacity": 0.0
+            }
+          ],
+          "time_to_next_departure_s_end": 120.0
+        }
+      ]
+    }
+  ]
+}

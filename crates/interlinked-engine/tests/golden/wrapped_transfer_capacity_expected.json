@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "scenario_name": "wrapped_transfer_capacity_valid",
+    "results_version": "0.2.2"
+  },
+  "diagnostics": {
+    "zones": 3,
+    "stops": 4,
+    "links": 4,
+    "services": 2,
+    "transfers": 2,
+    "access_edges": 4,
+    "egress_edges": 4
+  },
+  "kpis": {
+    "total_trips_attempted": 71.66477915795727,
+    "total_trips_served": 71.66477915795727,
+    "share_trips_served": 1.0,
+    "mean_generalized_cost_s": 814.2232984882731,
+    "mean_in_vehicle_time_s": 143.3542983587363,
+    "mean_wait_time_s": 305.7992417997323,
+    "mean_walk_time_s": 10.732634469730108,
+    "total_boardings_denied": 0.0
+  },
+  "link_loads": [
+    {
+      "link_id": "L_bus_1",
+      "passengers": 56.77451645786215,
+      "load_to_capacity": 0.11828024262054614,
+      "crowding_penalty_s": 1.0
+    },
+    {
+      "link_id": "L_bus_2",
+      "passengers": 0.0,
+      "load_to_capacity": 0.0,
+      "crowding_penalty_s": 1.0
+    },
+    {
+      "link_id": "L_rail_1",
+      "passengers": 38.88215908178983,
+      "load_to_capacity": 0.054002998724708096,
+      "crowding_penalty_s": 1.0
+    },
+    {
+      "link_id": "L_rail_2",
+      "passengers": 0.0,
+      "load_to_capacity": 0.0,
+      "crowding_penalty_s": 1.0
+    }
+  ],
+  "board_loads": [
+    {
+      "service_id": "BUS_A",
+      "stop_id": "S1",
+      "arrivals": 56.77451645786215,
+      "denied_boardings": 0.0,
+      "queue_end": 0.0,
+      "extra_wait_s": 0.0
+    },
+    {
+      "service_id": "BUS_A",
+      "stop_id": "S2_bus",
+      "arrivals": 0.0,
+      "denied_boardings": 0.0,
+      "queue_end": 0.0,
+      "extra_wait_s": 0.0
+    },
+    {
+      "service_id": "RAIL_A",
+      "stop_id": "S2_rail",
+      "arrivals": 38.88215908178983,
+      "denied_boardings": 0.0,
+      "queue_end": 0.0,
+      "extra_wait_s": 0.0
+    },
+    {
+      "service_id": "RAIL_A",
+      "stop_id": "S3",
+      "arrivals": 0.0,
+      "denied_boardings": 0.0,
+      "queue_end": 0.0,
+      "extra_wait_s": 0.0
+    }
+  ]
+}

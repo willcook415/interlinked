@@ -1,0 +1,10 @@
+[package]
+name = "interlinked-cli"
+version = "0.1.0"
+edition = "2021"
+default-run = "interlinked-cli"
+
+[dependencies]
+interlinked-engine = { path = "../interlinked-engine" }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }

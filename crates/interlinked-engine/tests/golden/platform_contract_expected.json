@@ -1,0 +1,44 @@
+{
+  "small": {
+    "scenario_name": "scenario_small_city",
+    "results_version": "0.2.2",
+    "zones": 2,
+    "stops": 2,
+    "links": 1,
+    "services": 1,
+    "transfers": 0,
+    "total_trips_attempted": 82.6658795890684,
+    "total_trips_served": 82.6658795890684,
+    "share_trips_served": 1.0,
+    "mean_generalized_cost_s": 439.99999999999994,
+    "total_boardings_denied": 0.0
+  },
+  "medium": {
+    "scenario_name": "scenario_medium_city",
+    "results_version": "0.2.2",
+    "zones": 5,
+    "stops": 6,
+    "links": 4,
+    "services": 2,
+    "transfers": 2,
+    "total_trips_attempted": 311.43105418815674,
+    "total_trips_served": 311.4310541881567,
+    "share_trips_served": 0.9999999999999998,
+    "mean_generalized_cost_s": 834.9217480795086,
+    "total_boardings_denied": 0.0
+  },
+  "disrupted": {
+    "scenario_name": "scenario_disrupted_network",
+    "results_version": "0.2.2",
+    "zones": 5,
+    "stops": 6,
+    "links": 4,
+    "services": 2,
+    "transfers": 2,
+    "total_trips_attempted": 362.9921297795021,
+    "total_trips_served": 362.992129779502,
+    "share_trips_served": 0.9999999999999999,
+    "mean_generalized_cost_s": 932.8500722674952,
+    "total_boardings_denied": 0.0
+  }
+}
