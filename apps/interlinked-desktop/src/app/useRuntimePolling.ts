@@ -1,5 +1,4 @@
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   clockFreshnessFromSnapshot,
   isNonDecreasingClockFreshness,
@@ -23,6 +22,12 @@ import type {
   StationRuntimeView,
   TrainRuntimeView,
 } from "../types";
+import {
+  getRuntimeFastSnapshot,
+  getRuntimeStrategicSnapshot,
+  startRuntimeLoop,
+  stopRuntimeLoop,
+} from "../api/desktopApi";
 
 type UseRuntimePollingParams = {
   bundle: OpenSessionResult | null;
@@ -149,15 +154,11 @@ export function useRuntimePolling({
   useEffect(() => {
     if (!bundle || sessionKind !== "game") return;
     let cancelled = false;
-    void invoke("start_runtime_loop", {
-      projectPath: bundle.project_path,
-    }).catch((e) => {
+    void startRuntimeLoop(bundle.project_path).catch((e) => {
       if (!cancelled) setError(String(e));
     });
     const fastTimer = window.setInterval(() => {
-      void invoke("get_runtime_fast_snapshot", {
-        projectPath: bundle.project_path,
-      })
+      void getRuntimeFastSnapshot(bundle.project_path)
         .then((res) => {
           if (cancelled || !res) return;
           const snapshot = res as RuntimeFastSnapshot;
@@ -208,9 +209,7 @@ export function useRuntimePolling({
     }, 120);
 
     const strategicTimer = window.setInterval(() => {
-      void invoke("get_runtime_strategic_snapshot", {
-        projectPath: bundle.project_path,
-      })
+      void getRuntimeStrategicSnapshot(bundle.project_path)
         .then((res) => {
           if (cancelled || !res) return;
           const snapshot = res as RuntimeStrategicSnapshot;
@@ -251,9 +250,7 @@ export function useRuntimePolling({
       cancelled = true;
       window.clearInterval(fastTimer);
       window.clearInterval(strategicTimer);
-      void invoke("stop_runtime_loop", {
-        projectPath: bundle.project_path,
-      }).catch(() => undefined);
+      void stopRuntimeLoop(bundle.project_path).catch(() => undefined);
     };
   }, [
     bundle?.project_path,

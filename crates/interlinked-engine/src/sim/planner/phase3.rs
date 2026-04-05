@@ -1,4 +1,5 @@
 use super::*;
+use super::contracts::{purpose_from_index, purpose_index};
 
 pub(super) fn build_phase3_planning_outputs(
     s: &Scenario,
@@ -1900,28 +1901,6 @@ pub(super) fn build_phase3_planning_outputs(
     out
 }
 
-pub(super) fn purpose_index(purpose: TripPurpose) -> usize {
-    match purpose {
-        TripPurpose::Work => 0,
-        TripPurpose::Education => 1,
-        TripPurpose::Shopping => 2,
-        TripPurpose::Leisure => 3,
-        TripPurpose::Essential => 4,
-        TripPurpose::Intercity => 5,
-    }
-}
-
-pub(super) fn purpose_from_index(idx: usize) -> TripPurpose {
-    match idx {
-        0 => TripPurpose::Work,
-        1 => TripPurpose::Education,
-        2 => TripPurpose::Shopping,
-        3 => TripPurpose::Leisure,
-        4 => TripPurpose::Essential,
-        _ => TripPurpose::Intercity,
-    }
-}
-
 fn normalize_by_max(values: &[f64]) -> Vec<f64> {
     let max = values.iter().copied().fold(0.0_f64, f64::max);
     if max > 0.0 {
@@ -2113,4 +2092,3 @@ fn preview_score(preview: &BuildPreviewMetrics, cfg: &PlanningOverlayConfig) -> 
             * 100.0
             * cfg.preview_accessibility_delta_weight
 }
-

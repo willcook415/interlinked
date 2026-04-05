@@ -79,7 +79,11 @@ pub(crate) fn run_runtime_worker_tick_cycle(
         return outcome;
     }
 
-    let fixed_step_s = ctx.manifest.runtime_scheduling.fixed_step_s.clamp(0.05, 1.0);
+    let fixed_step_s = ctx
+        .manifest
+        .runtime_scheduling
+        .fixed_step_s
+        .clamp(0.05, 1.0);
     let max_steps_per_cycle = ctx
         .manifest
         .runtime_scheduling
@@ -88,7 +92,11 @@ pub(crate) fn run_runtime_worker_tick_cycle(
     *ctx.perf_wall_elapsed_s += elapsed.max(0.0);
     *ctx.perf_target_game_elapsed_s += elapsed.max(0.0) * *ctx.speed as f64;
     *ctx.accumulator_s += elapsed.max(0.0) * *ctx.speed as f64;
-    let catchup = plan_runtime_catchup(*ctx.accumulator_s, fixed_step_s, max_steps_per_cycle as usize);
+    let catchup = plan_runtime_catchup(
+        *ctx.accumulator_s,
+        fixed_step_s,
+        max_steps_per_cycle as usize,
+    );
     let mut steps = 0usize;
     let mut latest_snapshot: Option<RuntimeSnapshot> = None;
     let strategic_interval = ctx
@@ -100,7 +108,8 @@ pub(crate) fn run_runtime_worker_tick_cycle(
         *ctx.tick_index = (*ctx.tick_index).saturating_add(1);
         let state = ctx.app.state::<crate::AppState>();
         let emit_runtime_views = steps + 1 == catchup.steps_to_run;
-        let strategic_refresh_due = emit_runtime_views && (*ctx.tick_index).is_multiple_of(strategic_interval);
+        let strategic_refresh_due =
+            emit_runtime_views && (*ctx.tick_index).is_multiple_of(strategic_interval);
         if let Ok(snapshot) = run_simulation_tick(
             &state,
             ctx.project_root,

@@ -6,7 +6,9 @@ use crate::{
     SimulationAdvanceEconomy,
 };
 
-pub(crate) fn runtime_fast_snapshot_from_combined(snapshot: &RuntimeSnapshot) -> RuntimeFastSnapshot {
+pub(crate) fn runtime_fast_snapshot_from_combined(
+    snapshot: &RuntimeSnapshot,
+) -> RuntimeFastSnapshot {
     RuntimeFastSnapshot {
         project_path: snapshot.project_path.clone(),
         clock_revision: snapshot.clock_revision,

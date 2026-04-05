@@ -133,7 +133,11 @@ pub(crate) fn handle_runtime_worker_actions(
                 recompute_quick_kpis,
             } => {
                 let state = ctx.app.state::<crate::AppState>();
-                let fixed_step_s = ctx.manifest.runtime_scheduling.fixed_step_s.clamp(0.05, 1.0);
+                let fixed_step_s = ctx
+                    .manifest
+                    .runtime_scheduling
+                    .fixed_step_s
+                    .clamp(0.05, 1.0);
                 let next_tick_index = (*ctx.tick_index).saturating_add(1);
                 let strategic_refresh_due = true;
                 if let Ok(mut snapshot) = run_simulation_tick(
@@ -173,7 +177,10 @@ pub(crate) fn handle_runtime_worker_actions(
                     snapshot.telemetry.backlog_steps = plan_runtime_catchup(
                         *ctx.accumulator_s,
                         fixed_step_s,
-                        ctx.manifest.runtime_scheduling.max_steps_per_cycle.clamp(1, 128) as usize,
+                        ctx.manifest
+                            .runtime_scheduling
+                            .max_steps_per_cycle
+                            .clamp(1, 128) as usize,
                     )
                     .backlog_steps as u32;
                     snapshot.telemetry.backlog_s = (*ctx.accumulator_s).max(0.0);
@@ -192,12 +199,12 @@ pub(crate) fn handle_runtime_worker_actions(
                     } else {
                         0.0
                     };
-                    snapshot.telemetry.achieved_vs_target_ratio = if *ctx.perf_target_game_elapsed_s > 0.0
-                    {
-                        (*ctx.perf_game_elapsed_s / *ctx.perf_target_game_elapsed_s).max(0.0)
-                    } else {
-                        1.0
-                    };
+                    snapshot.telemetry.achieved_vs_target_ratio =
+                        if *ctx.perf_target_game_elapsed_s > 0.0 {
+                            (*ctx.perf_game_elapsed_s / *ctx.perf_target_game_elapsed_s).max(0.0)
+                        } else {
+                            1.0
+                        };
                     snapshot.telemetry.under_sustained_speed =
                         snapshot.telemetry.achieved_vs_target_ratio < 0.98;
                     let publish_strategic = publish_strategic_snapshot_for_tick(&snapshot);

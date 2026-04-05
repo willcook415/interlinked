@@ -7,11 +7,12 @@ use std::path::Path;
 use std::thread;
 use tauri::AppHandle;
 
-use super::super::{
-    basemap_file, county_basemap_full_file, county_basemap_mid_file, counties_file,
-    major_roads_file, read_json_file, style_template_file, world_context_file,
-    world_context_from_countries_geojson, MapAssetServer, MAP_ASSET_SERVER,
+use super::{MapAssetServer, MAP_ASSET_SERVER};
+use crate::commands::content_library::{
+    basemap_file, counties_file, county_basemap_full_file, county_basemap_mid_file,
+    major_roads_file, style_template_file, world_context_file,
 };
+use crate::{read_json_file, world_context_from_countries_geojson};
 
 fn write_http_response(
     mut stream: TcpStream,

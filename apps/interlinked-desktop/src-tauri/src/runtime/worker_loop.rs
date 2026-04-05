@@ -96,8 +96,8 @@ pub(crate) fn runtime_worker_loop(
             break;
         }
 
-        let tick_cycle_outcome = run_runtime_worker_tick_cycle(
-            &mut RuntimeWorkerTickCycleContext {
+        let tick_cycle_outcome =
+            run_runtime_worker_tick_cycle(&mut RuntimeWorkerTickCycleContext {
                 app: &app,
                 project_root: &project_root,
                 pending_actions: &pending_actions,
@@ -121,8 +121,7 @@ pub(crate) fn runtime_worker_loop(
                 perf_step_count: &mut perf_step_count,
                 perf_step_total_ms: &mut perf_step_total_ms,
                 cycle_start,
-            },
-        );
+            });
         if tick_cycle_outcome.yielded_without_tick {
             continue;
         }

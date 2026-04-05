@@ -6,10 +6,14 @@ target/
 node_modules/
 dist/
 build/
+!apps/interlinked-desktop/src-tauri/src/build/
+!apps/interlinked-desktop/src-tauri/src/build/**
 .vite/
 
 # Project-local large/generated data
 data/
+!apps/interlinked-desktop/src/map/data/
+!apps/interlinked-desktop/src/map/data/**
 .tmp_pydeps/
 
 # OS / editor
