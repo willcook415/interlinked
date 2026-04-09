@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend_state;
+mod contracts;
 mod build;
 mod builder_support;
 mod commands;
 mod map_assets;
 mod map_county_cache_support;
 mod project_persistence;
+mod region;
 mod region_materialization;
 mod runtime;
 mod scenario_bootstrap_inspection;
