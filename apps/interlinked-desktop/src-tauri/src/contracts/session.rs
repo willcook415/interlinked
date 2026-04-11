@@ -218,6 +218,7 @@ pub struct GameSaveMeta {
     pub name: String,
     pub last_opened_at: String,
     pub sim_datetime_utc: String,
+    pub sim_tick_seconds: f64,
     pub start_country: Option<String>,
     pub start_city: Option<String>,
     pub unlocked_countries: usize,
@@ -225,6 +226,7 @@ pub struct GameSaveMeta {
     pub network_links: usize,
     pub network_services: usize,
     pub total_link_km: f64,
+    pub peak_ridership_pph: Option<f64>,
     pub progress_metrics: GameProgressMetrics,
 }
 

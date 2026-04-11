@@ -19,6 +19,21 @@ body {
   text-rendering: geometricPrecision;
 }
 
+body.il-noneditable-surface #root {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.il-noneditable-surface input,
+body.il-noneditable-surface textarea,
+body.il-noneditable-surface select,
+body.il-noneditable-surface option,
+body.il-noneditable-surface [contenteditable="true"],
+body.il-noneditable-surface [contenteditable="plaintext-only"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 button,
 input,
 select,

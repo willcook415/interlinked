@@ -5,15 +5,15 @@ pub(crate) fn default_runtime_enabled() -> bool {
 }
 
 pub(crate) fn default_runtime_fixed_step_s() -> f64 {
-    0.5
+    0.05
 }
 
 pub(crate) fn default_runtime_max_steps_per_cycle() -> u32 {
-    12
+    1
 }
 
 pub(crate) fn default_runtime_checkpoint_interval_ticks() -> u32 {
-    20
+    200
 }
 
 pub(crate) fn default_runtime_snapshot_ring() -> usize {
@@ -25,7 +25,7 @@ pub(crate) fn default_runtime_target_tick_ms() -> f64 {
 }
 
 pub(crate) fn default_runtime_strategic_refresh_interval_ticks() -> u32 {
-    8
+    80
 }
 
 pub(crate) fn default_runtime_lightweight_tick_outputs() -> bool {
@@ -79,6 +79,14 @@ pub(crate) fn enforce_game_runtime_hardcut(manifest: &mut ProjectManifest) {
     if manifest.session_kind != SessionKind::Game {
         return;
     }
+    // Game sessions run on a canonical 50ms temporal spine.
+    // This keeps time progression deterministic while avoiding bursty multi-step jumps.
+    manifest.runtime_scheduling.fixed_step_s = default_runtime_fixed_step_s();
+    manifest.runtime_scheduling.max_steps_per_cycle = default_runtime_max_steps_per_cycle();
+    manifest.runtime_scheduling.checkpoint_interval_ticks =
+        default_runtime_checkpoint_interval_ticks();
+    manifest.runtime_scheduling.strategic_refresh_interval_ticks =
+        default_runtime_strategic_refresh_interval_ticks();
     manifest.runtime_scheduling.enabled = true;
     manifest.runtime_scheduling.lightweight_tick_outputs = true;
     manifest.runtime_scheduling.runtime_ops_kernel_v1 = true;

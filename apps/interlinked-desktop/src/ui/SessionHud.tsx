@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AlertItem, CurrencyCode, SessionKind, SimulationClock, SimulationSpeed } from "../types";
 
 function fmtDateTime(baseIso: string, tickSeconds: number): string {
   const base = new Date(baseIso).getTime();
-  const dt = new Date(base + Math.round(tickSeconds) * 1000);
+  const wholeSeconds = Math.floor(Math.max(Number.isFinite(tickSeconds) ? tickSeconds : 0, 0) + 1e-6);
+  const dt = new Date(base + wholeSeconds * 1000);
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const yyyy = dt.getUTCFullYear();
@@ -79,9 +80,15 @@ export default function SessionHud(props: {
   onSpeedChange: (speed: SimulationSpeed) => void;
 }) {
   const [displayBudget, setDisplayBudget] = useState<number | null>(props.budget);
-  const [displayTickS, setDisplayTickS] = useState(0);
+  const [displayTickSeconds, setDisplayTickSeconds] = useState<number>(
+    Math.max(Number.isFinite(props.clock.tick_seconds) ? props.clock.tick_seconds : 0, 0)
+  );
   const [fleetMenuOpen, setFleetMenuOpen] = useState(false);
   const [expeditingDeliveryId, setExpeditingDeliveryId] = useState<string | null>(null);
+  const displayTickRef = useRef(displayTickSeconds);
+  const clockFrameRef = useRef<number | null>(null);
+  const lastClockKeyframeRef = useRef<{ tickSeconds: number; receivedAtMs: number } | null>(null);
+  const clockTransportIntervalMsRef = useRef(120);
 
   useEffect(() => {
     if (props.budget === null) {
@@ -97,27 +104,91 @@ export default function SessionHud(props: {
   }, [props.budget]);
 
   useEffect(() => {
-    setDisplayTickS(props.clock.tick_seconds);
-  }, [props.clock.tick_seconds]);
+    displayTickRef.current = displayTickSeconds;
+  }, [displayTickSeconds]);
 
   useEffect(() => {
-    if (!props.clock.running) return;
-    const step = Math.max(props.clock.speed, 1);
-    const timer = window.setInterval(() => {
-      setDisplayTickS((value) => value + step);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [props.clock.running, props.clock.speed]);
+    const nowMs = performance.now();
+    const rawTick = Number.isFinite(props.clock.tick_seconds) ? props.clock.tick_seconds : 0;
+    const incomingTick = Math.max(rawTick, 0);
+    const previousKeyframe = lastClockKeyframeRef.current;
+    const monotonicTick = previousKeyframe
+      ? Math.max(previousKeyframe.tickSeconds, incomingTick)
+      : incomingTick;
+
+    if (previousKeyframe && incomingTick + 1e-6 < previousKeyframe.tickSeconds) {
+      console.warn("[runtime-temporal] backward hud clock keyframe rejected", {
+        previousTickSeconds: previousKeyframe.tickSeconds,
+        incomingTickSeconds: incomingTick,
+      });
+    }
+
+    let durationMs = clockTransportIntervalMsRef.current;
+    if (previousKeyframe) {
+      const simDeltaSeconds = Math.max(monotonicTick - previousKeyframe.tickSeconds, 0);
+      const speed = Math.max(props.clock.speed ?? 1, 1);
+      const fromSimMs = simDeltaSeconds > 0 ? (simDeltaSeconds / speed) * 1000 : 0;
+      const arrivalMs = Math.max(nowMs - previousKeyframe.receivedAtMs, 0);
+      if (arrivalMs > 1) {
+        clockTransportIntervalMsRef.current =
+          clockTransportIntervalMsRef.current * 0.7 + arrivalMs * 0.3;
+      }
+      const transportMs = Math.max(arrivalMs, clockTransportIntervalMsRef.current);
+      const baselineMs = Math.max(fromSimMs, transportMs);
+      durationMs = Math.min(Math.max(baselineMs || 120, 24), 900);
+    }
+
+    lastClockKeyframeRef.current = {
+      tickSeconds: monotonicTick,
+      receivedAtMs: nowMs,
+    };
+
+    if (clockFrameRef.current !== null) {
+      window.cancelAnimationFrame(clockFrameRef.current);
+      clockFrameRef.current = null;
+    }
+
+    const startTick = displayTickRef.current;
+    if (monotonicTick <= startTick + 1e-6 || durationMs <= 24) {
+      setDisplayTickSeconds(monotonicTick);
+      return;
+    }
+
+    const animate = (): void => {
+      const elapsedMs = Math.max(performance.now() - nowMs, 0);
+      const alpha = Math.min(Math.max(elapsedMs / durationMs, 0), 1);
+      const nextTick = startTick + (monotonicTick - startTick) * alpha;
+      setDisplayTickSeconds(nextTick);
+      if (alpha < 1) {
+        clockFrameRef.current = window.requestAnimationFrame(animate);
+      } else {
+        clockFrameRef.current = null;
+      }
+    };
+
+    clockFrameRef.current = window.requestAnimationFrame(animate);
+  }, [props.clock.speed, props.clock.tick_seconds]);
+
+  useEffect(
+    () => () => {
+      if (clockFrameRef.current !== null) {
+        window.cancelAnimationFrame(clockFrameRef.current);
+        clockFrameRef.current = null;
+      }
+    },
+    []
+  );
 
   const budgetLabel = formatMoneyCompact(displayBudget, props.budgetCurrency);
   const budgetExactLabel = formatMoneyExact(displayBudget, props.budgetCurrency);
   const running = props.clock.running;
+  const timelineTickSeconds = displayTickSeconds;
   const runPauseLabel = running ? "Pause simulation" : "Start simulation";
   const criticalAlerts = props.alerts.filter((alert) => alert.severity === "critical").length;
   const pendingDeliveries = props.fleetDeliveries.filter((row) => {
     if (row.status.toLowerCase() !== "pending") return false;
     if (row.etaAtTickS === null) return true;
-    return row.etaAtTickS > displayTickS + 0.5;
+    return row.etaAtTickS > timelineTickSeconds + 0.5;
   });
 
   async function handleExpediteDelivery(delivery: FleetDeliveryItem) {
@@ -146,7 +217,7 @@ export default function SessionHud(props: {
         </div>
         <div className="hud-center">
           <span className={`hud-state ${running ? "running" : "paused"}`}>{running ? "Running" : "Paused"}</span>
-          <span className="hud-time">{fmtDateTime(props.clock.sim_datetime_utc, props.clock.tick_seconds)}</span>
+          <span className="hud-time">{fmtDateTime(props.clock.sim_datetime_utc, timelineTickSeconds)}</span>
           <button
             className="hud-play-pause-btn"
             disabled={props.buildModeActive}
@@ -197,7 +268,9 @@ export default function SessionHud(props: {
           ) : (
             pendingDeliveries.slice(0, 12).map((delivery) => {
               const remainingS =
-                delivery.etaAtTickS === null ? null : Math.max(delivery.etaAtTickS - displayTickS, 0);
+                delivery.etaAtTickS === null
+                  ? null
+                  : Math.max(delivery.etaAtTickS - timelineTickSeconds, 0);
               const isExpediting = expeditingDeliveryId === delivery.id;
               return (
                 <div key={delivery.id} className="fleet-menu-row">

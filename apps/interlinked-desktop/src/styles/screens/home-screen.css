@@ -1,188 +1,528 @@
+body.il-home-route {
+  background: #0c1420;
+}
+
 .il-home {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100dvh;
   font-size: calc(1rem * var(--ui-scale, 1));
+  padding: clamp(0.9rem, 2.9vw, 2rem);
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
-.il-home-hero-title-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--il-space-3);
-  flex-wrap: wrap;
+.il-home::before {
+  background:
+    radial-gradient(120% 110% at 10% -12%, rgba(83, 130, 196, 0.25), transparent 58%),
+    radial-gradient(115% 95% at 100% 0%, rgba(37, 71, 114, 0.28), transparent 56%),
+    linear-gradient(180deg, #162334 0%, #101a28 52%, #0b1420 100%);
 }
 
-.il-home-credit {
+.il-home::after {
+  opacity: 0.46;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(122, 151, 193, 0.02) 0,
+      rgba(122, 151, 193, 0.02) 48px,
+      rgba(122, 151, 193, 0.09) 48px,
+      rgba(122, 151, 193, 0.09) 49px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(122, 151, 193, 0.02) 0,
+      rgba(122, 151, 193, 0.02) 48px,
+      rgba(122, 151, 193, 0.09) 48px,
+      rgba(122, 151, 193, 0.09) 49px
+    );
+  animation: il-home-grid-drift 42s linear infinite;
+}
+
+.il-home .il-page-shell-inner {
+  position: relative;
+  z-index: 1;
+  width: min(760px, 100%);
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  gap: clamp(0.9rem, 2vh, 1.6rem);
+}
+
+.il-home .il-page-shell-inner::before {
+  display: none;
+}
+
+.il-home-atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.il-home-trace {
+  --angle: 0deg;
+  position: absolute;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(150, 187, 237, 0.3) 38%,
+    rgba(150, 187, 237, 0.24) 62%,
+    transparent 100%
+  );
+  transform: rotate(var(--angle));
+  transform-origin: center;
+  opacity: 0.14;
+  animation: il-home-trace-flow 28s ease-in-out infinite;
+}
+
+.il-home-trace.is-a {
+  --angle: -13deg;
+  width: 42vw;
+  top: 27%;
+  left: 8%;
+  animation-delay: -4s;
+}
+
+.il-home-trace.is-b {
+  --angle: 8deg;
+  width: 36vw;
+  top: 58%;
+  right: 10%;
+  animation-delay: -13s;
+}
+
+.il-home-trace.is-c {
+  --angle: -3deg;
+  width: 24vw;
+  top: 40%;
+  right: 26%;
+  animation-delay: -19s;
+}
+
+.il-home-node {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(190, 220, 255, 0.54);
+  box-shadow: 0 0 0 1px rgba(142, 184, 241, 0.22), 0 0 12px rgba(146, 190, 247, 0.32);
+  opacity: 0.26;
+  animation: il-home-node-drift 24s ease-in-out infinite, il-home-node-breathe 7s ease-in-out infinite;
+}
+
+.il-home-node.is-a {
+  top: 33%;
+  left: 24%;
+  animation-delay: -2s;
+}
+
+.il-home-node.is-b {
+  top: 56%;
+  left: 66%;
+  animation-delay: -11s;
+}
+
+.il-home-node.is-c {
+  top: 24%;
+  left: 72%;
+  animation-delay: -17s;
+}
+
+.il-home-pulse {
+  position: absolute;
+  top: 56%;
+  left: 67%;
+  width: 180px;
+  height: 180px;
+  border-radius: 999px;
+  border: 1px solid rgba(146, 186, 238, 0.12);
+  opacity: 0.2;
+  transform: translate(-50%, -50%);
+  animation: il-home-pulse 18s ease-in-out infinite;
+}
+
+.il-home-stage {
+  position: relative;
+  z-index: 1;
+  width: min(560px, 100%);
+  max-height: min(690px, calc(100dvh - 2.8rem));
+  padding: clamp(0.95rem, 2.4vw, 1.65rem);
+  border-radius: var(--il-radius-xl);
+  border: 1px solid rgba(126, 161, 210, 0.34);
+  background: linear-gradient(180deg, rgba(12, 24, 40, 0.86) 0%, rgba(10, 20, 34, 0.95) 100%);
+  box-shadow: 0 28px 48px rgba(6, 13, 23, 0.44);
+  display: grid;
+  gap: clamp(0.85rem, 2.1vh, 1.5rem);
+  justify-items: center;
+  overflow: hidden;
+}
+
+.il-home-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(115deg, transparent 0%, rgba(89, 125, 179, 0.14) 42%, transparent 74%),
+    radial-gradient(120% 100% at 100% 0%, rgba(91, 147, 223, 0.1), transparent 58%);
+  pointer-events: none;
+}
+
+.il-home-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(198, 218, 247, 0.14) 0%,
+    rgba(198, 218, 247, 0) 34%,
+    rgba(198, 218, 247, 0) 69%,
+    rgba(198, 218, 247, 0.08) 100%
+  );
+  pointer-events: none;
+}
+
+.il-home-stage > * {
+  position: relative;
+  z-index: 1;
+}
+
+.il-home-identity {
+  display: grid;
+  justify-items: center;
+  gap: 0.32rem;
+  text-align: center;
+}
+
+.il-home-wordmark {
   margin: 0;
-  color: rgba(204, 220, 244, 0.95);
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-family: var(--il-font-display);
+  font-size: clamp(2.38rem, 7vw, 3.5rem);
+  letter-spacing: 0.085em;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  line-height: 1;
+  color: #f2f6ff;
 }
 
-.il-home-meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--il-space-2);
+.il-home-sublabel {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(191, 214, 246, 0.82);
 }
 
-.il-home-meta-row .il-pill {
-  border-color: rgba(144, 171, 207, 0.62);
-  color: rgba(222, 233, 249, 0.95);
-  background: rgba(23, 40, 61, 0.62);
+.il-home-primary {
+  width: min(430px, 100%);
+  display: grid;
+  gap: 0.56rem;
 }
 
-.il-home-meta-row .il-pill.is-brand {
-  border-color: rgba(102, 155, 226, 0.86);
-  color: #dce9ff;
-  background: rgba(20, 84, 161, 0.34);
+.il-home-continue-block {
+  display: grid;
+  gap: 0.32rem;
 }
 
-.il-home-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--il-space-3);
-  margin-top: var(--il-space-2);
+.il-home-primary-action {
+  width: 100%;
+  min-height: 52px;
+  border-color: rgba(132, 160, 201, 0.55);
+  font-size: 0.82rem;
+  letter-spacing: 0.12em;
 }
 
-.il-home-hero-actions .il-button {
-  min-width: 180px;
-  border-color: rgba(126, 157, 196, 0.55);
+.il-home-primary-action.is-continue {
+  min-height: 60px;
+  font-size: 0.89rem;
 }
 
-.il-home-hero-actions .il-button.is-secondary,
-.il-home-hero-actions .il-button.is-ghost {
-  color: #e2ecfb;
-  background: linear-gradient(180deg, rgba(33, 51, 74, 0.74), rgba(24, 39, 57, 0.74));
+.il-home-primary-action.is-secondary,
+.il-home-primary-action.is-ghost {
+  color: rgba(226, 236, 250, 0.97);
+  background: linear-gradient(180deg, rgba(43, 67, 97, 0.72), rgba(30, 47, 69, 0.84));
 }
 
-.il-home-hero-actions .il-button.is-ghost {
+.il-home-primary-action.is-ghost {
   border-style: dashed;
 }
 
-.il-home-hero-actions .il-button:hover:not(:disabled) {
-  color: #f4f8ff;
-  border-color: rgba(151, 182, 225, 0.72);
+.il-home-primary-action.is-secondary:hover:not(:disabled),
+.il-home-primary-action.is-ghost:hover:not(:disabled) {
+  color: #f6f9ff;
+  border-color: rgba(157, 189, 234, 0.84);
+  box-shadow: 0 14px 30px rgba(7, 20, 37, 0.34);
 }
 
-.il-home-system-strip {
-  margin-top: var(--il-space-2);
-  display: grid;
-  gap: var(--il-space-2);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.il-home-system-item {
-  border: 1px solid rgba(138, 169, 207, 0.4);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04));
+.il-home-resume-meta {
+  border: 1px solid rgba(132, 160, 201, 0.34);
   border-radius: var(--il-radius-sm);
-  padding: 0.54rem 0.62rem;
-  min-height: 70px;
+  padding: 0.52rem 0.72rem;
+  background: linear-gradient(180deg, rgba(22, 38, 58, 0.82), rgba(17, 30, 46, 0.84));
   display: grid;
-  align-content: start;
-  gap: 0.22rem;
+  gap: 0.18rem;
 }
 
-.il-home-system-label {
+.il-home-resume-label {
   margin: 0;
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.13em;
+  font-size: 0.63rem;
   font-weight: 700;
-  color: rgba(189, 208, 236, 0.88);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(178, 205, 241, 0.78);
 }
 
-.il-home-system-value {
+.il-home-resume-name {
   margin: 0;
-  font-size: 0.96rem;
-  font-family: var(--il-font-display);
-  font-weight: 600;
-  color: #f4f8ff;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: rgba(236, 245, 255, 0.95);
 }
 
-.il-home-system-hint {
+.il-home-resume-detail {
   margin: 0;
-  color: rgba(197, 215, 238, 0.92);
   font-size: 0.72rem;
   font-weight: 600;
-  line-height: 1.3;
+  color: rgba(189, 210, 239, 0.84);
 }
 
-.il-home-grid {
+.il-home-resume-empty {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(177, 201, 234, 0.8);
+}
+
+.il-home-resume-meta.is-empty {
+  border-color: rgba(120, 144, 178, 0.3);
+  background: linear-gradient(180deg, rgba(20, 34, 52, 0.72), rgba(14, 25, 40, 0.78));
+}
+
+.il-home-utility {
+  display: flex;
+  justify-content: center;
+  gap: 0.7rem;
+}
+
+.il-home-utility-button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0.16rem 0.28rem;
+  color: rgba(188, 210, 240, 0.84);
+  font-size: 0.71rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+}
+
+.il-home-utility-button:hover:not(:disabled) {
+  color: #f2f7ff;
+  border-color: transparent;
+}
+
+.il-home-about-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
   display: grid;
-  gap: var(--il-space-4);
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  place-items: center;
+  padding: 1.1rem;
+  background: rgba(6, 11, 20, 0.52);
+  backdrop-filter: blur(3px);
 }
 
-.il-home-panel-games {
-  grid-column: span 7;
-  border-color: rgba(78, 114, 161, 0.85);
-}
-
-.il-home-panel-games::before {
-  border-color: rgba(58, 97, 149, 0.95);
-}
-
-.il-home-panel-scenarios {
-  grid-column: span 5;
-  border-color: rgba(121, 139, 164, 0.9);
-}
-
-.il-home-panel-scenarios::before {
-  border-color: rgba(145, 99, 39, 0.9);
-}
-
-.il-home-panel-scenarios .il-panel-header {
-  border-bottom-color: rgba(158, 113, 47, 0.34);
-}
-
-.il-home-panel-recents {
-  grid-column: 1 / -1;
-  background:
-    linear-gradient(
-      165deg,
-      rgba(247, 251, 255, 0.97) 0%,
-      rgba(235, 242, 250, 0.96) 52%,
-      rgba(222, 232, 245, 0.95) 100%
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent 0,
-      transparent 52px,
-      rgba(91, 120, 158, 0.06) 52px,
-      rgba(91, 120, 158, 0.06) 53px
-    );
-}
-
-.il-home-action-stack,
-.il-home-recent-stack {
+.il-home-about {
+  width: min(420px, 100%);
+  border-radius: var(--il-radius-lg);
+  border: 1px solid rgba(137, 166, 209, 0.55);
+  padding: 1rem;
   display: grid;
-  gap: var(--il-space-3);
+  gap: 0.56rem;
+  background: linear-gradient(180deg, rgba(23, 38, 57, 0.97), rgba(15, 26, 41, 0.98));
+  color: rgba(226, 236, 252, 0.94);
+  box-shadow: 0 24px 42px rgba(5, 12, 22, 0.5);
 }
 
-.il-home-action-stack.is-dual {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.il-home-about-eyebrow {
+  margin: 0;
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: rgba(186, 210, 243, 0.78);
 }
 
-.il-home-action-stack.is-dual > *:first-child {
-  grid-column: 1 / -1;
+.il-home-about h2 {
+  margin: 0;
+  font-family: var(--il-font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 1.46rem;
+  color: #f3f8ff;
 }
 
-.il-home-recent-stack {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.il-home-about p {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: rgba(213, 227, 248, 0.92);
 }
 
-@media (max-width: 1080px) {
-  .il-home-panel-games,
-  .il-home-panel-scenarios,
-  .il-home-panel-recents {
-    grid-column: 1 / -1;
+.il-home-about-meta {
+  margin-top: 0.08rem;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.il-home-about-meta p {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: rgba(194, 216, 246, 0.9);
+}
+
+.il-home-about-meta span {
+  font-size: 0.71rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(175, 201, 236, 0.8);
+}
+
+.il-home-about-meta strong {
+  font-size: 0.77rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(237, 244, 255, 0.92);
+}
+
+.il-home-about-actions {
+  margin-top: 0.46rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+@keyframes il-home-grid-drift {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 96px 0, 0 96px;
   }
 }
 
-@media (max-width: 820px) {
-  .il-home-system-strip,
-  .il-home-action-stack.is-dual,
-  .il-home-recent-stack {
-    grid-template-columns: 1fr;
+@keyframes il-home-trace-flow {
+  0% {
+    opacity: 0.08;
+    transform: translateX(-2%) rotate(var(--angle));
+  }
+  45% {
+    opacity: 0.22;
+  }
+  100% {
+    opacity: 0.08;
+    transform: translateX(2%) rotate(var(--angle));
+  }
+}
+
+@keyframes il-home-node-drift {
+  0% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(8px, -6px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes il-home-node-breathe {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+
+@keyframes il-home-pulse {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.9);
+    opacity: 0.1;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.06);
+    opacity: 0.24;
+  }
+}
+
+@media (max-width: 760px) {
+  .il-home {
+    padding: 0.8rem;
+  }
+
+  .il-home-stage {
+    width: 100%;
+    max-height: min(670px, calc(100dvh - 1.8rem));
+    padding: 0.9rem;
+    gap: 0.82rem;
+  }
+
+  .il-home-primary {
+    width: 100%;
+  }
+}
+
+@media (max-height: 820px) {
+  .il-home {
+    padding: 0.75rem;
+  }
+
+  .il-home-stage {
+    max-height: calc(100dvh - 1.5rem);
+    gap: 0.78rem;
+    padding: 0.88rem;
+  }
+
+  .il-home-wordmark {
+    font-size: clamp(2.1rem, 6.2vw, 3.15rem);
+  }
+
+  .il-home-sublabel {
+    font-size: 0.68rem;
+  }
+
+  .il-home-primary-action {
+    min-height: 48px;
+  }
+
+  .il-home-primary-action.is-continue {
+    min-height: 56px;
+  }
+
+  .il-home-resume-meta {
+    padding: 0.45rem 0.62rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .il-home::after,
+  .il-home-trace,
+  .il-home-node,
+  .il-home-pulse {
+    animation: none;
   }
 }

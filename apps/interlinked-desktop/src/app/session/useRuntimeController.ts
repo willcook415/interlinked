@@ -2,13 +2,27 @@ import { useCallback } from "react";
 
 import { setSimulationRunning, setSimulationSpeed } from "../../api/desktopApi";
 import { sameClock } from "../runtimeFreshness";
-import type { SimulationSpeed } from "../../types";
+import type { SimulationClock, SimulationSpeed } from "../../types";
 import type { UseSessionControllerParams } from "./contracts";
 
 type UseRuntimeControllerResult = {
   setRunning: (running: boolean) => Promise<void>;
   setSpeed: (speed: SimulationSpeed) => Promise<void>;
 };
+
+function mergeControlClock(
+  previous: SimulationClock | null,
+  incoming: SimulationClock
+): SimulationClock {
+  if (!previous) return incoming;
+  // Fast runtime snapshots are the single authority for simulation tick/time.
+  // Control acknowledgements only update control-plane fields.
+  return {
+    ...previous,
+    running: incoming.running,
+    speed: incoming.speed,
+  };
+}
 
 export function useRuntimeController(params: UseSessionControllerParams): UseRuntimeControllerResult {
   const setRunning = useCallback(
@@ -18,7 +32,10 @@ export function useRuntimeController(params: UseSessionControllerParams): UseRun
       params.runtimeControlQueueRef.current = params.runtimeControlQueueRef.current
         .then(async () => {
           const result = await setSimulationRunning(projectPath, running);
-          params.setClock((previous) => (sameClock(previous, result) ? previous : result));
+          params.setClock((previous) => {
+            const merged = mergeControlClock(previous, result);
+            return sameClock(previous, merged) ? previous : merged;
+          });
           params.playUiCue("toggle");
         })
         .catch((error) => {
@@ -37,7 +54,10 @@ export function useRuntimeController(params: UseSessionControllerParams): UseRun
       params.runtimeControlQueueRef.current = params.runtimeControlQueueRef.current
         .then(async () => {
           const result = await setSimulationSpeed(projectPath, speed);
-          params.setClock((previous) => (sameClock(previous, result) ? previous : result));
+          params.setClock((previous) => {
+            const merged = mergeControlClock(previous, result);
+            return sameClock(previous, merged) ? previous : merged;
+          });
         })
         .catch((error) => {
           params.setError(String(error));

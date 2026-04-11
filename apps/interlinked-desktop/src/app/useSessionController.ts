@@ -5,7 +5,7 @@ import { useExportController } from "./session/useExportController";
 import { usePlanningRefresh } from "./session/usePlanningRefresh";
 import { useRegionScopeController } from "./session/useRegionScopeController";
 import { useRuntimeController } from "./session/useRuntimeController";
-import { useSessionLifecycle, useSessionMapReadyBridge } from "./session/useSessionLifecycle";
+import { useSessionLifecycle } from "./session/useSessionLifecycle";
 import type {
   SessionControllerResult,
   UseSessionControllerParams,
@@ -38,13 +38,10 @@ export function useSessionController(params: UseSessionControllerParams): Sessio
   });
 
   const farePolicyController = useFarePolicyController(params);
-  useSessionMapReadyBridge(params);
 
   const regionScope = useRegionScopeController({
     params,
     withBusy,
-    applyOpenedSession: lifecycle.applyOpenedSession,
-    refreshLibraries: lifecycle.refreshLibraries,
   });
 
   const planning = usePlanningRefresh({

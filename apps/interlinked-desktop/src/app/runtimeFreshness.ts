@@ -9,6 +9,7 @@ import type {
 export type ClockFreshness = {
   tickSeconds: number;
   tickIndex: number;
+  clockRevision: number;
   capturedAtEpochMs: number;
 };
 
@@ -31,12 +32,14 @@ export function sameClock(a: SimulationClock | null, b: SimulationClock | null):
 export function clockFreshnessFromSnapshot(
   clock: SimulationClock | null | undefined,
   tickIndex: number | null | undefined,
+  clockRevision: number | null | undefined,
   capturedAtEpochMs: number | null | undefined
 ): ClockFreshness | null {
   if (!clock || !Number.isFinite(clock.tick_seconds)) return null;
   return {
     tickSeconds: clock.tick_seconds,
     tickIndex: finiteNumber(tickIndex, 0),
+    clockRevision: finiteNumber(clockRevision, 0),
     capturedAtEpochMs: finiteNumber(capturedAtEpochMs, 0),
   };
 }
@@ -53,6 +56,8 @@ export function isNonDecreasingClockFreshness(
   }
   if (next.tickIndex > previous.tickIndex) return true;
   if (next.tickIndex < previous.tickIndex) return false;
+  if (next.clockRevision > previous.clockRevision) return true;
+  if (next.clockRevision < previous.clockRevision) return false;
   return next.capturedAtEpochMs >= previous.capturedAtEpochMs;
 }
 

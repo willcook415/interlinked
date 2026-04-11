@@ -28,7 +28,6 @@ import {
 } from "../../api/desktopApi";
 import {
   clockFreshnessFromSnapshot,
-  sameClock,
   sameEconomy,
   sameRuntimeTrains,
   sameServiceLoads,
@@ -51,24 +50,20 @@ import type {
 } from "../../types";
 import type {
   MapBootProgressPayload,
-  SessionBootState,
   UseSessionControllerParams,
   WithBusy,
 } from "./contracts";
 
-const SESSION_BOOT_STAGE_RANK: Record<SessionBootState["stage"], number> = {
-  idle: 0,
-  session_open: 1,
-  map_runtime_config: 2,
-  map_style: 3,
-  map_context: 4,
-  snapshot: 5,
-  ready: 6,
-  error: 7,
-};
-
 function finiteNumber(value: number | null | undefined, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function parsePositiveBudget(value: string): number | null {
+  const normalized = value.replace(/[^\d.-]/g, "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
 type UseSessionLifecycleHookParams = {
@@ -107,6 +102,10 @@ export function useSessionLifecycle({
   params,
   withBusy,
 }: UseSessionLifecycleHookParams): UseSessionLifecycleResult {
+  const markMapRuntimeConfigStarted = params.lifecycle.markMapRuntimeConfigStarted;
+  const markMapRuntimeConfigReady = params.lifecycle.markMapRuntimeConfigReady;
+  const markMapRuntimeConfigFailed = params.lifecycle.markMapRuntimeConfigFailed;
+
   const refreshDemandCoverage = useCallback(
     async (projectPath?: string) => {
       const target = projectPath ?? params.bundle?.project_path;
@@ -164,26 +163,13 @@ export function useSessionLifecycle({
 
   const primeRuntimeSnapshot = useCallback(
     async (projectPath: string) => {
-      params.setSessionBootState((previous) => ({
-        stage: "snapshot",
-        progress: Math.max(previous.progress, 0.78),
-        message: "Hydrating runtime snapshot...",
-        error: null,
-      }));
       const snapshot = await getRuntimeSnapshot(projectPath).catch(() => null);
-      if (!snapshot) {
-        params.setSessionBootState((previous) => ({
-          stage: "snapshot",
-          progress: Math.max(previous.progress, 0.82),
-          message: "Runtime snapshot unavailable, continuing with live polling.",
-          error: null,
-        }));
-        return;
-      }
+      if (!snapshot) return;
 
       const nextFreshness = clockFreshnessFromSnapshot(
         snapshot.clock,
         snapshot.telemetry?.tick_index,
+        snapshot.clock_revision,
         snapshot.captured_at_epoch_ms
       );
       if (nextFreshness) {
@@ -203,11 +189,6 @@ export function useSessionLifecycle({
       );
       params.setRuntimeStations(Array.isArray(snapshot.stations) ? snapshot.stations : []);
       params.setRuntimeLineOps(Array.isArray(snapshot.line_ops) ? snapshot.line_ops : []);
-      if (snapshot.clock) {
-        params.setClock((previous) =>
-          sameClock(previous, snapshot.clock ?? null) ? previous : snapshot.clock ?? null
-        );
-      }
       if (snapshot.economy) {
         params.setLiveEconomy((previous) =>
           sameEconomy(previous, snapshot.economy ?? null) ? previous : snapshot.economy ?? null
@@ -223,12 +204,6 @@ export function useSessionLifecycle({
       params.setServiceLoadByServiceId((previous) =>
         sameServiceLoads(previous, nextServiceLoads) ? previous : nextServiceLoads
       );
-      params.setSessionBootState((previous) => ({
-        stage: "snapshot",
-        progress: Math.max(previous.progress, 0.9),
-        message: "Runtime snapshot hydrated.",
-        error: null,
-      }));
     },
     [params]
   );
@@ -238,14 +213,9 @@ export function useSessionLifecycle({
       params.setBundle(opened);
       params.setClock(opened.clock);
       params.setSaveStatus("");
+      params.lifecycle.acceptOpenedSession(opened.manifest.session_kind);
       params.setRoute(opened.manifest.session_kind === "game" ? "session_game" : "session_scenario");
       params.setMapInstanceToken((value) => value + 1);
-      params.setSessionBootState({
-        stage: "session_open",
-        progress: 0.12,
-        message: "Opening session...",
-        error: null,
-      });
       void refreshDemandCoverage(opened.project_path);
       if (opened.manifest.session_kind === "game") {
         params.setShowCountryInfo(false);
@@ -284,9 +254,11 @@ export function useSessionLifecycle({
       listCountries().catch(() => [] as CountryOption[]),
       listCountryPackStatus().catch(() => [] as CountryPackStatus[]),
     ]);
-    params.setGameSaves(games);
-    params.setScenarioSaves(scenarios);
-    params.setDeletedSaves(deleted);
+    params.setSaveLibrary({
+      games,
+      scenarios,
+      deleted,
+    });
     params.setCountries(countryList);
     params.setCountryPacks(packList);
     if (countryList.length > 0 && !params.selectedCountryIso2) {
@@ -296,24 +268,39 @@ export function useSessionLifecycle({
   }, [onCountryChanged, params]);
 
   const continueLatestGame = useCallback(async () => {
+    params.lifecycle.beginProjectSelection("Opening latest game save...");
     const opened = await withBusy(async () => continueLatestGameRequest());
-    if (opened) applyOpenedSession(opened);
-  }, [applyOpenedSession, withBusy]);
+    if (opened) {
+      applyOpenedSession(opened);
+      return;
+    }
+    params.lifecycle.resetToAppHome();
+  }, [applyOpenedSession, params.lifecycle, withBusy]);
 
   const loadGameSave = useCallback(
     async (saveId: string) => {
+      params.lifecycle.beginProjectSelection("Opening game save...");
       const opened = await withBusy(async () => loadGameSaveRequest(saveId));
-      if (opened) applyOpenedSession(opened);
+      if (opened) {
+        applyOpenedSession(opened);
+        return;
+      }
+      params.lifecycle.resetToAppHome();
     },
-    [applyOpenedSession, withBusy]
+    [applyOpenedSession, params.lifecycle, withBusy]
   );
 
   const loadScenarioSave = useCallback(
     async (saveId: string) => {
+      params.lifecycle.beginProjectSelection("Opening scenario save...");
       const opened = await withBusy(async () => loadScenarioSaveRequest(saveId));
-      if (opened) applyOpenedSession(opened);
+      if (opened) {
+        applyOpenedSession(opened);
+        return;
+      }
+      params.lifecycle.resetToAppHome();
     },
-    [applyOpenedSession, withBusy]
+    [applyOpenedSession, params.lifecycle, withBusy]
   );
 
   const deleteSave = useCallback(
@@ -372,25 +359,31 @@ export function useSessionLifecycle({
       difficulty: params.newGameDifficulty,
       currency: params.newGameCurrency,
       starting_budget:
-        Number(params.newGameBudget) ||
+        parsePositiveBudget(params.newGameBudget) ||
         params.defaultBudgetFor(params.newGameDifficulty, params.newGameCurrency),
     };
+    params.lifecycle.beginProjectSelection("Creating game...");
     const opened = await withBusy(async () => createGameRequest(payload));
     if (opened) {
       applyOpenedSession(opened);
       await refreshLibraries();
+      return;
     }
+    params.lifecycle.resetToAppHome();
   }, [applyOpenedSession, params, refreshLibraries, withBusy]);
 
   const createScenario = useCallback(async () => {
+    params.lifecycle.beginProjectSelection("Creating scenario...");
     const opened = await withBusy(async () =>
       createScenarioRequest(params.scenarioName.trim() || "Interlinked Scenario")
     );
     if (opened) {
       applyOpenedSession(opened);
       await refreshLibraries();
+      return;
     }
-  }, [applyOpenedSession, params.scenarioName, refreshLibraries, withBusy]);
+    params.lifecycle.resetToAppHome();
+  }, [applyOpenedSession, params.lifecycle, params.scenarioName, refreshLibraries, withBusy]);
 
   const saveSession = useCallback(async () => {
     if (!params.bundle) return;
@@ -431,6 +424,7 @@ export function useSessionLifecycle({
     params.setShowCountryInfo(false);
     params.setRoute("home");
     params.setShowMenu(false);
+    params.lifecycle.resetToAppHome();
     params.setSaveStatus(`Saved ${result.updated_at}`);
     params.playUiCue("confirm");
     await refreshLibraries();
@@ -438,48 +432,14 @@ export function useSessionLifecycle({
 
   const handleMapBootProgress = useCallback(
     (payload: MapBootProgressPayload) => {
-      if (payload.stage === "ready") {
-        params.setSessionBootState({
-          stage: "ready",
-          progress: 1,
-          message: payload.message || "Session ready.",
-          error: null,
-        });
-        return;
-      }
-      if (payload.stage === "error") {
-        params.setSessionBootState((previous) => ({
-          stage: "error",
-          progress: Math.max(previous.progress, payload.progress || 0.5),
-          message: payload.message || "Map failed to load.",
-          error: payload.error ?? "Map failed to load. Retry map loading.",
-        }));
-        return;
-      }
-      params.setSessionBootState((previous) => {
-        if (previous.stage === "ready") return previous;
-        const previousRank = SESSION_BOOT_STAGE_RANK[previous.stage];
-        const nextRank = SESSION_BOOT_STAGE_RANK[payload.stage];
-        if (nextRank < previousRank) return previous;
-        return {
-          stage: payload.stage,
-          progress: Math.max(previous.progress, payload.progress),
-          message: payload.message,
-          error: null,
-        };
-      });
+      params.lifecycle.publishMapBootProgress(payload);
     },
     [params]
   );
 
   const retryMapLoad = useCallback(() => {
+    params.lifecycle.beginRecovery("map", "Retrying map initialization...");
     params.setMapInstanceToken((value) => value + 1);
-    params.setSessionBootState((previous) => ({
-      stage: "map_style",
-      progress: Math.max(previous.progress, 0.52),
-      message: "Retrying map initialization...",
-      error: null,
-    }));
   }, [params]);
 
   const installCountryPack = useCallback(
@@ -550,51 +510,35 @@ export function useSessionLifecycle({
     let cancelled = false;
     if (!params.bundle || params.sessionKind !== "game") {
       params.setMapRuntimeConfig(null);
-      params.setSessionBootState((previous) =>
-        previous.stage === "idle"
-          ? previous
-          : {
-              stage: "idle",
-              progress: 0,
-              message: "",
-              error: null,
-            }
-      );
       return;
     }
-    params.setSessionBootState((previous) => ({
-      stage: "map_runtime_config",
-      progress: Math.max(previous.progress, 0.28),
-      message: "Loading map runtime config...",
-      error: null,
-    }));
+    markMapRuntimeConfigStarted();
     void loadMapRuntimeConfig(params.bundle.project_path)
       .then((config) => {
         if (!cancelled) {
           params.setMapRuntimeConfig(config);
-          params.setSessionBootState((previous) => ({
-            stage: "map_runtime_config",
-            progress: Math.max(previous.progress, 0.46),
-            message: "Map runtime config ready.",
-            error: null,
-          }));
+          markMapRuntimeConfigReady();
         }
       })
       .catch(() => {
         if (!cancelled) {
           params.setMapRuntimeConfig(null);
-          params.setSessionBootState({
-            stage: "error",
-            progress: 0.46,
-            message: "Map config failed to load.",
-            error: "Unable to load map runtime config. You can retry map loading.",
-          });
+          markMapRuntimeConfigFailed(
+            "Unable to load map runtime config. You can retry map loading."
+          );
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [params.bundle?.project_path, params.sessionKind, params.setMapRuntimeConfig, params.setSessionBootState]);
+  }, [
+    params.bundle?.project_path,
+    params.sessionKind,
+    params.setMapRuntimeConfig,
+    markMapRuntimeConfigFailed,
+    markMapRuntimeConfigReady,
+    markMapRuntimeConfigStarted,
+  ]);
 
   return {
     applyOpenedSession,
@@ -616,26 +560,4 @@ export function useSessionLifecycle({
     retryMapLoad,
     expediteFleetDelivery,
   };
-}
-
-export function useSessionMapReadyBridge(params: UseSessionControllerParams): void {
-  useEffect(() => {
-    const inSession = params.route === "session_game" || params.route === "session_scenario";
-    if (!inSession) return;
-    if (params.sessionBootState?.stage !== "map_context") return;
-    if (params.sessionBootState.error) return;
-    if (params.sessionBootState.progress < 0.84) return;
-    const timer = window.setTimeout(() => {
-      params.setSessionBootState((previous) => {
-        if (previous.stage !== "map_context" || previous.error) return previous;
-        return {
-          stage: "ready",
-          progress: 1,
-          message: "Session ready.",
-          error: null,
-        };
-      });
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [params.route, params.sessionBootState, params.setSessionBootState]);
 }

@@ -15,6 +15,7 @@ import type {
   OpenSessionResult,
   RegionStatus,
   RuntimePerfTelemetry,
+  RuntimeTemporalDiagnostics,
   ScenarioLite,
   SessionKind,
   SimulationAdvanceEconomy,
@@ -105,6 +106,7 @@ export default function AppSessionShell(props: {
   trainsAuthoritative: boolean;
   runtimeTelemetry: RuntimePerfTelemetry | null;
   snapshotLatencyMs: number | null;
+  temporalDiagnostics: RuntimeTemporalDiagnostics;
   runtimeStations: StationRuntimeView[];
   runtimeLineOps: LineOpsRuntimeView[];
   showShapeStops: boolean;
@@ -634,6 +636,8 @@ export default function AppSessionShell(props: {
         frameMs={props.shellStatus.frameMs}
         telemetry={props.runtimeTelemetry}
         snapshotLatencyMs={props.snapshotLatencyMs}
+        clock={props.clock}
+        temporalDiagnostics={props.temporalDiagnostics}
         mapComplexityScore={props.mapComplexityScore}
       />
       <ShellStatusOverlays

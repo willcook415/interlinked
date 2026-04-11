@@ -228,6 +228,7 @@ export type GameSaveMeta = {
   name: string;
   last_opened_at: string;
   sim_datetime_utc: string;
+  sim_tick_seconds: number;
   start_country?: string | null;
   start_city?: string | null;
   unlocked_countries: number;
@@ -235,6 +236,7 @@ export type GameSaveMeta = {
   network_links: number;
   network_services: number;
   total_link_km: number;
+  peak_ridership_pph?: number | null;
   progress_metrics: GameProgressMetrics;
 };
 
@@ -254,6 +256,56 @@ export type ScenarioSaveMeta = {
 };
 
 export type DeletedSaveMeta = {
+  deleted_id: string;
+  project_id: string;
+  name: string;
+  session_kind: SessionKind;
+  deleted_at: string;
+};
+
+export type SaveLibrarySnapshot = {
+  games: GameSaveMeta[];
+  scenarios: ScenarioSaveMeta[];
+  deleted: DeletedSaveMeta[];
+};
+
+export type SaveBrowserClassification = "campaign" | "sandbox" | "scenario";
+
+export type SaveBrowserSortKey =
+  | "last_played_desc"
+  | "last_played_asc"
+  | "name_asc"
+  | "network_size_desc"
+  | "progress_desc";
+
+export type SaveBrowserViewGroup = "recent" | "all";
+
+export type SaveBrowserDifficultyFilter = Difficulty | "all";
+
+export type SaveBrowserEntry = {
+  project_id: string;
+  project_path: string;
+  session_kind: SessionKind;
+  classification: SaveBrowserClassification;
+  name: string;
+  last_played_at: string;
+  start_country?: string | null;
+  start_city?: string | null;
+  in_game_date?: string | null;
+  difficulty?: Difficulty | null;
+  playtime_total_minutes?: number | null;
+  network_size?: number | null;
+  passenger_activity?: number | null;
+  progress_value?: number | null;
+  health_indicators: {
+    coverage?: number | null;
+    ridership?: number | null;
+    share_trips_served?: number | null;
+    denied_boardings?: number | null;
+  };
+};
+
+export type DeletedSaveBrowserEntry = {
   deleted_id: string;
   project_id: string;
   name: string;

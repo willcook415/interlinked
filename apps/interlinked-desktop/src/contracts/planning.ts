@@ -59,7 +59,7 @@ export type AlertItem = {
   action_label?: string | null;
   target?:
     | {
-        kind: "line" | "stop" | "region";
+        kind: "line" | "stop" | "region" | "session";
         id: string;
       }
     | null;

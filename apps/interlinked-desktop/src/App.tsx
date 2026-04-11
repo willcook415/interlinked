@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AlertItem,
   AppRoute,
@@ -9,19 +9,17 @@ import type {
   DemandCoverageMeta,
   FinancialDashboardRequest,
   FinancialDashboardResponse,
-  DeletedSaveMeta,
   Difficulty,
   FarePolicyManifest,
-  GameSaveMeta,
   Mission,
   OpenSessionResult,
   MapRuntimeConfig,
   RegionStatus,
   ScenarioLite,
-  ScenarioSaveMeta,
   SimulationAdvanceEconomy,
   SimulationClock,
   RuntimePerfTelemetry,
+  RuntimeTemporalDiagnostics,
   LineOpsRuntimeView,
   StationRuntimeView,
   TrainRuntimeView,
@@ -43,18 +41,20 @@ import {
   useShellPanelsController,
 } from "./app/useShellPanelsController";
 import { useScenarioSidebarController } from "./app/useScenarioSidebarController";
+import { useSaveBrowserController } from "./app/useSaveBrowserController";
 import {
   DEFAULT_UI_SETTINGS,
   useShellStatusOrchestration,
 } from "./app/useShellStatusOrchestration";
 import { useNewGameFlowController } from "./app/useNewGameFlowController";
 import {
-  type SessionBootState,
   useSessionController,
 } from "./app/useSessionController";
+import { useSessionLifecycleController } from "./app/session/useSessionLifecycleController";
 import type { LinkModeFilter } from "./ui/MapFiltersPanel";
 import AppRouteScreens from "./ui/AppRouteScreens";
 import AppSessionShell from "./ui/AppSessionShell";
+import SettingsPanel from "./ui/SettingsPanel";
 
 const MISSIONS: Mission[] = [
   {
@@ -150,6 +150,23 @@ function formatBackendError(error: unknown): string {
   return message;
 }
 
+const NON_EDITABLE_FRONTEND_ROUTES: ReadonlySet<AppRoute> = new Set([
+  "home",
+  "new_game",
+  "new_scenario",
+  "load_game",
+  "load_scenario",
+]);
+
+function isEditableSurfaceTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(
+    target.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'
+    )
+  );
+}
+
 export default function App() {
   const [route, setRoute] = useState<AppRoute>("home");
   const [bundle, setBundle] = useState<OpenSessionResult | null>(null);
@@ -158,9 +175,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [demandWarning, setDemandWarning] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState("");
-  const [gameSaves, setGameSaves] = useState<GameSaveMeta[]>([]);
-  const [scenarioSaves, setScenarioSaves] = useState<ScenarioSaveMeta[]>([]);
-  const [deletedSaves, setDeletedSaves] = useState<DeletedSaveMeta[]>([]);
+  const saveBrowser = useSaveBrowserController();
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [countryPacks, setCountryPacks] = useState<CountryPackStatus[]>([]);
   const [cities, setCities] = useState<CityOption[]>([]);
@@ -185,6 +200,7 @@ export default function App() {
   const [citySearch, setCitySearch] = useState("");
   const [selectedCityId, setSelectedCityId] = useState<number | null>(null);
   const [scenarioName, setScenarioName] = useState("Interlinked Scenario");
+  const [homeSettingsOpen, setHomeSettingsOpen] = useState(false);
 
   const [showShapeStops, setShowShapeStops] = useState(false);
   const [showZoneCentroids, setShowZoneCentroids] = useState(false);
@@ -202,15 +218,38 @@ export default function App() {
   const [focusVehicleRequest, setFocusVehicleRequest] = useState<FocusVehicleRequest>(null);
   const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimePerfTelemetry | null>(null);
   const [snapshotLatencyMs, setSnapshotLatencyMs] = useState<number | null>(null);
+  const [temporalDiagnostics, setTemporalDiagnostics] = useState<RuntimeTemporalDiagnostics>({
+    last_fast_snapshot_interval_ms: null,
+    stale_fast_snapshots_rejected: 0,
+    latest_fast_clock_revision: 0,
+    latest_fast_tick_index: 0,
+  });
   const [runtimeStations, setRuntimeStations] = useState<StationRuntimeView[]>([]);
   const [runtimeLineOps, setRuntimeLineOps] = useState<LineOpsRuntimeView[]>([]);
   const [mapInstanceToken, setMapInstanceToken] = useState(0);
-  const [sessionBootState, setSessionBootState] = useState<SessionBootState>({
-    stage: "idle",
-    progress: 0,
-    message: "",
-    error: null,
-  });
+  const lifecycle = useSessionLifecycleController({ route });
+
+  useEffect(() => {
+    const body = document.body;
+    const applyDesktopSurfacePolicy = NON_EDITABLE_FRONTEND_ROUTES.has(route);
+
+    if (!applyDesktopSurfacePolicy) {
+      body.classList.remove("il-noneditable-surface");
+      return;
+    }
+
+    body.classList.add("il-noneditable-surface");
+    const onContextMenu = (event: MouseEvent) => {
+      if (isEditableSurfaceTarget(event.target)) return;
+      event.preventDefault();
+    };
+
+    document.addEventListener("contextmenu", onContextMenu, true);
+    return () => {
+      body.classList.remove("il-noneditable-surface");
+      document.removeEventListener("contextmenu", onContextMenu, true);
+    };
+  }, [route]);
 
   const scenario = (bundle?.scenario?.scenario ?? null) as ScenarioLite | null;
   const sessionKind = bundle?.manifest.session_kind ?? null;
@@ -225,6 +264,7 @@ export default function App() {
   const shellPanels = useShellPanelsController({
     route,
     workspaceMode: build.workspaceMode,
+    buildAction: build.buildAction,
     sessionKind,
   });
   const scenarioSidebar = useScenarioSidebarController();
@@ -232,8 +272,8 @@ export default function App() {
     defaultBudgetFor,
   });
   const activeScenario = build.workingScenario ?? scenario;
-  const canContinue = gameSaves.length > 0;
-  const latestGameSave = gameSaves[0] ?? null;
+  const canContinue = saveBrowser.canContinue;
+  const latestGameSave = saveBrowser.continueTarget;
   const budgetCurrency =
     bundle?.manifest.progress_metrics?.currency ??
     bundle?.manifest.economy?.currency ??
@@ -262,7 +302,8 @@ export default function App() {
     liveEconomy?.current_balance_base ?? bundle?.manifest.economy?.current_balance_base ?? null;
   const shellStatus = useShellStatusOrchestration({
     route,
-    sessionBootState,
+    sessionBootState: lifecycle.snapshot.bootState,
+    lifecycleError: lifecycle.snapshot.lastError,
     bundleProjectId: bundle?.manifest.project_id,
     clock,
     workspaceMode: build.workspaceMode,
@@ -505,6 +546,7 @@ export default function App() {
   useRuntimePolling({
     bundle,
     sessionKind,
+    lifecycle,
     latestClockTickRef,
     latestSnapshotTickRef,
     latestSnapshotCapturedRef,
@@ -520,6 +562,7 @@ export default function App() {
     setTrainsAuthoritative,
     setRuntimeTelemetry,
     setSnapshotLatencyMs,
+    setTemporalDiagnostics,
     setError,
   });
 
@@ -527,7 +570,6 @@ export default function App() {
     refreshFinancialDashboard,
     onCountryChanged,
     installCountryPack,
-    uninstallCountryPack,
     continueLatestGame,
     loadGameSave,
     loadScenarioSave,
@@ -586,7 +628,7 @@ export default function App() {
     setSelectedBaseRun: scenarioSidebar.setSelectedBaseRun,
     financialRequest,
     showFinancialDashboard: shellPanels.showFinancialDashboard,
-    sessionBootState,
+    lifecycle,
     defaultBudgetFor,
     formatBackendError,
     playUiCue: shellStatus.playUiCue,
@@ -600,9 +642,7 @@ export default function App() {
     setError,
     setDemandWarning,
     setSaveStatus,
-    setGameSaves,
-    setScenarioSaves,
-    setDeletedSaves,
+    setSaveLibrary: saveBrowser.setLibrary,
     setCountries,
     setCountryPacks,
     setCities,
@@ -623,7 +663,6 @@ export default function App() {
     setRuntimeTelemetry,
     setSnapshotLatencyMs,
     setMapInstanceToken,
-    setSessionBootState,
     setFinancialBusy,
     setFinancialError,
     setFinancialData,
@@ -679,6 +718,12 @@ export default function App() {
       selectCounty(target.id);
       return;
     }
+    if (target.kind === "session") {
+      if (target.id.includes("map")) {
+        retryMapLoad();
+      }
+      return;
+    }
   }
 
   const startCenter = useMemo<[number, number] | null>(() => {
@@ -718,55 +763,81 @@ export default function App() {
     onCloseScheduleEditor: () => setScheduleEditorOpen(false),
     lineDeleteDialogOpen,
     onCancelDeleteSelectedLine: cancelDeleteSelectedLine,
+    blockingOverlayActive: busy || shellStatus.showSessionBootOverlay,
+    canCancelWorkspaceToolStep:
+      build.workspaceMode === "build" && build.buildAction !== "select",
+    onCancelWorkspaceToolStep: () => build.selectBuildAction("select"),
+    canClearWorkspaceSelection:
+      Boolean(build.selection) &&
+      (build.workspaceMode !== "build" || build.buildAction === "select"),
+    onClearWorkspaceSelection: () => build.clearSelection(),
   });
+
+  useEffect(() => {
+    if (route !== "home") {
+      setHomeSettingsOpen(false);
+    }
+  }, [route]);
 
   if (route !== "session_game" && route !== "session_scenario") {
     return (
-      <AppRouteScreens
-        route={route}
-        canContinue={canContinue}
-        latestGameSave={latestGameSave}
-        gameSaves={gameSaves}
-        scenarioSaves={scenarioSaves}
-        deletedSaves={deletedSaves}
-        countries={countries}
-        countryPacks={countryPacks}
-        selectedCountryIso2={selectedCountryIso2}
-        selectedCountryName={selectedCountry?.name ?? null}
-        selectedCityId={selectedCityId}
-        selectedCityName={selectedCity?.name ?? null}
-        citySearch={citySearch}
-        filteredCities={filteredCities}
-        busy={busy}
-        error={error}
-        scenarioName={scenarioName}
-        setScenarioName={setScenarioName}
-        selectedDifficultyProfile={selectedDifficultyProfile}
-        newGame={newGame}
-        onNextNewGameStep={nextNewGameStep}
-        onRouteHome={() => setRoute("home")}
-        onRouteLoadGame={() => setRoute("load_game")}
-        onRouteNewGame={() => {
-          newGame.beginFlow();
-          setRoute("new_game");
-        }}
-        onRouteNewScenario={() => setRoute("new_scenario")}
-        onRouteLoadScenario={() => setRoute("load_scenario")}
-        onContinueLatestGame={continueLatestGame}
-        onLoadGameSave={loadGameSave}
-        onLoadScenarioSave={loadScenarioSave}
-        onDeleteSave={deleteSave}
-        onRestoreDeletedSave={restoreDeletedSave}
-        onPurgeDeletedSave={purgeDeletedSave}
-        onCreateGame={createGame}
-        onCreateScenario={createScenario}
-        onImportScenarioFromPicker={importScenarioFromPicker}
-        onCountryChanged={onCountryChanged}
-        onInstallCountryPack={installCountryPack}
-        onUninstallCountryPack={uninstallCountryPack}
-        onCitySearchChange={setCitySearch}
-        onCitySelected={setSelectedCityId}
-      />
+      <>
+        <AppRouteScreens
+          route={route}
+          canContinue={canContinue}
+          latestGameSave={latestGameSave}
+          gameBrowserView={saveBrowser.gameView}
+          scenarioBrowserView={saveBrowser.scenarioView}
+          countries={countries}
+          countryPacks={countryPacks}
+          selectedCountryIso2={selectedCountryIso2}
+          selectedCountryName={selectedCountry?.name ?? null}
+          selectedCityId={selectedCityId}
+          selectedCityName={selectedCity?.name ?? null}
+          citySearch={citySearch}
+          filteredCities={filteredCities}
+          busy={busy}
+          error={error}
+          scenarioName={scenarioName}
+          setScenarioName={setScenarioName}
+          selectedDifficultyProfile={selectedDifficultyProfile}
+          newGame={newGame}
+          onNextNewGameStep={nextNewGameStep}
+          onRouteHome={() => setRoute("home")}
+          onRouteLoadGame={() => setRoute("load_game")}
+          onRouteNewGame={() => {
+            newGame.beginFlow();
+            setRoute("new_game");
+          }}
+          onRouteNewScenario={() => setRoute("new_scenario")}
+          onRouteLoadScenario={() => setRoute("load_scenario")}
+          onOpenSettings={() => setHomeSettingsOpen(true)}
+          onContinueLatestGame={continueLatestGame}
+          onLoadGameSave={loadGameSave}
+          onLoadScenarioSave={loadScenarioSave}
+          onSaveBrowserQueryChange={saveBrowser.setQuery}
+          onSaveBrowserSortChange={saveBrowser.setSortKey}
+          onSaveBrowserGroupChange={saveBrowser.setGroup}
+          onSaveBrowserSelectProject={saveBrowser.selectProject}
+          onDeleteSave={deleteSave}
+          onRestoreDeletedSave={restoreDeletedSave}
+          onPurgeDeletedSave={purgeDeletedSave}
+          onCreateGame={createGame}
+          onCreateScenario={createScenario}
+          onImportScenarioFromPicker={importScenarioFromPicker}
+          onCountryChanged={onCountryChanged}
+          onInstallCountryPack={installCountryPack}
+          onCitySearchChange={setCitySearch}
+          onCitySelected={setSelectedCityId}
+        />
+        <SettingsPanel
+          open={homeSettingsOpen}
+          settings={shellStatus.uiSettings}
+          onChange={shellStatus.setUiSettings}
+          onClose={() => setHomeSettingsOpen(false)}
+          onReset={() => shellStatus.setUiSettings(DEFAULT_UI_SETTINGS)}
+        />
+      </>
     );
   }
 
@@ -789,10 +860,21 @@ export default function App() {
       busy={busy}
       saveStatus={saveStatus}
       setSaveStatus={setSaveStatus}
-      demandWarning={demandWarning}
-      error={error}
-      setError={setError}
-      sessionBootState={sessionBootState}
+      demandWarning={shellStatus.primaryDemandIssue?.detail ?? null}
+      error={shellStatus.primaryBlockingIssue?.detail ?? null}
+      setError={(value) => {
+        if (value === null) {
+          const issueId = shellStatus.primaryBlockingIssue?.id;
+          if (issueId) {
+            shellStatus.dismissAlert(issueId);
+          } else {
+            setError(null);
+          }
+          return;
+        }
+        setError(value);
+      }}
+      sessionBootState={lifecycle.snapshot.bootState}
       mapInstanceToken={mapInstanceToken}
       mapRuntimeConfig={mapRuntimeConfig}
       liveEconomy={liveEconomy}
@@ -802,6 +884,7 @@ export default function App() {
       trainsAuthoritative={trainsAuthoritative}
       runtimeTelemetry={runtimeTelemetry}
       snapshotLatencyMs={snapshotLatencyMs}
+      temporalDiagnostics={temporalDiagnostics}
       runtimeStations={runtimeStations}
       runtimeLineOps={runtimeLineOps}
       showShapeStops={showShapeStops}

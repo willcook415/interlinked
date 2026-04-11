@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import type { AppRoute, SessionKind, SimulationClock, SimulationSpeed } from "../types";
+import type { BuildAction } from "../build/types";
 
 export type ShellCommandAction = {
   id: string;
@@ -16,143 +17,321 @@ function isTextInputLike(target: EventTarget | null): boolean {
   return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 }
 
+type WorkspacePanelSurface =
+  | "none"
+  | "filters"
+  | "missions"
+  | "country_info"
+  | "fares"
+  | "alerts"
+  | "settings";
+
+type WorkspaceOverlaySurface = "none" | "menu" | "command_palette" | "financial_dashboard";
+
+type OverlayStateKind = "none" | "modal" | "blocking_overlay";
+
+export type WorkspaceModeState = "view" | "build";
+export type WorkspaceActiveTool = "line_builder" | "vehicle_manager" | "region_tool" | "none";
+
+type WorkspaceSurfaceState = {
+  activePanel: WorkspacePanelSurface;
+  activeOverlay: WorkspaceOverlaySurface;
+  commandPaletteQuery: string;
+};
+
+type WorkspaceSnapshot = {
+  workspaceMode: WorkspaceModeState;
+  activeTool: WorkspaceActiveTool;
+  activePanel: WorkspacePanelSurface;
+  activeOverlay: WorkspaceOverlaySurface;
+  overlayState: OverlayStateKind;
+  interactionSuppressed: boolean;
+};
+
+function resolveBooleanUpdate(update: SetStateAction<boolean>, previous: boolean): boolean {
+  if (typeof update === "function") return update(previous);
+  return update;
+}
+
 export function useShellPanelsController(args: {
   route: AppRoute;
-  workspaceMode: "view" | "build";
+  workspaceMode: WorkspaceModeState;
+  buildAction?: BuildAction;
   sessionKind: SessionKind | null;
 }) {
-  const { route, workspaceMode, sessionKind } = args;
-  const [showCountryInfo, setShowCountryInfo] = useState(false);
-  const [showFares, setShowFares] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [showMissions, setShowMissions] = useState(false);
-  const [showAlerts, setShowAlerts] = useState(false);
-  const [showMenu, setShowMenu] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showFinancialDashboard, setShowFinancialDashboard] = useState(false);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
+  const { route, workspaceMode, buildAction, sessionKind } = args;
+  const inSession = route === "session_game" || route === "session_scenario";
+  const [surfaceState, setSurfaceState] = useState<WorkspaceSurfaceState>({
+    activePanel: "none",
+    activeOverlay: "none",
+    commandPaletteQuery: "",
+  });
+
+  const panelAllowed = useCallback(
+    (panel: WorkspacePanelSurface): boolean => {
+      if (!inSession) return false;
+      if (panel === "none") return true;
+      if (workspaceMode === "build") return false;
+      if (panel === "missions" || panel === "country_info" || panel === "fares") {
+        return sessionKind === "game";
+      }
+      return true;
+    },
+    [inSession, sessionKind, workspaceMode]
+  );
+
+  const overlayAllowed = useCallback(
+    (overlay: WorkspaceOverlaySurface): boolean => {
+      if (!inSession) return false;
+      if (overlay === "none") return true;
+      if (workspaceMode === "build") {
+        return overlay === "command_palette";
+      }
+      return true;
+    },
+    [inSession, workspaceMode]
+  );
+
+  const setPanelVisibility = useCallback(
+    (panel: Exclude<WorkspacePanelSurface, "none">, update: SetStateAction<boolean>) => {
+      setSurfaceState((previous) => {
+        const wasVisible = previous.activePanel === panel;
+        const shouldShow = resolveBooleanUpdate(update, wasVisible);
+        if (!shouldShow) {
+          if (!wasVisible) return previous;
+          return { ...previous, activePanel: "none" };
+        }
+        if (!panelAllowed(panel)) return previous;
+        return {
+          ...previous,
+          activePanel: panel,
+          activeOverlay: "none",
+        };
+      });
+    },
+    [panelAllowed]
+  );
+
+  const setOverlayVisibility = useCallback(
+    (overlay: Exclude<WorkspaceOverlaySurface, "none">, update: SetStateAction<boolean>) => {
+      setSurfaceState((previous) => {
+        const wasVisible = previous.activeOverlay === overlay;
+        const shouldShow = resolveBooleanUpdate(update, wasVisible);
+        if (!shouldShow) {
+          if (!wasVisible) return previous;
+          return { ...previous, activeOverlay: "none" };
+        }
+        if (!overlayAllowed(overlay)) return previous;
+        return {
+          ...previous,
+          activeOverlay: overlay,
+          commandPaletteQuery: overlay === "command_palette" ? "" : previous.commandPaletteQuery,
+        };
+      });
+    },
+    [overlayAllowed]
+  );
+
+  const closeActiveOverlay = useCallback((): boolean => {
+    if (surfaceState.activeOverlay === "none") return false;
+    setSurfaceState((previous) => {
+      if (previous.activeOverlay === "none") return previous;
+      return { ...previous, activeOverlay: "none" };
+    });
+    return true;
+  }, [surfaceState.activeOverlay]);
+
+  const closeActivePanel = useCallback((): boolean => {
+    if (surfaceState.activePanel === "none") return false;
+    setSurfaceState((previous) => {
+      if (previous.activePanel === "none") return previous;
+      return { ...previous, activePanel: "none" };
+    });
+    return true;
+  }, [surfaceState.activePanel]);
+
+  const dismissSurfaceByPriority = useCallback((): boolean => {
+    if (surfaceState.activeOverlay === "financial_dashboard") {
+      return closeActiveOverlay();
+    }
+    if (surfaceState.activeOverlay === "command_palette") {
+      return closeActiveOverlay();
+    }
+    if (surfaceState.activeOverlay === "menu") {
+      return closeActiveOverlay();
+    }
+    return closeActivePanel();
+  }, [closeActiveOverlay, closeActivePanel, surfaceState.activeOverlay]);
 
   const openSettingsPanel = useCallback(() => {
-    if (workspaceMode === "build") return;
-    setShowSettings(true);
-    setShowAlerts(false);
-    setShowMenu(false);
-    setShowFilters(false);
-    setShowMissions(false);
-    setShowCountryInfo(false);
-    setShowFares(false);
-    setCommandPaletteOpen(false);
-  }, [workspaceMode]);
+    setPanelVisibility("settings", true);
+  }, [setPanelVisibility]);
 
   const toggleFiltersPanel = useCallback(() => {
-    if (workspaceMode === "build") return;
-    setShowFilters((previous) => !previous);
-    setShowAlerts(false);
-    setShowMissions(false);
-    setShowCountryInfo(false);
-    setShowFares(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-  }, [workspaceMode]);
+    setPanelVisibility("filters", (previous) => !previous);
+  }, [setPanelVisibility]);
 
   const toggleMissionsPanel = useCallback(() => {
-    if (workspaceMode === "build" || sessionKind !== "game") return;
-    setShowMissions((previous) => !previous);
-    setShowAlerts(false);
-    setShowFilters(false);
-    setShowCountryInfo(false);
-    setShowFares(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-  }, [sessionKind, workspaceMode]);
+    setPanelVisibility("missions", (previous) => !previous);
+  }, [setPanelVisibility]);
 
   const toggleCountryInfoPanel = useCallback(() => {
-    if (workspaceMode === "build" || sessionKind !== "game") return;
-    setShowCountryInfo((previous) => !previous);
-    setShowAlerts(false);
-    setShowFilters(false);
-    setShowMissions(false);
-    setShowFares(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-  }, [sessionKind, workspaceMode]);
+    setPanelVisibility("country_info", (previous) => !previous);
+  }, [setPanelVisibility]);
 
   const toggleFarePanel = useCallback(() => {
-    if (workspaceMode === "build" || sessionKind !== "game") return;
-    setShowFares((previous) => !previous);
-    setShowAlerts(false);
-    setShowFilters(false);
-    setShowMissions(false);
-    setShowCountryInfo(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-  }, [sessionKind, workspaceMode]);
+    setPanelVisibility("fares", (previous) => !previous);
+  }, [setPanelVisibility]);
 
   const toggleAlertsPanel = useCallback(() => {
-    if (workspaceMode === "build") return;
-    setShowAlerts((previous) => !previous);
-    setShowFilters(false);
-    setShowMissions(false);
-    setShowCountryInfo(false);
-    setShowFares(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-  }, [workspaceMode]);
+    setPanelVisibility("alerts", (previous) => !previous);
+  }, [setPanelVisibility]);
 
   const toggleMenuPanel = useCallback(() => {
-    setShowMenu((previous) => !previous);
-    setShowSettings(false);
-    setShowAlerts(false);
-    setCommandPaletteOpen(false);
-  }, []);
+    setOverlayVisibility("menu", (previous) => !previous);
+  }, [setOverlayVisibility]);
 
   const openCommandPaletteFromHud = useCallback(() => {
     if (workspaceMode === "build") return;
-    setShowMenu(false);
-    setShowSettings(false);
-    setShowAlerts(false);
-    setCommandPaletteQuery("");
-    setCommandPaletteOpen(true);
-  }, [workspaceMode]);
+    setOverlayVisibility("command_palette", true);
+  }, [setOverlayVisibility, workspaceMode]);
 
   const openCommandPaletteFromShortcut = useCallback(() => {
-    setShowAlerts(false);
-    setCommandPaletteOpen(true);
-    setCommandPaletteQuery("");
-  }, []);
+    setOverlayVisibility("command_palette", true);
+  }, [setOverlayVisibility]);
 
   const closeCommandPalette = useCallback(() => {
-    setCommandPaletteOpen(false);
+    setOverlayVisibility("command_palette", false);
+  }, [setOverlayVisibility]);
+
+  const setCommandPaletteQuery: Dispatch<SetStateAction<string>> = useCallback((update) => {
+    setSurfaceState((previous) => {
+      const nextValue =
+        typeof update === "function" ? update(previous.commandPaletteQuery) : update;
+      if (nextValue === previous.commandPaletteQuery) return previous;
+      return {
+        ...previous,
+        commandPaletteQuery: nextValue,
+      };
+    });
   }, []);
+
+  const setShowCountryInfo: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("country_info", update),
+    [setPanelVisibility]
+  );
+  const setShowFares: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("fares", update),
+    [setPanelVisibility]
+  );
+  const setShowFilters: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("filters", update),
+    [setPanelVisibility]
+  );
+  const setShowMissions: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("missions", update),
+    [setPanelVisibility]
+  );
+  const setShowAlerts: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("alerts", update),
+    [setPanelVisibility]
+  );
+  const setShowSettings: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("settings", update),
+    [setPanelVisibility]
+  );
+  const setShowMenu: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setOverlayVisibility("menu", update),
+    [setOverlayVisibility]
+  );
+  const setShowFinancialDashboard: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setOverlayVisibility("financial_dashboard", update),
+    [setOverlayVisibility]
+  );
+  const setCommandPaletteOpen: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setOverlayVisibility("command_palette", update),
+    [setOverlayVisibility]
+  );
+
+  const activeTool = useMemo<WorkspaceActiveTool>(() => {
+    if (workspaceMode === "build") {
+      if (buildAction && buildAction !== "select") return "line_builder";
+      return "none";
+    }
+    if (surfaceState.activePanel === "country_info") return "region_tool";
+    return "none";
+  }, [buildAction, surfaceState.activePanel, workspaceMode]);
+
+  const overlayState = useMemo<OverlayStateKind>(() => {
+    if (surfaceState.activeOverlay === "none") return "none";
+    return "modal";
+  }, [surfaceState.activeOverlay]);
+
+  const workspace = useMemo<WorkspaceSnapshot>(
+    () => ({
+      workspaceMode,
+      activeTool,
+      activePanel: surfaceState.activePanel,
+      activeOverlay: surfaceState.activeOverlay,
+      overlayState,
+      interactionSuppressed: overlayState !== "none",
+    }),
+    [activeTool, overlayState, surfaceState.activeOverlay, surfaceState.activePanel, workspaceMode]
+  );
 
   useEffect(() => {
     if (workspaceMode !== "build") return;
-    setShowAlerts(false);
-    setShowFilters(false);
-    setShowMissions(false);
-    setShowCountryInfo(false);
-    setShowFares(false);
-    setShowMenu(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
+    setSurfaceState((previous) => {
+      if (previous.activePanel === "none" && previous.activeOverlay === "none") return previous;
+      return {
+        ...previous,
+        activePanel: "none",
+        activeOverlay: "none",
+      };
+    });
   }, [workspaceMode]);
 
   useEffect(() => {
-    const inSession = route === "session_game" || route === "session_scenario";
     if (inSession) return;
-    setShowAlerts(false);
-    setShowSettings(false);
-    setCommandPaletteOpen(false);
-    setShowMenu(false);
-  }, [route]);
+    setSurfaceState((previous) => {
+      if (previous.activePanel === "none" && previous.activeOverlay === "none") return previous;
+      return {
+        ...previous,
+        activePanel: "none",
+        activeOverlay: "none",
+      };
+    });
+  }, [inSession]);
+
+  useEffect(() => {
+    if (sessionKind === "game") return;
+    setSurfaceState((previous) => {
+      if (
+        previous.activePanel !== "missions" &&
+        previous.activePanel !== "country_info" &&
+        previous.activePanel !== "fares"
+      ) {
+        return previous;
+      }
+      return {
+        ...previous,
+        activePanel: "none",
+      };
+    });
+  }, [sessionKind]);
+
+  const showCountryInfo = surfaceState.activePanel === "country_info";
+  const showFares = surfaceState.activePanel === "fares";
+  const showFilters = surfaceState.activePanel === "filters";
+  const showMissions = surfaceState.activePanel === "missions";
+  const showAlerts = surfaceState.activePanel === "alerts";
+  const showSettings = surfaceState.activePanel === "settings";
+  const showMenu = surfaceState.activeOverlay === "menu";
+  const showFinancialDashboard = surfaceState.activeOverlay === "financial_dashboard";
+  const commandPaletteOpen = surfaceState.activeOverlay === "command_palette";
 
   return {
+    workspace,
     showCountryInfo,
     setShowCountryInfo,
     showFares,
@@ -171,7 +350,7 @@ export function useShellPanelsController(args: {
     setShowFinancialDashboard,
     commandPaletteOpen,
     setCommandPaletteOpen,
-    commandPaletteQuery,
+    commandPaletteQuery: surfaceState.commandPaletteQuery,
     setCommandPaletteQuery,
     openSettingsPanel,
     toggleFiltersPanel,
@@ -183,12 +362,15 @@ export function useShellPanelsController(args: {
     openCommandPaletteFromHud,
     openCommandPaletteFromShortcut,
     closeCommandPalette,
+    closeActivePanel,
+    closeActiveOverlay,
+    dismissSurfaceByPriority,
   };
 }
 
 export function useShellCommandOrchestration(args: {
   route: AppRoute;
-  workspaceMode: "view" | "build";
+  workspaceMode: WorkspaceModeState;
   clock: SimulationClock | null;
   hasActiveSessionBundle: boolean;
   panels: ReturnType<typeof useShellPanelsController>;
@@ -204,6 +386,12 @@ export function useShellCommandOrchestration(args: {
   onCloseScheduleEditor: () => void;
   lineDeleteDialogOpen: boolean;
   onCancelDeleteSelectedLine: () => void;
+  blockingOverlayActive?: boolean;
+  onDismissBlockingOverlay?: () => boolean | void;
+  canCancelWorkspaceToolStep?: boolean;
+  onCancelWorkspaceToolStep?: () => void;
+  canClearWorkspaceSelection?: boolean;
+  onClearWorkspaceSelection?: () => void;
 }) {
   const {
     route,
@@ -223,6 +411,12 @@ export function useShellCommandOrchestration(args: {
     onCloseScheduleEditor,
     lineDeleteDialogOpen,
     onCancelDeleteSelectedLine,
+    blockingOverlayActive = false,
+    onDismissBlockingOverlay,
+    canCancelWorkspaceToolStep = false,
+    onCancelWorkspaceToolStep,
+    canClearWorkspaceSelection = false,
+    onClearWorkspaceSelection,
   } = args;
 
   const inSession = route === "session_game" || route === "session_scenario";
@@ -404,22 +598,12 @@ export function useShellCommandOrchestration(args: {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        if (panels.commandPaletteOpen) {
-          panels.closeCommandPalette();
+        if (blockingOverlayActive) {
+          const didDismissBlockingOverlay = onDismissBlockingOverlay?.();
+          if (didDismissBlockingOverlay === true) return;
           return;
         }
-        if (panels.showSettings) {
-          panels.setShowSettings(false);
-          return;
-        }
-        if (panels.showAlerts) {
-          panels.setShowAlerts(false);
-          return;
-        }
-        if (panels.showFinancialDashboard) {
-          panels.setShowFinancialDashboard(false);
-          return;
-        }
+        if (panels.dismissSurfaceByPriority()) return;
         if (rollingStockEditorOpen) {
           onCloseRollingStockEditor();
           return;
@@ -432,28 +616,18 @@ export function useShellCommandOrchestration(args: {
           onCancelDeleteSelectedLine();
           return;
         }
-        if (panels.showMenu) {
-          panels.setShowMenu(false);
+        if (canCancelWorkspaceToolStep) {
+          onCancelWorkspaceToolStep?.();
           return;
         }
-        if (panels.showFilters) {
-          panels.setShowFilters(false);
+        if (canClearWorkspaceSelection) {
+          onClearWorkspaceSelection?.();
           return;
-        }
-        if (panels.showMissions) {
-          panels.setShowMissions(false);
-          return;
-        }
-        if (panels.showCountryInfo) {
-          panels.setShowCountryInfo(false);
-          return;
-        }
-        if (panels.showFares) {
-          panels.setShowFares(false);
         }
         return;
       }
       if (!inSession) return;
+      if (panels.workspace.interactionSuppressed) return;
       if (event.key === " " && workspaceMode !== "build" && clock) {
         event.preventDefault();
         void onSetRunning(!clock.running);
@@ -491,9 +665,15 @@ export function useShellCommandOrchestration(args: {
     clock,
     inSession,
     lineDeleteDialogOpen,
+    blockingOverlayActive,
+    canCancelWorkspaceToolStep,
+    canClearWorkspaceSelection,
     onCancelDeleteSelectedLine,
+    onCancelWorkspaceToolStep,
     onCloseRollingStockEditor,
     onCloseScheduleEditor,
+    onClearWorkspaceSelection,
+    onDismissBlockingOverlay,
     onEnterBuildMode,
     onLeaveBuildMode,
     onSaveQuit,

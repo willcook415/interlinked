@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from "react";
 import type {
   CityOption,
   CountryOption,
@@ -6,10 +7,19 @@ import type {
   Difficulty,
   DifficultyProfile,
 } from "../types";
+import { InterlinkedButton, InterlinkedPageShell } from "./primitives";
 
 function multiplierLabel(value: number): string {
   if (!Number.isFinite(value)) return "-";
   return `x${value.toFixed(2)}`;
+}
+
+function parsePositiveBudget(value: string): number | null {
+  const normalized = value.replace(/[^\d.-]/g, "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
 type DifficultyCard = {
@@ -22,24 +32,48 @@ const DIFFICULTY_CARDS: DifficultyCard[] = [
   {
     id: "easy",
     title: "Easy",
-    summary: "Friendly cashflow and lower penalty pressure. Best for learning systems.",
+    summary: "Higher cash buffer and lighter penalties for steady onboarding.",
   },
   {
     id: "standard",
     title: "Standard",
-    summary: "Balanced economics and demand behavior tuned for core gameplay.",
+    summary: "Balanced operating pressure tuned for core simulation play.",
   },
   {
     id: "hard",
     title: "Hard",
-    summary: "Higher demand and stronger penalties. Requires tight operational discipline.",
+    summary: "Tighter budgets and heavier penalties for disciplined operations.",
   },
 ];
 
+const STAGE_LABELS = ["Identity & Location", "Simulation Setup", "Review & Launch"] as const;
+
+function countryStatusLabel(status: CountryPackStatus | null): string {
+  if (!status) return "Unknown";
+  if (status.eligible) return "Ready";
+  if (status.build_state === "building") return "Installing";
+  if (status.reason) return status.reason;
+  if (status.build_state === "missing") return "Not Installed";
+  return "Unavailable";
+}
+
+function canInstallCountryPack(status: CountryPackStatus | null): boolean {
+  if (!status) return false;
+  if (status.eligible) return false;
+  if (status.reason === "Coming Soon") return false;
+  if (status.build_state === "building") return false;
+  return true;
+}
+
+function cityPopulationLabel(city: CityOption | null): string | null {
+  if (!city) return null;
+  if (!Number.isFinite(city.population) || city.population <= 0) return null;
+  return city.population.toLocaleString();
+}
+
 export default function NewGameScreen(props: {
-  step: 1 | 2 | 3 | 4;
+  step: 1 | 2 | 3;
   gameName: string;
-  modeIntent: string;
   difficulty: Difficulty;
   difficultyProfile: DifficultyProfile;
   currency: CurrencyCode;
@@ -59,250 +93,324 @@ export default function NewGameScreen(props: {
   onPrev: () => void;
   onCreate: () => void;
   onNameChange: (v: string) => void;
-  onModeIntentChange: (v: string) => void;
   onDifficultyChange: (v: Difficulty) => void;
   onCurrencyChange: (v: CurrencyCode) => void;
-  onBudgetChange: (v: string) => void;
   onCountryChange: (v: string) => void;
   onInstallPack: (iso2: string) => void;
-  onUninstallPack: (iso2: string) => void;
   onCitySearchChange: (v: string) => void;
   onCitySelect: (id: number) => void;
 }) {
   const selectedPack =
-    props.countryPacks.find((p) => p.country_iso2 === props.selectedCountryIso2) ?? null;
-  const countryStatusLabel = (iso2: string): string => {
-    const status = props.countryPacks.find((p) => p.country_iso2 === iso2);
-    if (!status) return "Unknown";
-    if (status.build_state === "installed" && status.eligible) return "Installed";
-    return status.reason ?? "Unavailable";
-  };
-  const budgetValue = Number(props.budget);
-  const validBudget = Number.isFinite(budgetValue) && budgetValue > 0 ? budgetValue : null;
+    props.countryPacks.find((pack) => pack.country_iso2 === props.selectedCountryIso2) ?? null;
+  const selectedCity =
+    props.filteredCities.find((city) => city.geonameid === props.selectedCityId) ?? null;
+  const selectedCityPopulation = cityPopulationLabel(selectedCity);
+  const budgetValue = parsePositiveBudget(props.budget);
+  const formattedBudget =
+    budgetValue === null
+      ? "Invalid"
+      : new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: props.currency,
+          maximumFractionDigits: 0,
+        }).format(budgetValue);
+  const difficultyTitle = useMemo(
+    () => DIFFICULTY_CARDS.find((card) => card.id === props.difficulty)?.title ?? "Standard",
+    [props.difficulty]
+  );
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const body = document.body;
+    const previousRootOverflow = root.style.overflow;
+    const previousRootOverscroll = root.style.overscrollBehavior;
+    const previousBodyOverflow = body.style.overflow;
+    const previousBodyOverscroll = body.style.overscrollBehavior;
+    root.classList.add("il-new-game-route");
+    body.classList.add("il-new-game-route");
+    root.style.overflow = "hidden";
+    root.style.overscrollBehavior = "none";
+    body.style.overflow = "hidden";
+    body.style.overscrollBehavior = "none";
+    return () => {
+      root.classList.remove("il-new-game-route");
+      body.classList.remove("il-new-game-route");
+      root.style.overflow = previousRootOverflow;
+      root.style.overscrollBehavior = previousRootOverscroll;
+      body.style.overflow = previousBodyOverflow;
+      body.style.overscrollBehavior = previousBodyOverscroll;
+    };
+  }, []);
 
   return (
-    <div className="form-screen">
-      <header>
-        <h2>New Game</h2>
-        <p>Step {props.step} of 4</p>
-      </header>
-
-      {props.step === 1 && (
-        <div className="form-card">
-          <h3>Player Profile</h3>
-          <label>Save Name</label>
-          <input
-            value={props.gameName}
-            onChange={(e) => props.onNameChange(e.target.value)}
-            placeholder="Interlinked World"
-          />
-          <label>Mode Intent</label>
-          <select value={props.modeIntent} onChange={(e) => props.onModeIntentChange(e.target.value)}>
-            <option value="balanced">Balanced sandbox</option>
-            <option value="builder">Creative builder</option>
-            <option value="operator">Operational challenge</option>
-          </select>
-          <p className="form-hint">
-            You can change economics and operations after game start, but this sets your first-hour guidance.
-          </p>
-        </div>
-      )}
-
-      {props.step === 2 && (
-        <div className="form-card">
-          <h3>Start Location</h3>
-          {props.countries.length === 0 && (
-            <p className="form-error">
-              No location catalog found. Build one with `interlinked-osm build-location-catalog`.
-            </p>
-          )}
-          <label>Country</label>
-          <select
-            value={props.selectedCountryIso2}
-            onChange={(e) => props.onCountryChange(e.target.value)}
-          >
-            {props.countries.map((c) => (
-              <option
-                key={c.iso2}
-                value={c.iso2}
-                disabled={!(props.countryPacks.find((p) => p.country_iso2 === c.iso2)?.eligible ?? false)}
-              >
-                {c.name} ({countryStatusLabel(c.iso2)})
-              </option>
-            ))}
-          </select>
-          {selectedPack && (
-            <p className={selectedPack.eligible ? "form-hint" : "form-error"}>
-              {selectedPack.eligible
-                ? `Pack installed: ${selectedPack.country_iso2} (${selectedPack.cells_count.toLocaleString()} cells).`
-                : `${selectedPack.reason ?? "Country unavailable"} (${selectedPack.country_iso2}).`}
-            </p>
-          )}
-          {selectedPack && (
-            <div className="form-actions">
-              {!selectedPack.eligible && selectedPack.reason !== "Coming Soon" && (
-                <button
-                  disabled={props.busy}
-                  onClick={() => props.onInstallPack(selectedPack.country_iso2)}
-                >
-                  Install Pack
-                </button>
-              )}
-              {selectedPack.build_state === "installed" && (
-                <button
-                  disabled={props.busy}
-                  onClick={() => props.onUninstallPack(selectedPack.country_iso2)}
-                >
-                  Uninstall Pack
-                </button>
-              )}
-            </div>
-          )}
-          <label>City Search</label>
-          <input
-            value={props.citySearch}
-            onChange={(e) => props.onCitySearchChange(e.target.value)}
-            placeholder="Search city"
-          />
-          <div className="city-list">
-            {props.filteredCities.map((city) => (
-              <button
-                key={city.geonameid}
-                className={props.selectedCityId === city.geonameid ? "active" : ""}
-                onClick={() => props.onCitySelect(city.geonameid)}
-              >
-                {city.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {props.step === 3 && (
-        <div className="form-card">
-          <h3>Difficulty And Economy</h3>
-          <div className="difficulty-card-grid">
-            {DIFFICULTY_CARDS.map((difficulty) => (
-              <button
-                key={difficulty.id}
-                className={`difficulty-card ${props.difficulty === difficulty.id ? "active" : ""}`}
-                onClick={() => props.onDifficultyChange(difficulty.id)}
-              >
-                <strong>{difficulty.title}</strong>
-                <span>{difficulty.summary}</span>
-              </button>
-            ))}
-          </div>
-          <div className="difficulty-impact-grid">
-            <article>
-              <small>Demand Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.demand_mult)}</strong>
-            </article>
-            <article>
-              <small>Build Cost Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.capex_mult)}</strong>
-            </article>
-            <article>
-              <small>Operating Cost Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.opex_mult)}</strong>
-            </article>
-            <article>
-              <small>Maintenance Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.maintenance_mult)}</strong>
-            </article>
-            <article>
-              <small>Penalty Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.penalty_mult)}</strong>
-            </article>
-            <article>
-              <small>Unlock Cost Pressure</small>
-              <strong>{multiplierLabel(props.difficultyProfile.unlock_cost_mult)}</strong>
-            </article>
-            <article>
-              <small>Ancillary Revenue</small>
-              <strong>{multiplierLabel(props.difficultyProfile.ancillary_revenue_mult)}</strong>
-            </article>
-          </div>
-          <div className="form-grid">
-            <div>
-              <label>Currency</label>
-              <select
-                value={props.currency}
-                onChange={(e) => props.onCurrencyChange(e.target.value as CurrencyCode)}
-              >
-                <option value="GBP">GBP</option>
-                <option value="USD">USD</option>
-                <option value="EUR">EUR</option>
-              </select>
-            </div>
-            <div>
-              <label>Starting Budget</label>
-              <input value={props.budget} onChange={(e) => props.onBudgetChange(e.target.value)} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {props.step === 4 && (
-        <div className="form-card">
-          <h3>Review And Forecast</h3>
-          <div className="review-grid">
-            <article>
-              <small>Save</small>
-              <strong>{props.gameName.trim() || "Interlinked World"}</strong>
-            </article>
-            <article>
-              <small>Intent</small>
-              <strong>{props.modeIntent}</strong>
-            </article>
-            <article>
-              <small>Location</small>
-              <strong>
-                {props.selectedCityName ?? "No city selected"}
-                {props.selectedCountryName ? `, ${props.selectedCountryName}` : ""}
-              </strong>
-            </article>
-            <article>
-              <small>Difficulty</small>
-              <strong>{props.difficulty}</strong>
-            </article>
-            <article>
-              <small>Starting Budget</small>
-              <strong>
-                {validBudget === null
-                  ? "Invalid budget"
-                  : new Intl.NumberFormat(undefined, {
-                      style: "currency",
-                      currency: props.currency,
-                      maximumFractionDigits: 0,
-                    }).format(validBudget)}
-              </strong>
-            </article>
-          </div>
-          <div className="forecast-panel">
-            <p>First-hour guidance</p>
-            <ul>
-              <li>Build one short corridor first and keep draft costs controlled.</li>
-              <li>Order at least one vehicle before starting time to avoid idle routes.</li>
-              <li>Watch penalties and staffing during the first peak period.</li>
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {props.error && <p className="form-error">{props.error}</p>}
-
-      <div className="form-actions">
-        <button onClick={props.onBack}>Back to Menu</button>
-        {props.step > 1 && <button onClick={props.onPrev}>Previous</button>}
-        {props.step < 4 && <button onClick={props.onNext}>Next</button>}
-        {props.step === 4 && (
-          <button onClick={props.onCreate} disabled={props.busy}>
-            Create and Enter
-          </button>
-        )}
+    <InterlinkedPageShell className="il-new-game" centered>
+      <div className="il-new-game-atmosphere" aria-hidden="true">
+        <span className="il-new-trace is-a" />
+        <span className="il-new-trace is-b" />
+        <span className="il-new-trace is-c" />
+        <span className="il-new-node is-a" />
+        <span className="il-new-node is-b" />
+        <span className="il-new-node is-c" />
+        <span className="il-new-pulse" />
       </div>
-    </div>
+
+      <section className="il-new-game-stage" aria-label="New Game Setup">
+        <header className="il-new-topbar">
+          <InterlinkedButton size="sm" tone="ghost" className="il-new-back" onClick={props.onBack}>
+            Back to Menu
+          </InterlinkedButton>
+          <div className="il-new-title-wrap">
+            <h1 className="il-new-title">NEW GAME</h1>
+            <p className="il-new-subtitle">Configure a new transport simulation</p>
+          </div>
+          <p className="il-new-stage-counter">Stage {props.step} of 3</p>
+        </header>
+
+        <ol className="il-new-progress" aria-label="Setup Stages">
+          {STAGE_LABELS.map((label, index) => {
+            const stageIndex = index + 1;
+            const isActive = props.step === stageIndex;
+            const isComplete = props.step > stageIndex;
+            return (
+              <li
+                key={label}
+                className={`il-new-progress-item${isActive ? " is-active" : ""}${
+                  isComplete ? " is-complete" : ""
+                }`}
+              >
+                <span className="il-new-progress-index">{stageIndex}</span>
+                <span className="il-new-progress-label">{label}</span>
+              </li>
+            );
+          })}
+        </ol>
+
+        <section className="il-new-stage-panel">
+          {props.step === 1 ? (
+            <div className="il-new-stage-scroll" aria-label="Identity and Location">
+              <section className="il-new-block">
+                <h2>Identity</h2>
+                <label className="il-new-field">
+                  <span>Save Name</span>
+                  <input
+                    value={props.gameName}
+                    onChange={(event) => props.onNameChange(event.target.value)}
+                    placeholder="Interlinked World"
+                  />
+                </label>
+              </section>
+
+              <section className="il-new-block">
+                <h2>Location</h2>
+                {props.countries.length === 0 ? (
+                  <p className="il-new-error">No country catalog available. Build location catalog data first.</p>
+                ) : null}
+
+                <label className="il-new-field">
+                  <span>Start Country</span>
+                  <select
+                    value={props.selectedCountryIso2}
+                    onChange={(event) => props.onCountryChange(event.target.value)}
+                  >
+                    {props.countries.map((country) => {
+                      const status =
+                        props.countryPacks.find((pack) => pack.country_iso2 === country.iso2) ?? null;
+                      return (
+                        <option key={country.iso2} value={country.iso2}>
+                          {country.name} ({countryStatusLabel(status)})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+
+                <label className="il-new-field">
+                  <span>City Search</span>
+                  <input
+                    value={props.citySearch}
+                    onChange={(event) => props.onCitySearchChange(event.target.value)}
+                    placeholder="Search city"
+                    type="search"
+                  />
+                </label>
+
+                <div className="il-new-city-browser">
+                  <header>
+                    <span>Starting City</span>
+                  </header>
+                  <div className="il-new-city-list" role="listbox" aria-label="Starting City Options">
+                    {props.filteredCities.map((city) => {
+                      const selected = props.selectedCityId === city.geonameid;
+                      return (
+                        <button
+                          key={city.geonameid}
+                          className={`il-new-city-option${selected ? " is-selected" : ""}`}
+                          onClick={() => props.onCitySelect(city.geonameid)}
+                          type="button"
+                        >
+                          <span>{city.name}</span>
+                          <small>{city.population.toLocaleString()}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {selectedPack && canInstallCountryPack(selectedPack) ? (
+                  <div className="il-new-pack-install">
+                    <p>{selectedPack.reason ?? "Country data is not installed for this start location."}</p>
+                    <InterlinkedButton
+                      size="sm"
+                      tone="secondary"
+                      disabled={props.busy}
+                      onClick={() => props.onInstallPack(selectedPack.country_iso2)}
+                    >
+                      Install Pack
+                    </InterlinkedButton>
+                  </div>
+                ) : null}
+
+                <p className="il-new-selection-line">
+                  Starting city selected: <strong>{props.selectedCityName ?? "No city selected"}</strong>
+                  {props.selectedCountryName ? `, ${props.selectedCountryName}` : ""}
+                  {selectedCityPopulation ? ` · Population ${selectedCityPopulation}` : ""}
+                </p>
+              </section>
+            </div>
+          ) : null}
+
+          {props.step === 2 ? (
+            <div className="il-new-stage-scroll" aria-label="Simulation Setup">
+              <section className="il-new-block">
+                <h2>Difficulty</h2>
+                <div className="il-new-difficulty-grid" role="radiogroup" aria-label="Difficulty">
+                  {DIFFICULTY_CARDS.map((card) => (
+                    <button
+                      key={card.id}
+                      className={`il-new-difficulty-card${props.difficulty === card.id ? " is-active" : ""}`}
+                      onClick={() => props.onDifficultyChange(card.id)}
+                      type="button"
+                    >
+                      <strong>{card.title}</strong>
+                      <span>{card.summary}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="il-new-block">
+                <h2>World Economy</h2>
+                <div className="il-new-setup-grid">
+                  <label className="il-new-field il-new-currency-field">
+                    <span>Currency</span>
+                    <select
+                      value={props.currency}
+                      onChange={(event) => props.onCurrencyChange(event.target.value as CurrencyCode)}
+                    >
+                      <option value="GBP">GBP</option>
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                  </label>
+                  <article className="il-new-budget-card" aria-live="polite">
+                    <small>Starting Budget</small>
+                    <strong>{formattedBudget}</strong>
+                  </article>
+                </div>
+
+                <div className="il-new-modifier-grid">
+                  <article>
+                    <small>Demand</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.demand_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Build Cost</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.capex_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Operating Cost</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.opex_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Maintenance</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.maintenance_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Penalty</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.penalty_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Unlock Cost</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.unlock_cost_mult)}</strong>
+                  </article>
+                  <article>
+                    <small>Ancillary Revenue</small>
+                    <strong>{multiplierLabel(props.difficultyProfile.ancillary_revenue_mult)}</strong>
+                  </article>
+                </div>
+              </section>
+            </div>
+          ) : null}
+
+          {props.step === 3 ? (
+            <div className="il-new-stage-scroll" aria-label="Review and Launch">
+              <section className="il-new-block">
+                <h2>Launch Summary</h2>
+                <div className="il-new-review-grid">
+                  <article>
+                    <small>Save</small>
+                    <strong>{props.gameName.trim() || "Interlinked World"}</strong>
+                  </article>
+                  <article>
+                    <small>Start Location</small>
+                    <strong>
+                      {props.selectedCityName ?? "No city selected"}
+                      {props.selectedCountryName ? `, ${props.selectedCountryName}` : ""}
+                    </strong>
+                  </article>
+                  <article>
+                    <small>Difficulty</small>
+                    <strong>{difficultyTitle}</strong>
+                  </article>
+                  <article>
+                    <small>Starting Budget</small>
+                    <strong>{formattedBudget}</strong>
+                  </article>
+                </div>
+              </section>
+
+              <section className="il-new-block il-new-briefing">
+                <h2>WARNING</h2>
+                <p>
+                  Difficulty, starting budget, currency, and start location cannot be altered after save
+                  creation.
+                </p>
+              </section>
+            </div>
+          ) : null}
+        </section>
+
+        {props.error ? <p className="il-new-error">{props.error}</p> : null}
+
+        <footer className="il-new-actions">
+          {props.step > 1 ? (
+            <InterlinkedButton className="il-new-prev" tone="ghost" onClick={props.onPrev}>
+              Previous
+            </InterlinkedButton>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          {props.step < 3 ? (
+            <InterlinkedButton className="il-new-next" tone="primary" onClick={props.onNext}>
+              Next
+            </InterlinkedButton>
+          ) : (
+            <InterlinkedButton className="il-new-create" tone="primary" onClick={props.onCreate} disabled={props.busy}>
+              Create and Enter
+            </InterlinkedButton>
+          )}
+        </footer>
+      </section>
+    </InterlinkedPageShell>
   );
 }
-

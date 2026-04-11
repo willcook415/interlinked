@@ -7,24 +7,22 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { stopDisplayName } from "../build/helpers";
 import type {
   AppRoute,
-  AlertItem,
   LineOpsRuntimeView,
   ScenarioLite,
   SimulationClock,
   StationRuntimeView,
 } from "../types";
 import type { SessionBootState } from "./useSessionController";
+import type { SessionLifecycleError } from "./session/contracts";
+import { useIssueRegistry } from "./useIssueRegistry";
 
 const UI_SETTINGS_STORAGE_KEY = "interlinked.desktop.ui_settings.v1";
 const ONBOARDING_STORAGE_KEY = "interlinked.desktop.onboarding.completed.v1";
 const WINDOW_STATE_STORAGE_KEY = "interlinked.desktop.window_state.v1";
 const WINDOW_MIN_WIDTH = 1280;
 const WINDOW_MIN_HEIGHT = 720;
-
-const BASE_ALERTS: AlertItem[] = [{ id: "a1", title: "No active disruptions", severity: "info" }];
 
 const ONBOARDING_STEPS = [
   {
@@ -91,6 +89,7 @@ type LineSummaryLike = {
 type UseShellStatusOrchestrationArgs = {
   route: AppRoute;
   sessionBootState: SessionBootState;
+  lifecycleError: SessionLifecycleError | null;
   bundleProjectId: string | null | undefined;
   clock: SimulationClock | null;
   workspaceMode: "view" | "build";
@@ -166,7 +165,6 @@ function readWindowState(): WindowStateSnapshot | null {
 
 export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArgs) {
   const [uiSettings, setUiSettings] = useState<UiSettings>(() => readUiSettings());
-  const [dismissedAlertIds, setDismissedAlertIds] = useState<string[]>([]);
   const [fps, setFps] = useState<number | null>(null);
   const [frameMs, setFrameMs] = useState<number | null>(null);
   const [isOffline, setIsOffline] = useState<boolean>(() =>
@@ -222,126 +220,26 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
     [uiSettings.masterVolume, uiSettings.uiVolume]
   );
 
-  const rawAlerts = useMemo(() => {
-    const alerts: AlertItem[] = [];
-    const inSession = args.route === "session_game" || args.route === "session_scenario";
-    if (args.error?.trim()) {
-      alerts.push({
-        id: "runtime-error",
-        title: "Runtime error",
-        detail: args.error,
-        severity: "critical",
-      });
-    }
-    if (args.builderError?.trim()) {
-      alerts.push({
-        id: "build-warning",
-        title: "Build validation warning",
-        detail: args.builderError,
-        severity: "warn",
-      });
-    }
-    if (args.demandWarning?.trim()) {
-      alerts.push({
-        id: "demand-warning",
-        title: "Demand data coverage warning",
-        detail: args.demandWarning,
-        severity: "warn",
-      });
-    }
-    if (args.saveStatus.trim()) {
-      alerts.push({
-        id: "save-status",
-        title: "Latest action",
-        detail: args.saveStatus,
-        severity: "info",
-      });
-    }
-    if (inSession && args.clock && !args.clock.running) {
-      alerts.push({
-        id: "clock-paused",
-        title: "Simulation paused",
-        detail: "No services progress while paused.",
-        severity: "info",
-      });
-    }
-    if (args.currentBalanceBase !== null && args.currentBalanceBase < 0) {
-      alerts.push({
-        id: "budget-negative",
-        title: "Budget is negative",
-        detail: "Cut operating costs or raise fares to return to a positive balance.",
-        severity: "critical",
-      });
-    }
-
-    const lineNameById = new Map(
-      args.lineSummaries.map((line) => [line.lineId, line.name.trim() ? line.name : "Untitled Line"])
-    );
-    const stressedLines = [...args.runtimeLineOps]
-      .filter((line) => (line.denied_boardings_per_hour ?? 0) >= 30)
-      .sort((left, right) => (right.denied_boardings_per_hour ?? 0) - (left.denied_boardings_per_hour ?? 0))
-      .slice(0, 3);
-    for (const line of stressedLines) {
-      const denied = Math.round(line.denied_boardings_per_hour ?? 0);
-      const lineName = lineNameById.get(line.line_id) ?? line.line_id;
-      alerts.push({
-        id: `line-denied:${line.line_id}`,
-        title: `${lineName} is denying boardings`,
-        detail: `${denied.toLocaleString()} denied boardings/hr. Increase service or capacity.`,
-        severity: denied >= 120 ? "critical" : "warn",
-        action_label: "Open line",
-        target: { kind: "line", id: line.line_id },
-      });
-    }
-
-    if (args.activeScenario) {
-      const stopById = new Map(args.activeScenario.world.stops.map((stop) => [stop.id, stop]));
-      const hotStations = [...args.runtimeStations]
-        .map((station) => {
-          const capacity = Math.max(station.capacity_pax ?? 0, 0);
-          const ratio = capacity > 0 ? Math.max(station.current_inside_pax ?? 0, 0) / capacity : 0;
-          return { station, ratio };
-        })
-        .filter((entry) => entry.ratio >= 0.9)
-        .sort((left, right) => right.ratio - left.ratio)
-        .slice(0, 2);
-      for (const entry of hotStations) {
-        const stop = stopById.get(entry.station.stop_id);
-        const stopName = stopDisplayName(stop ?? { id: entry.station.stop_id, x: 0, y: 0 });
-        alerts.push({
-          id: `station-capacity:${entry.station.stop_id}`,
-          title: `${stopName} nearing capacity`,
-          detail: `${Math.round(entry.ratio * 100)}% full. Consider more service or station expansion.`,
-          severity: entry.ratio >= 1 ? "critical" : "warn",
-          action_label: "Open station",
-          target: { kind: "stop", id: entry.station.stop_id },
-        });
-      }
-    }
-
-    if (alerts.length === 0) return BASE_ALERTS;
-    return alerts.slice(0, 24);
-  }, [
-    args.activeScenario,
-    args.builderError,
-    args.clock,
-    args.currentBalanceBase,
-    args.demandWarning,
-    args.error,
-    args.lineSummaries,
-    args.route,
-    args.runtimeLineOps,
-    args.runtimeStations,
-    args.saveStatus,
-  ]);
+  const issueRegistry = useIssueRegistry({
+    route: args.route,
+    activeScenario: args.activeScenario,
+    lineSummaries: args.lineSummaries,
+    runtimeLineOps: args.runtimeLineOps,
+    runtimeStations: args.runtimeStations,
+    currentBalanceBase: args.currentBalanceBase,
+    builderError: args.builderError,
+    demandWarning: args.demandWarning,
+    runtimeError: args.error,
+    lifecycleError: args.lifecycleError,
+  });
 
   const visibleAlerts = useMemo(() => {
-    const filteredByDismiss = rawAlerts.filter((item) => !dismissedAlertIds.includes(item.id));
-    if (!filteredByDismiss.length) return BASE_ALERTS;
+    const filteredByDismiss = issueRegistry.alertItems;
+    if (!filteredByDismiss.length) return [];
     return uiSettings.quietAlerts
       ? filteredByDismiss.filter((item) => item.severity !== "info")
       : filteredByDismiss;
-  }, [dismissedAlertIds, rawAlerts, uiSettings.quietAlerts]);
+  }, [issueRegistry.alertItems, uiSettings.quietAlerts]);
 
   const showSessionBootOverlay = useMemo(
     () =>
@@ -358,15 +256,12 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
 
   const dismissAlert = useCallback(
     (alertId: string) => {
-      setDismissedAlertIds((previous) => (previous.includes(alertId) ? previous : [...previous, alertId]));
+      issueRegistry.acknowledgeIssue(alertId);
       if (alertId === "runtime-error") {
         args.setError(null);
       }
-      if (alertId === "save-status") {
-        args.setSaveStatus("");
-      }
     },
-    [args]
+    [args, issueRegistry]
   );
 
   const skipOnboarding = useCallback(() => {
@@ -498,11 +393,6 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
   }, [args.saveStatus, args.setSaveStatus]);
 
   useEffect(() => {
-    const activeIds = new Set(rawAlerts.map((alert) => alert.id));
-    setDismissedAlertIds((previous) => previous.filter((id) => activeIds.has(id)));
-  }, [rawAlerts]);
-
-  useEffect(() => {
     const criticalCount = visibleAlerts.filter((alert) => alert.severity === "critical").length;
     if (criticalCount > previousCriticalAlertCountRef.current) {
       playUiCue("alert");
@@ -561,6 +451,15 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
     onboardingStep,
   ]);
 
+  const primaryBlockingIssue = useMemo(
+    () => issueRegistry.activeBlockingIssues[0] ?? null,
+    [issueRegistry.activeBlockingIssues]
+  );
+  const primaryDemandIssue = useMemo(
+    () => issueRegistry.activeIssues.find((issue) => issue.id === "demand-warning") ?? null,
+    [issueRegistry.activeIssues]
+  );
+
   return {
     uiSettings,
     setUiSettings,
@@ -569,6 +468,11 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
     isOffline,
     visibleAlerts,
     dismissAlert,
+    activeBlockingIssues: issueRegistry.activeBlockingIssues,
+    actionableWarnings: issueRegistry.actionableWarnings,
+    backlogIssues: issueRegistry.backlogIssues,
+    primaryBlockingIssue,
+    primaryDemandIssue,
     playUiCue,
     showSessionBootOverlay,
     onboardingActive,

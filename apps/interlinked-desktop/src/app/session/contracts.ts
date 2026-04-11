@@ -7,20 +7,18 @@ import type {
   CountryOption,
   CountryPackStatus,
   CurrencyCode,
-  DeletedSaveMeta,
   DemandCoverageMeta,
   Difficulty,
   FarePolicyManifest,
   FinancialDashboardRequest,
   FinancialDashboardResponse,
-  GameSaveMeta,
   LineOpsRuntimeView,
   MapRuntimeConfig,
   OpenSessionResult,
   PlanningRunConfig,
   RegionStatus,
   RuntimePerfTelemetry,
-  ScenarioSaveMeta,
+  SaveLibrarySnapshot,
   SessionKind,
   SimulationAdvanceEconomy,
   SimulationClock,
@@ -44,11 +42,73 @@ export type SessionBootState = {
   error: string | null;
 };
 
+export type SessionLifecycleState =
+  | "app_home"
+  | "project_selected"
+  | "session_booting"
+  | "session_loading_map"
+  | "session_loading_runtime"
+  | "session_ready"
+  | "session_error"
+  | "session_recovering";
+
+export type SessionLifecycleErrorSource =
+  | "project_open"
+  | "map_runtime_config"
+  | "map"
+  | "runtime_control"
+  | "runtime_snapshot"
+  | "unknown";
+
+export type SessionLifecycleError = {
+  source: SessionLifecycleErrorSource;
+  message: string;
+  recoverable: boolean;
+  occurredAtEpochMs: number;
+};
+
+export type SessionLifecycleCheckpoints = {
+  projectAccepted: boolean;
+  mapContextReady: boolean;
+  runtimeControlReady: boolean;
+  firstFastSnapshotReady: boolean;
+};
+
+export type SessionLifecycleSnapshot = {
+  state: SessionLifecycleState;
+  sessionKind: SessionKind | null;
+  checkpoints: SessionLifecycleCheckpoints;
+  lastError: SessionLifecycleError | null;
+  bootState: SessionBootState;
+};
+
 export type MapBootProgressPayload = {
   stage: "map_style" | "map_context" | "ready" | "error";
   progress: number;
   message: string;
   error?: string | null;
+};
+
+export type SessionLifecycleControllerPort = {
+  snapshot: SessionLifecycleSnapshot;
+  beginProjectSelection: (message?: string) => void;
+  acceptOpenedSession: (sessionKind: SessionKind) => void;
+  markMapRuntimeConfigStarted: () => void;
+  markMapRuntimeConfigReady: () => void;
+  markMapRuntimeConfigFailed: (message: string) => void;
+  publishMapBootProgress: (payload: MapBootProgressPayload) => void;
+  markRuntimeControlReady: () => void;
+  markFirstFastSnapshotReady: () => void;
+  reportBlockingError: (
+    source: SessionLifecycleErrorSource,
+    message: string,
+    recoverable?: boolean
+  ) => void;
+  beginRecovery: (
+    source: SessionLifecycleErrorSource,
+    message?: string
+  ) => void;
+  resetToAppHome: () => void;
 };
 
 export type BuildSessionPort = {
@@ -86,7 +146,7 @@ export type UseSessionControllerParams = {
   setSelectedBaseRun: Dispatch<SetStateAction<string>>;
   financialRequest: FinancialDashboardRequest;
   showFinancialDashboard: boolean;
-  sessionBootState: SessionBootState;
+  lifecycle: SessionLifecycleControllerPort;
   defaultBudgetFor: (difficulty: Difficulty, currency: CurrencyCode) => number;
   formatBackendError: (error: unknown) => string;
   playUiCue: (kind: "confirm" | "error" | "toggle" | "alert") => void;
@@ -100,9 +160,7 @@ export type UseSessionControllerParams = {
   setError: Dispatch<SetStateAction<string | null>>;
   setDemandWarning: Dispatch<SetStateAction<string | null>>;
   setSaveStatus: Dispatch<SetStateAction<string>>;
-  setGameSaves: Dispatch<SetStateAction<GameSaveMeta[]>>;
-  setScenarioSaves: Dispatch<SetStateAction<ScenarioSaveMeta[]>>;
-  setDeletedSaves: Dispatch<SetStateAction<DeletedSaveMeta[]>>;
+  setSaveLibrary: (next: SaveLibrarySnapshot) => void;
   setCountries: Dispatch<SetStateAction<CountryOption[]>>;
   setCountryPacks: Dispatch<SetStateAction<CountryPackStatus[]>>;
   setCities: Dispatch<SetStateAction<CityOption[]>>;
@@ -123,7 +181,6 @@ export type UseSessionControllerParams = {
   setRuntimeTelemetry: Dispatch<SetStateAction<RuntimePerfTelemetry | null>>;
   setSnapshotLatencyMs: Dispatch<SetStateAction<number | null>>;
   setMapInstanceToken: Dispatch<SetStateAction<number>>;
-  setSessionBootState: Dispatch<SetStateAction<SessionBootState>>;
   setFinancialBusy: Dispatch<SetStateAction<boolean>>;
   setFinancialError: Dispatch<SetStateAction<string | null>>;
   setFinancialData: Dispatch<SetStateAction<FinancialDashboardResponse | null>>;

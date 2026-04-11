@@ -1,13 +1,15 @@
 import type { NewGameFlowController } from "../app/useNewGameFlowController";
+import type { SaveBrowserViewModel } from "../app/useSaveBrowserController";
 import type {
   AppRoute,
   CityOption,
   CountryOption,
   CountryPackStatus,
-  DeletedSaveMeta,
   DifficultyProfile,
-  GameSaveMeta,
-  ScenarioSaveMeta,
+  SaveBrowserEntry,
+  SaveBrowserSortKey,
+  SaveBrowserViewGroup,
+  SessionKind,
 } from "../types";
 import HomeScreen from "./HomeScreen";
 import LoadGameScreen from "./LoadGameScreen";
@@ -18,10 +20,9 @@ import NewScenarioScreen from "./NewScenarioScreen";
 export default function AppRouteScreens(props: {
   route: AppRoute;
   canContinue: boolean;
-  latestGameSave: GameSaveMeta | null;
-  gameSaves: GameSaveMeta[];
-  scenarioSaves: ScenarioSaveMeta[];
-  deletedSaves: DeletedSaveMeta[];
+  latestGameSave: SaveBrowserEntry | null;
+  gameBrowserView: SaveBrowserViewModel;
+  scenarioBrowserView: SaveBrowserViewModel;
   countries: CountryOption[];
   countryPacks: CountryPackStatus[];
   selectedCountryIso2: string;
@@ -42,9 +43,14 @@ export default function AppRouteScreens(props: {
   onRouteNewGame: () => void;
   onRouteNewScenario: () => void;
   onRouteLoadScenario: () => void;
+  onOpenSettings: () => void;
   onContinueLatestGame: () => Promise<void>;
   onLoadGameSave: (saveId: string) => Promise<void>;
   onLoadScenarioSave: (saveId: string) => Promise<void>;
+  onSaveBrowserQueryChange: (kind: SessionKind, query: string) => void;
+  onSaveBrowserSortChange: (kind: SessionKind, sortKey: SaveBrowserSortKey) => void;
+  onSaveBrowserGroupChange: (kind: SessionKind, group: SaveBrowserViewGroup) => void;
+  onSaveBrowserSelectProject: (kind: SessionKind, projectId: string | null) => void;
   onDeleteSave: (saveId: string, name: string) => Promise<void>;
   onRestoreDeletedSave: (deletedId: string) => Promise<void>;
   onPurgeDeletedSave: (deletedId: string) => Promise<void>;
@@ -53,7 +59,6 @@ export default function AppRouteScreens(props: {
   onImportScenarioFromPicker: () => Promise<void>;
   onCountryChanged: (iso2: string) => Promise<void>;
   onInstallCountryPack: (iso2: string) => Promise<void>;
-  onUninstallCountryPack: (iso2: string) => Promise<void>;
   onCitySearchChange: (value: string) => void;
   onCitySelected: (id: number | null) => void;
 }) {
@@ -63,17 +68,12 @@ export default function AppRouteScreens(props: {
         onContinueGame={() => {
           void props.onContinueLatestGame();
         }}
-        onOpenRecentGame={(saveId) => {
-          void props.onLoadGameSave(saveId);
-        }}
         onLoadGame={props.onRouteLoadGame}
         onNewGame={props.onRouteNewGame}
         onNewScenario={props.onRouteNewScenario}
-        onLoadScenario={props.onRouteLoadScenario}
+        onOpenSettings={props.onOpenSettings}
         canContinue={props.canContinue}
-        latestGameName={props.latestGameSave?.name ?? null}
-        latestGameOpenedAt={props.latestGameSave?.last_opened_at ?? null}
-        recentGames={props.gameSaves}
+        latestGame={props.latestGameSave}
       />
     );
   }
@@ -83,7 +83,6 @@ export default function AppRouteScreens(props: {
       <NewGameScreen
         step={props.newGame.step}
         gameName={props.newGame.name}
-        modeIntent={props.newGame.intent}
         difficulty={props.newGame.difficulty}
         difficultyProfile={props.selectedDifficultyProfile}
         currency={props.newGame.currency}
@@ -105,18 +104,13 @@ export default function AppRouteScreens(props: {
           void props.onCreateGame();
         }}
         onNameChange={props.newGame.setName}
-        onModeIntentChange={props.newGame.setIntent}
         onDifficultyChange={props.newGame.onDifficultyChanged}
         onCurrencyChange={props.newGame.onCurrencyChanged}
-        onBudgetChange={props.newGame.onBudgetChanged}
         onCountryChange={(iso2) => {
           void props.onCountryChanged(iso2);
         }}
         onInstallPack={(iso2) => {
           void props.onInstallCountryPack(iso2);
-        }}
-        onUninstallPack={(iso2) => {
-          void props.onUninstallCountryPack(iso2);
         }}
         onCitySearchChange={props.onCitySearchChange}
         onCitySelect={(id) => {
@@ -129,9 +123,11 @@ export default function AppRouteScreens(props: {
   if (props.route === "load_game") {
     return (
       <LoadGameScreen
-        saves={props.gameSaves}
-        deleted={props.deletedSaves.filter((row) => row.session_kind === "game")}
+        view={props.gameBrowserView}
         onBack={props.onRouteHome}
+        onQueryChange={(query) => props.onSaveBrowserQueryChange("game", query)}
+        onSortChange={(sortKey) => props.onSaveBrowserSortChange("game", sortKey)}
+        onSelect={(projectId) => props.onSaveBrowserSelectProject("game", projectId)}
         onOpen={(saveId) => {
           void props.onLoadGameSave(saveId);
         }}
@@ -165,10 +161,13 @@ export default function AppRouteScreens(props: {
   if (props.route === "load_scenario") {
     return (
       <LoadScenarioScreen
-        saves={props.scenarioSaves}
-        deleted={props.deletedSaves.filter((row) => row.session_kind === "scenario")}
+        view={props.scenarioBrowserView}
         busy={props.busy}
         onBack={props.onRouteHome}
+        onQueryChange={(query) => props.onSaveBrowserQueryChange("scenario", query)}
+        onSortChange={(sortKey) => props.onSaveBrowserSortChange("scenario", sortKey)}
+        onGroupChange={(group) => props.onSaveBrowserGroupChange("scenario", group)}
+        onSelect={(projectId) => props.onSaveBrowserSelectProject("scenario", projectId)}
         onOpen={(saveId) => {
           void props.onLoadScenarioSave(saveId);
         }}

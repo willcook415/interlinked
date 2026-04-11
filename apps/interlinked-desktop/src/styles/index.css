@@ -8,4 +8,6 @@
 @import "./primitives/pill.css";
 @import "./primitives/card.css";
 @import "./screens/home-screen.css";
+@import "./screens/load-game-screen.css";
+@import "./screens/new-game-screen.css";
 @import "./screens/control-room-theme.css";

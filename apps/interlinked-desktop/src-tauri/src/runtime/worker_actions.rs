@@ -139,6 +139,10 @@ pub(crate) fn handle_runtime_worker_actions(
                     .fixed_step_s
                     .clamp(0.05, 1.0);
                 let next_tick_index = (*ctx.tick_index).saturating_add(1);
+                let next_clock_revision = ctx
+                    .clock_revision_state
+                    .fetch_add(1, Ordering::SeqCst)
+                    .saturating_add(1);
                 let strategic_refresh_due = true;
                 if let Ok(mut snapshot) = run_simulation_tick(
                     &state,
@@ -148,7 +152,7 @@ pub(crate) fn handle_runtime_worker_actions(
                     fixed_step_s,
                     recompute_quick_kpis,
                     next_tick_index,
-                    ctx.clock_revision_state.load(Ordering::SeqCst),
+                    next_clock_revision,
                     ctx.pending_actions.load(Ordering::SeqCst),
                     0,
                     true,

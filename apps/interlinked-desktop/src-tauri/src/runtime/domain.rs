@@ -186,7 +186,13 @@ pub(crate) fn run_simulation_tick(
         dt_s,
     );
     if let Some(metrics) = manifest.progress_metrics.as_mut() {
-        metrics.ridership += frame.kpis.total_trips_served.max(0.0);
+        let served_this_tick = frame.kpis.total_trips_served.max(0.0);
+        if served_this_tick.is_finite() && dt_s.is_finite() && dt_s > 1e-6 {
+            let served_per_hour = (served_this_tick * (3600.0 / dt_s)).max(0.0);
+            if served_per_hour.is_finite() {
+                metrics.ridership = metrics.ridership.max(served_per_hour);
+            }
+        }
     }
     sync_progress_budget_from_economy(manifest);
     let economy = SimulationAdvanceEconomy {

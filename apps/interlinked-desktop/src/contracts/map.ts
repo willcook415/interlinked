@@ -1,3 +1,5 @@
+import type { ScenarioDocumentLite } from "./session";
+
 export type GeoJsonGeometry =
   | {
       type: "Polygon";
@@ -104,6 +106,10 @@ export type FocusResult = {
   primary_focus_region_id: string;
   active_region_ids: string[];
   materialized_cells: number;
+  current_balance_base: number;
+  unlocked_region_ids: string[];
+  unlocked_countries: string[];
+  scenario: ScenarioDocumentLite;
 };
 
 export type UnlockFocusResult = {
@@ -114,6 +120,9 @@ export type UnlockFocusResult = {
   primary_focus_region_id: string;
   active_region_ids: string[];
   materialized_cells: number;
+  unlocked_region_ids: string[];
+  unlocked_countries: string[];
+  scenario: ScenarioDocumentLite;
 };
 
 export type SimulationScopeUpdate = {

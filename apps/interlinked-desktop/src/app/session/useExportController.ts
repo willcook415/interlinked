@@ -35,12 +35,15 @@ export function useExportController({
   const importScenarioFromPicker = useCallback(async () => {
     const picked = await withBusy(async () => pickScenarioFile());
     if (!picked) return;
+    params.lifecycle.beginProjectSelection("Importing scenario...");
     const opened = await withBusy(async () => importScenario(picked, null));
     if (opened) {
       applyOpenedSession(opened);
       await refreshLibraries();
+      return;
     }
-  }, [applyOpenedSession, refreshLibraries, withBusy]);
+    params.lifecycle.resetToAppHome();
+  }, [applyOpenedSession, params.lifecycle, refreshLibraries, withBusy]);
 
   const pickOutputPath = useCallback(
     async (kind: "csv" | "json"): Promise<string | null> => {

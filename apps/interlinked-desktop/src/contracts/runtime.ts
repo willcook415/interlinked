@@ -151,6 +151,13 @@ export type RuntimeLoopStatus = {
   enabled: boolean;
 };
 
+export type RuntimeTemporalDiagnostics = {
+  last_fast_snapshot_interval_ms: number | null;
+  stale_fast_snapshots_rejected: number;
+  latest_fast_clock_revision: number;
+  latest_fast_tick_index: number;
+};
+
 export type HistoryFrameLite = {
   t_s?: number;
   queue_summary?: { total_queue?: number; max_queue?: number };

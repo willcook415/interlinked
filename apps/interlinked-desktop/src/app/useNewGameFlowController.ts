@@ -8,26 +8,29 @@ type NextStepContext = {
   setError: (value: string | null) => void;
 };
 
+function parsePositiveBudget(value: string): number | null {
+  const normalized = value.replace(/[^\d.-]/g, "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 export function useNewGameFlowController(args: {
   defaultBudgetFor: (difficulty: Difficulty, currency: CurrencyCode) => number;
 }) {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [name, setName] = useState("Interlinked World");
-  const [intent, setIntent] = useState("balanced");
   const [difficulty, setDifficulty] = useState<Difficulty>("standard");
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
   const [budget, setBudget] = useState("1500000000");
-  const [budgetEdited, setBudgetEdited] = useState(false);
 
   useEffect(() => {
-    if (budgetEdited) return;
     setBudget(String(args.defaultBudgetFor(difficulty, currency)));
-  }, [args.defaultBudgetFor, budgetEdited, currency, difficulty]);
+  }, [args.defaultBudgetFor, currency, difficulty]);
 
   const beginFlow = useCallback(() => {
     setStep(1);
-    setIntent("balanced");
-    setBudgetEdited(false);
     setBudget(String(args.defaultBudgetFor(difficulty, currency)));
   }, [args.defaultBudgetFor, currency, difficulty]);
 
@@ -39,10 +42,6 @@ export function useNewGameFlowController(args: {
           context.setError("Enter a game name.");
           return;
         }
-        setStep(2);
-        return;
-      }
-      if (step === 2) {
         if (!context.selectedCountry || !context.selectedCity) {
           context.setError("Select country and city.");
           return;
@@ -54,16 +53,17 @@ export function useNewGameFlowController(args: {
           );
           return;
         }
-        setStep(3);
+        setStep(2);
         return;
       }
-      if (step === 3) {
-        const numericBudget = Number(budget);
-        if (!Number.isFinite(numericBudget) || numericBudget <= 0) {
+      if (step === 2) {
+        const numericBudget = parsePositiveBudget(budget);
+        if (numericBudget === null) {
           context.setError("Enter a valid starting budget.");
           return;
         }
-        setStep(4);
+        setStep(3);
+        return;
       }
     },
     [budget, name, step]
@@ -71,25 +71,18 @@ export function useNewGameFlowController(args: {
 
   const previousStep = useCallback(() => {
     setStep((current) => {
-      if (current === 4) return 3;
       if (current === 3) return 2;
+      if (current === 2) return 1;
       return 1;
     });
   }, []);
 
   const onDifficultyChanged = useCallback((value: Difficulty) => {
-    setBudgetEdited(false);
     setDifficulty(value);
   }, []);
 
   const onCurrencyChanged = useCallback((value: CurrencyCode) => {
-    setBudgetEdited(false);
     setCurrency(value);
-  }, []);
-
-  const onBudgetChanged = useCallback((value: string) => {
-    setBudgetEdited(true);
-    setBudget(value);
   }, []);
 
   return {
@@ -97,8 +90,6 @@ export function useNewGameFlowController(args: {
     setStep,
     name,
     setName,
-    intent,
-    setIntent,
     difficulty,
     currency,
     budget,
@@ -107,7 +98,6 @@ export function useNewGameFlowController(args: {
     previousStep,
     onDifficultyChanged,
     onCurrencyChanged,
-    onBudgetChanged,
   };
 }
 

@@ -70,6 +70,18 @@ type LabelMarker = {
   element: HTMLDivElement;
 };
 
+type RuntimeVehicleKeyframe = {
+  tickSeconds: number;
+  receivedAtMs: number;
+};
+
+type RuntimeVehicleTransition = {
+  fromById: Map<string, [number, number]>;
+  toById: Map<string, VehicleSnapshot>;
+  durationMs: number;
+  startedAtMs: number;
+};
+
 export type MapWorldPoint = {
   lng: number;
   lat: number;
@@ -165,6 +177,10 @@ export default function MapView(props: {
   const vehicleByIdRef = useRef<Map<string, VehicleSnapshot>>(new Map());
   const runtimeVehicleFeatureByIdRef = useRef<Map<string, OverlayGeoFeature>>(new Map());
   const runtimeVehicleGeoJsonRef = useRef<OverlayGeoCollection>(overlayCollection());
+  const runtimeVehicleKeyframeRef = useRef<RuntimeVehicleKeyframe | null>(null);
+  const runtimeVehicleTransportIntervalMsRef = useRef(120);
+  const runtimeVehicleTransitionRef = useRef<RuntimeVehicleTransition | null>(null);
+  const runtimeVehicleTransitionFrameRef = useRef<number | null>(null);
   const lastFocusedStopTokenRef = useRef<number | null>(null);
   const lastFocusedVehicleTokenRef = useRef<number | null>(null);
   const cursorHintRef = useRef<HTMLDivElement | null>(null);
@@ -362,17 +378,211 @@ export default function MapView(props: {
     ]
   );
 
+  const cancelRuntimeVehicleTransition = useCallback(() => {
+    if (runtimeVehicleTransitionFrameRef.current !== null) {
+      window.cancelAnimationFrame(runtimeVehicleTransitionFrameRef.current);
+      runtimeVehicleTransitionFrameRef.current = null;
+    }
+    runtimeVehicleTransitionRef.current = null;
+  }, []);
+
+  const publishRuntimeVehicleOverlay = useCallback(
+    (vehicleGeoJson: OverlayGeoCollection) => {
+      const map = mapRef.current;
+      if (!map || !loadedRef.current || !styleReady || !map.getSource(SRC_VEHICLES)) return;
+      const activeVehicleData = activeVehicleOverlayCollection({
+        gameMode,
+        trainsAuthoritative: props.trainsAuthoritative,
+        runtimeVehicleGeoJson: runtimeVehicleGeoJsonRef.current,
+        vehicleGeoJson,
+      });
+      setData(map, SRC_VEHICLES, activeVehicleData);
+    },
+    [gameMode, props.trainsAuthoritative, styleReady]
+  );
+
   useEffect(() => {
-    const result = reconcileRuntimeVehicleGeoJson({
-      gameMode,
-      trainsAuthoritative: props.trainsAuthoritative,
-      vehicleData,
-      runtimeVehicleFeatureById: runtimeVehicleFeatureByIdRef.current,
-    });
-    if (!result.changed || !result.nextGeojson) return;
-    runtimeVehicleGeoJsonRef.current = result.nextGeojson;
-    setRuntimeVehicleGeoJsonVersion((prev) => prev + 1);
-  }, [gameMode, props.trainsAuthoritative, vehicleData.byId, vehicleData.geojson]);
+    const authoritativeVehicles = gameMode || Boolean(props.trainsAuthoritative);
+    if (!authoritativeVehicles) {
+      cancelRuntimeVehicleTransition();
+      runtimeVehicleKeyframeRef.current = null;
+      runtimeVehicleTransportIntervalMsRef.current = 120;
+      const result = reconcileRuntimeVehicleGeoJson({
+        gameMode,
+        trainsAuthoritative: props.trainsAuthoritative,
+        vehicleData,
+        runtimeVehicleFeatureById: runtimeVehicleFeatureByIdRef.current,
+      });
+      if (!result.changed || !result.nextGeojson) return;
+      runtimeVehicleGeoJsonRef.current = result.nextGeojson;
+      setRuntimeVehicleGeoJsonVersion((prev) => prev + 1);
+      return;
+    }
+
+    cancelRuntimeVehicleTransition();
+    const featuresById = runtimeVehicleFeatureByIdRef.current;
+    const nowMs = performance.now();
+    const currentTick = Number.isFinite(props.clock?.tick_seconds)
+      ? Math.max(props.clock?.tick_seconds ?? 0, 0)
+      : runtimeVehicleKeyframeRef.current?.tickSeconds ?? 0;
+    const previousKeyframe = runtimeVehicleKeyframeRef.current;
+    const monotonicTick = previousKeyframe
+      ? Math.max(previousKeyframe.tickSeconds, currentTick)
+      : currentTick;
+
+    if (previousKeyframe && currentTick + 1e-6 < previousKeyframe.tickSeconds) {
+      console.warn("[runtime-temporal] backward train keyframe tick rejected", {
+        previousTickSeconds: previousKeyframe.tickSeconds,
+        incomingTickSeconds: currentTick,
+      });
+    }
+
+    let durationMs = runtimeVehicleTransportIntervalMsRef.current;
+    if (previousKeyframe) {
+      const simDeltaSeconds = Math.max(monotonicTick - previousKeyframe.tickSeconds, 0);
+      const speed = Math.max(props.clock?.speed ?? 1, 1);
+      const durationFromSimMs = simDeltaSeconds > 0 ? (simDeltaSeconds / speed) * 1000 : 0;
+      const arrivalDeltaMs = Math.max(nowMs - previousKeyframe.receivedAtMs, 0);
+      if (arrivalDeltaMs > 1) {
+        runtimeVehicleTransportIntervalMsRef.current =
+          runtimeVehicleTransportIntervalMsRef.current * 0.7 + arrivalDeltaMs * 0.3;
+      }
+      const transportIntervalMs = Math.max(
+        arrivalDeltaMs,
+        runtimeVehicleTransportIntervalMsRef.current
+      );
+      const baselineMs = Math.max(durationFromSimMs, transportIntervalMs);
+      durationMs = Math.min(Math.max(baselineMs || 120, 24), 900);
+      if (simDeltaSeconds > 1.25) {
+        console.warn("[runtime-temporal] large train keyframe gap", {
+          simDeltaSeconds,
+          durationMs,
+          speed,
+        });
+      }
+    }
+
+    runtimeVehicleKeyframeRef.current = {
+      tickSeconds: monotonicTick,
+      receivedAtMs: nowMs,
+    };
+
+    const targetById = new Map(vehicleData.byId);
+    let topologyChanged = false;
+    for (const vehicleId of Array.from(featuresById.keys())) {
+      if (!targetById.has(vehicleId)) {
+        featuresById.delete(vehicleId);
+        topologyChanged = true;
+      }
+    }
+
+    const fromById = new Map<string, [number, number]>();
+    for (const snapshot of targetById.values()) {
+      const existing = featuresById.get(snapshot.vehicleId);
+      if (existing) {
+        const coords = existing.geometry.coordinates as [number, number];
+        const prevLng = coords?.[0];
+        const prevLat = coords?.[1];
+        if (Number.isFinite(prevLng) && Number.isFinite(prevLat)) {
+          fromById.set(snapshot.vehicleId, [prevLng, prevLat]);
+        }
+      }
+      if (!fromById.has(snapshot.vehicleId)) {
+        fromById.set(snapshot.vehicleId, [snapshot.lng, snapshot.lat]);
+      }
+      if (!existing) {
+        featuresById.set(snapshot.vehicleId, {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [snapshot.lng, snapshot.lat] },
+          properties: {
+            vehicle_id: snapshot.vehicleId,
+            service_id: snapshot.serviceId,
+            line_id: snapshot.lineId,
+            mode: snapshot.mode,
+            mode_variant: snapshot.modeVariant,
+            vehicle_capacity: snapshot.vehicleCapacity,
+            passengers_on_board: snapshot.passengersOnBoard,
+            display_color: snapshot.displayColor,
+          },
+        });
+        topologyChanged = true;
+      }
+    }
+
+    if (!previousKeyframe || durationMs <= 24 || targetById.size === 0) {
+      for (const snapshot of targetById.values()) {
+        const feature = featuresById.get(snapshot.vehicleId);
+        if (!feature) continue;
+        feature.geometry.coordinates = [snapshot.lng, snapshot.lat];
+        feature.properties.service_id = snapshot.serviceId;
+        feature.properties.line_id = snapshot.lineId;
+        feature.properties.mode = snapshot.mode;
+        feature.properties.mode_variant = snapshot.modeVariant;
+        feature.properties.vehicle_capacity = snapshot.vehicleCapacity;
+        feature.properties.passengers_on_board = snapshot.passengersOnBoard;
+        feature.properties.display_color = snapshot.displayColor;
+      }
+      if (topologyChanged || targetById.size > 0) {
+        runtimeVehicleGeoJsonRef.current = overlayCollection(Array.from(featuresById.values()));
+        publishRuntimeVehicleOverlay(vehicleData.geojson);
+      }
+      return;
+    }
+
+    runtimeVehicleTransitionRef.current = {
+      fromById,
+      toById: targetById,
+      durationMs,
+      startedAtMs: nowMs,
+    };
+
+    const renderTransitionFrame = (): void => {
+      const transition = runtimeVehicleTransitionRef.current;
+      if (!transition) return;
+      const elapsedMs = Math.max(performance.now() - transition.startedAtMs, 0);
+      const alpha = Math.min(Math.max(elapsedMs / transition.durationMs, 0), 1);
+      for (const [vehicleId, snapshot] of transition.toById.entries()) {
+        const feature = featuresById.get(vehicleId);
+        if (!feature) continue;
+        const from = transition.fromById.get(vehicleId) ?? [snapshot.lng, snapshot.lat];
+        const nextLng = from[0] + (snapshot.lng - from[0]) * alpha;
+        const nextLat = from[1] + (snapshot.lat - from[1]) * alpha;
+        feature.geometry.coordinates = [nextLng, nextLat];
+        feature.properties.service_id = snapshot.serviceId;
+        feature.properties.line_id = snapshot.lineId;
+        feature.properties.mode = snapshot.mode;
+        feature.properties.mode_variant = snapshot.modeVariant;
+        feature.properties.vehicle_capacity = snapshot.vehicleCapacity;
+        feature.properties.passengers_on_board = snapshot.passengersOnBoard;
+        feature.properties.display_color = snapshot.displayColor;
+      }
+      runtimeVehicleGeoJsonRef.current = overlayCollection(Array.from(featuresById.values()));
+      publishRuntimeVehicleOverlay(vehicleData.geojson);
+      if (alpha < 1) {
+        runtimeVehicleTransitionFrameRef.current = window.requestAnimationFrame(renderTransitionFrame);
+      } else {
+        runtimeVehicleTransitionRef.current = null;
+        runtimeVehicleTransitionFrameRef.current = null;
+      }
+    };
+
+    runtimeVehicleTransitionFrameRef.current = window.requestAnimationFrame(renderTransitionFrame);
+  }, [
+    cancelRuntimeVehicleTransition,
+    gameMode,
+    props.clock?.speed,
+    props.clock?.tick_seconds,
+    props.trainsAuthoritative,
+    publishRuntimeVehicleOverlay,
+    vehicleData,
+  ]);
+
+  useEffect(
+    () => () => {
+      cancelRuntimeVehicleTransition();
+    },
+    [cancelRuntimeVehicleTransition]
+  );
 
   useEffect(() => {
     vehicleByIdRef.current = vehicleData.byId;

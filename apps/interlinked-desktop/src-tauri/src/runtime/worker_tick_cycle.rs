@@ -106,6 +106,10 @@ pub(crate) fn run_runtime_worker_tick_cycle(
         .max(1) as u64;
     while steps < catchup.steps_to_run {
         *ctx.tick_index = (*ctx.tick_index).saturating_add(1);
+        let clock_revision = ctx
+            .clock_revision_state
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
         let state = ctx.app.state::<crate::AppState>();
         let emit_runtime_views = steps + 1 == catchup.steps_to_run;
         let strategic_refresh_due =
@@ -118,7 +122,7 @@ pub(crate) fn run_runtime_worker_tick_cycle(
             fixed_step_s,
             (*ctx.tick_index).is_multiple_of(8),
             *ctx.tick_index,
-            ctx.clock_revision_state.load(Ordering::SeqCst),
+            clock_revision,
             ctx.pending_actions.load(Ordering::SeqCst),
             0,
             emit_runtime_views,

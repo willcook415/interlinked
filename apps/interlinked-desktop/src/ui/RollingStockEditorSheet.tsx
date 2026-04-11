@@ -77,7 +77,6 @@ export default function RollingStockEditorSheet(props: {
   const [orderSpeedLevelDraft, setOrderSpeedLevelDraft] = useState(props.speedLevel);
   const [orderComfortLevelDraft, setOrderComfortLevelDraft] = useState(props.comfortLevel);
   const [orderCarsPerUnitDraft, setOrderCarsPerUnitDraft] = useState(props.carsPerUnit);
-  const [displayTickS, setDisplayTickS] = useState(0);
   const preset = props.preset;
   const speedLevels = Array.isArray(preset?.speed_levels) ? preset.speed_levels : [];
   const comfortLevels = Array.isArray(preset?.comfort_levels) ? preset.comfort_levels : [];
@@ -107,7 +106,6 @@ export default function RollingStockEditorSheet(props: {
     setOrderSpeedLevelDraft(props.speedLevel);
     setOrderComfortLevelDraft(props.comfortLevel);
     setOrderCarsPerUnitDraft(props.carsPerUnit);
-    setDisplayTickS(props.currentTickS);
   }, [
     props.carsPerUnit,
     props.comfortLevel,
@@ -218,20 +216,6 @@ export default function RollingStockEditorSheet(props: {
     }
     return rows;
   }, [props.pendingOrders, props.unitsOwned, unitLabel]);
-
-  useEffect(() => {
-    if (!props.open) return;
-    setDisplayTickS(props.currentTickS);
-  }, [props.currentTickS, props.open]);
-
-  useEffect(() => {
-    if (!props.open || !props.clockRunning) return;
-    const speed = Math.max(props.clockSpeed ?? 1, 1);
-    const timer = window.setInterval(() => {
-      setDisplayTickS((value) => value + speed);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [props.clockRunning, props.clockSpeed, props.open]);
 
   const handleBack = () => {
     if (props.editable && dirty) {
@@ -460,7 +444,7 @@ export default function RollingStockEditorSheet(props: {
           <div className="rolling-vehicle-list">
             {queueVehicles.map((vehicle) => {
               const remainingS =
-                vehicle.etaAtTickS === null ? null : Math.max(vehicle.etaAtTickS - displayTickS, 0);
+                vehicle.etaAtTickS === null ? null : Math.max(vehicle.etaAtTickS - props.currentTickS, 0);
               return (
                 <div key={vehicle.id} className="rolling-vehicle-row is-passive">
                   <div>

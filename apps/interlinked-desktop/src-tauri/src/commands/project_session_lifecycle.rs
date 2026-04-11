@@ -25,7 +25,7 @@ use super::super::{
     PersistedSandboxStateFile, ProjectManifest, PurgeSaveResult, RegionStateManifest,
     RestoreSaveResult, RunMeta, RunSummary, SaveIndexEntry, SaveResult, SaveSessionPayload,
     ScenarioCreatePayload, ScenarioSaveMeta, SessionKind, StartLocation, MANIFEST_FILE,
-    SANDBOX_STATE_FILE, SCENARIO_FILE, UI_LAYOUTS_FILE,
+    SANDBOX_STATE_FILE, SCENARIO_FILE, UI_LAYOUTS_FILE, load_persisted_sandbox_state,
 };
 use super::content_library::{country_pack_status_for, rollout_supported_countries};
 
@@ -374,12 +374,32 @@ pub fn list_game_saves(app: AppHandle) -> Result<Vec<GameSaveMeta>, String> {
             .progress_metrics
             .unwrap_or_else(default_progress_metrics);
         metrics.currency = normalize_currency(Some(&metrics.currency));
+        let peak_ridership_pph = load_persisted_sandbox_state(&root)
+            .and_then(|sandbox| sandbox.runtime)
+            .and_then(|runtime| runtime.latest_snapshot)
+            .map(|snapshot| {
+                snapshot
+                    .line_ops
+                    .iter()
+                    .map(|line| line.boarded_per_hour.max(0.0))
+                    .sum::<f64>()
+            })
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .or_else(|| {
+                let fallback = metrics.ridership.max(0.0);
+                if fallback.is_finite() {
+                    Some(fallback)
+                } else {
+                    None
+                }
+            });
         out.push(GameSaveMeta {
             project_id: manifest.project_id.clone(),
             project_path: ent.project_path,
             name: manifest.name,
             last_opened_at: ent.last_opened_at,
             sim_datetime_utc: manifest.clock_state.sim_datetime_utc,
+            sim_tick_seconds: manifest.clock_state.tick_seconds.max(0.0),
             start_country: manifest
                 .start_location
                 .as_ref()
@@ -393,6 +413,7 @@ pub fn list_game_saves(app: AppHandle) -> Result<Vec<GameSaveMeta>, String> {
             network_links: stats.as_ref().map(|x| x.links).unwrap_or(0),
             network_services: stats.as_ref().map(|x| x.services).unwrap_or(0),
             total_link_km: stats.as_ref().map(|x| x.total_link_km).unwrap_or(0.0),
+            peak_ridership_pph,
             progress_metrics: metrics,
         });
     }

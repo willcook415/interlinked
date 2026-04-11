@@ -15,6 +15,7 @@ import type {
   OpenSessionResult,
   RuntimeFastSnapshot,
   RuntimePerfTelemetry,
+  RuntimeTemporalDiagnostics,
   RuntimeStrategicSnapshot,
   SessionKind,
   SimulationAdvanceEconomy,
@@ -28,10 +29,12 @@ import {
   startRuntimeLoop,
   stopRuntimeLoop,
 } from "../api/desktopApi";
+import type { SessionLifecycleControllerPort } from "./session/contracts";
 
 type UseRuntimePollingParams = {
   bundle: OpenSessionResult | null;
   sessionKind: SessionKind | null;
+  lifecycle: SessionLifecycleControllerPort;
   latestClockTickRef: MutableRefObject<number>;
   latestSnapshotTickRef: MutableRefObject<number>;
   latestSnapshotCapturedRef: MutableRefObject<number>;
@@ -47,8 +50,12 @@ type UseRuntimePollingParams = {
   setTrainsAuthoritative: Dispatch<SetStateAction<boolean>>;
   setRuntimeTelemetry: Dispatch<SetStateAction<RuntimePerfTelemetry | null>>;
   setSnapshotLatencyMs: Dispatch<SetStateAction<number | null>>;
+  setTemporalDiagnostics: Dispatch<SetStateAction<RuntimeTemporalDiagnostics>>;
   setError: Dispatch<SetStateAction<string | null>>;
 };
+
+const FAST_POLL_INTERVAL_MS = 50;
+const STRATEGIC_POLL_INTERVAL_MS = 1400;
 
 function finiteNumber(value: number | null | undefined, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -57,6 +64,7 @@ function finiteNumber(value: number | null | undefined, fallback = 0): number {
 export function useRuntimePolling({
   bundle,
   sessionKind,
+  lifecycle,
   latestClockTickRef,
   latestSnapshotTickRef,
   latestSnapshotCapturedRef,
@@ -72,8 +80,13 @@ export function useRuntimePolling({
   setTrainsAuthoritative,
   setRuntimeTelemetry,
   setSnapshotLatencyMs,
+  setTemporalDiagnostics,
   setError,
 }: UseRuntimePollingParams): void {
+  const markRuntimeControlReady = lifecycle.markRuntimeControlReady;
+  const markFirstFastSnapshotReady = lifecycle.markFirstFastSnapshotReady;
+  const reportLifecycleBlockingError = lifecycle.reportBlockingError;
+
   useEffect(() => {
     if (!bundle || sessionKind !== "game") {
       setLiveEconomy(null);
@@ -84,6 +97,12 @@ export function useRuntimePolling({
       setTrainsAuthoritative(false);
       setRuntimeTelemetry(null);
       setSnapshotLatencyMs(null);
+      setTemporalDiagnostics({
+        last_fast_snapshot_interval_ms: null,
+        stale_fast_snapshots_rejected: 0,
+        latest_fast_clock_revision: 0,
+        latest_fast_tick_index: 0,
+      });
       latestClockTickRef.current = 0;
       latestSnapshotTickRef.current = 0;
       latestSnapshotCapturedRef.current = 0;
@@ -118,6 +137,7 @@ export function useRuntimePolling({
     setRuntimeTrains,
     setServiceLoadByServiceId,
     setSnapshotLatencyMs,
+    setTemporalDiagnostics,
     setTrainsAuthoritative,
   ]);
 
@@ -134,6 +154,12 @@ export function useRuntimePolling({
     setTrainsAuthoritative(sessionKind === "game");
     setRuntimeTelemetry(null);
     setSnapshotLatencyMs(null);
+    setTemporalDiagnostics({
+      last_fast_snapshot_interval_ms: null,
+      stale_fast_snapshots_rejected: 0,
+      latest_fast_clock_revision: 0,
+      latest_fast_tick_index: 0,
+    });
   }, [
     bundle?.project_path,
     latestClockTickRef,
@@ -148,108 +174,216 @@ export function useRuntimePolling({
     setRuntimeTelemetry,
     setRuntimeTrains,
     setSnapshotLatencyMs,
+    setTemporalDiagnostics,
     setTrainsAuthoritative,
   ]);
 
   useEffect(() => {
     if (!bundle || sessionKind !== "game") return;
     let cancelled = false;
-    void startRuntimeLoop(bundle.project_path).catch((e) => {
-      if (!cancelled) setError(String(e));
-    });
-    const fastTimer = window.setInterval(() => {
-      void getRuntimeFastSnapshot(bundle.project_path)
-        .then((res) => {
-          if (cancelled || !res) return;
-          const snapshot = res as RuntimeFastSnapshot;
-          // Fast snapshots are the authoritative owner for clock publication.
-          // Strategic snapshots may lag by design and therefore must never drive clock writes.
-          const nextFreshness = clockFreshnessFromSnapshot(
-            snapshot.clock,
-            snapshot.telemetry?.tick_index,
-            snapshot.captured_at_epoch_ms
-          );
-          if (!nextFreshness) return;
-          const previousFreshness: ClockFreshness = {
-            tickSeconds: latestClockTickRef.current,
-            tickIndex: latestSnapshotTickRef.current,
-            capturedAtEpochMs: latestSnapshotCapturedRef.current,
-          };
-          if (!isNonDecreasingClockFreshness(nextFreshness, previousFreshness)) {
-            // Guard against stale/late fast snapshots regressing displayed time.
-            return;
-          }
-          latestClockTickRef.current = nextFreshness.tickSeconds;
-          latestSnapshotTickRef.current = nextFreshness.tickIndex;
-          latestSnapshotCapturedRef.current = nextFreshness.capturedAtEpochMs;
-          setRuntimeTelemetry(snapshot.telemetry ?? null);
-          setSnapshotLatencyMs(
-            nextFreshness.capturedAtEpochMs > 0
-              ? Math.max(Date.now() - nextFreshness.capturedAtEpochMs, 0)
-              : null
-          );
-          setTrainsAuthoritative(Boolean(snapshot.trains_authoritative));
-          const nextRuntimeTrains = Array.isArray(snapshot.trains) ? snapshot.trains : [];
-          setRuntimeTrains((prev) =>
-            sameRuntimeTrains(prev, nextRuntimeTrains) ? prev : nextRuntimeTrains
-          );
-          const nextStations = Array.isArray(snapshot.stations) ? snapshot.stations : [];
-          const nextLineOps = Array.isArray(snapshot.line_ops) ? snapshot.line_ops : [];
-          setRuntimeStations((prev) =>
-            sameRuntimeStations(prev, nextStations) ? prev : nextStations
-          );
-          setRuntimeLineOps((prev) =>
-            sameRuntimeLineOps(prev, nextLineOps) ? prev : nextLineOps
-          );
-          setClock((prev) => (sameClock(prev, snapshot.clock ?? null) ? prev : snapshot.clock ?? null));
-        })
-        .catch((e) => {
-          if (!cancelled) setError(String(e));
-        });
-    }, 120);
+    let fastTimer: number | null = null;
+    let strategicTimer: number | null = null;
+    let firstFastSnapshotReady = false;
+    let staleFastSnapshotsRejected = 0;
+    let latestFastClockRevision = 0;
+    let lastFastSnapshotIntervalMs: number | null = null;
 
-    const strategicTimer = window.setInterval(() => {
-      void getRuntimeStrategicSnapshot(bundle.project_path)
-        .then((res) => {
-          if (cancelled || !res) return;
-          const snapshot = res as RuntimeStrategicSnapshot;
-          // Strategic polling updates strategic-owned payloads only (economy/service overlays).
-          // Clock ownership intentionally stays with fast snapshots to guarantee monotonic time.
-          const strategicTick = finiteNumber(snapshot.telemetry?.tick_index, 0);
-          const strategicCapturedAt = finiteNumber(snapshot.captured_at_epoch_ms, 0);
-          const strategicIsFresh =
-            strategicTick > latestStrategicSnapshotTickRef.current ||
-            (strategicTick === latestStrategicSnapshotTickRef.current &&
-              strategicCapturedAt > latestStrategicSnapshotCapturedRef.current);
-          if (!strategicIsFresh) return;
-          latestStrategicSnapshotTickRef.current = strategicTick;
-          latestStrategicSnapshotCapturedRef.current = strategicCapturedAt;
-          if (snapshot.economy) {
-            setLiveEconomy((prev) =>
-              sameEconomy(prev, snapshot.economy ?? null) ? prev : snapshot.economy ?? null
-            );
+    const publishTemporalDiagnostics = (next: {
+      intervalMs: number | null;
+      staleRejected: number;
+      latestClockRevision: number;
+      latestTickIndex: number;
+    }) => {
+      setTemporalDiagnostics({
+        last_fast_snapshot_interval_ms: next.intervalMs,
+        stale_fast_snapshots_rejected: next.staleRejected,
+        latest_fast_clock_revision: next.latestClockRevision,
+        latest_fast_tick_index: next.latestTickIndex,
+      });
+    };
+
+    const scheduleFastPoll = (delayMs: number) => {
+      if (cancelled) return;
+      fastTimer = window.setTimeout(() => {
+        void runFastPoll();
+      }, Math.max(delayMs, 0));
+    };
+
+    const runFastPoll = async (): Promise<void> => {
+      const cycleStartedAtMs = performance.now();
+      try {
+        const res = await getRuntimeFastSnapshot(bundle.project_path);
+        if (cancelled || !res) return;
+        const snapshot = res as RuntimeFastSnapshot;
+        const nextFreshness = clockFreshnessFromSnapshot(
+          snapshot.clock,
+          snapshot.telemetry?.tick_index,
+          snapshot.clock_revision,
+          snapshot.captured_at_epoch_ms
+        );
+        if (!nextFreshness) return;
+        const previousFreshness: ClockFreshness = {
+          tickSeconds: latestClockTickRef.current,
+          tickIndex: latestSnapshotTickRef.current,
+          clockRevision: latestFastClockRevision,
+          capturedAtEpochMs: latestSnapshotCapturedRef.current,
+        };
+        const snapshotIntervalMs =
+          previousFreshness.capturedAtEpochMs > 0
+            ? nextFreshness.capturedAtEpochMs - previousFreshness.capturedAtEpochMs
+            : 0;
+        if (snapshotIntervalMs > 0) {
+          lastFastSnapshotIntervalMs = snapshotIntervalMs;
+        }
+        if (snapshotIntervalMs > 450) {
+          console.warn("[runtime-transport] fast snapshot interval spike", {
+            intervalMs: snapshotIntervalMs,
+            previous: previousFreshness,
+            incoming: nextFreshness,
+          });
+        }
+        if (!isNonDecreasingClockFreshness(nextFreshness, previousFreshness)) {
+          if (previousFreshness.capturedAtEpochMs > 0) {
+            console.warn("[runtime-clock] stale fast snapshot rejected", {
+              previous: previousFreshness,
+              incoming: nextFreshness,
+              clockRevision: snapshot.clock_revision,
+            });
           }
-          const nextServiceLoads: Record<string, number> = {};
-          for (const row of snapshot.frame?.service_loads ?? []) {
-            const serviceId = row.service_id?.trim();
-            if (!serviceId) continue;
-            const ratio = Number.isFinite(row.load_to_capacity)
-              ? Math.max(row.load_to_capacity, 0)
-              : 0;
-            nextServiceLoads[serviceId] = Math.max(nextServiceLoads[serviceId] ?? 0, ratio);
-          }
-          setServiceLoadByServiceId((prev) =>
-            sameServiceLoads(prev, nextServiceLoads) ? prev : nextServiceLoads
-          );
-        })
-        .catch((e) => {
-          if (!cancelled) setError(String(e));
+          staleFastSnapshotsRejected += 1;
+          publishTemporalDiagnostics({
+            intervalMs: lastFastSnapshotIntervalMs,
+            staleRejected: staleFastSnapshotsRejected,
+            latestClockRevision: latestFastClockRevision,
+            latestTickIndex: latestSnapshotTickRef.current,
+          });
+          return;
+        }
+        const tickDeltaSeconds = nextFreshness.tickSeconds - previousFreshness.tickSeconds;
+        if (previousFreshness.capturedAtEpochMs > 0 && tickDeltaSeconds > 8) {
+          console.warn("[runtime-clock] large fast snapshot clock jump", {
+            tickDeltaSeconds,
+            previous: previousFreshness,
+            incoming: nextFreshness,
+            executedStepsThisCycle: snapshot.telemetry?.executed_steps_this_cycle ?? null,
+            backlogSteps: snapshot.telemetry?.backlog_steps ?? null,
+          });
+        }
+
+        latestClockTickRef.current = nextFreshness.tickSeconds;
+        latestSnapshotTickRef.current = nextFreshness.tickIndex;
+        latestSnapshotCapturedRef.current = nextFreshness.capturedAtEpochMs;
+        latestFastClockRevision = nextFreshness.clockRevision;
+
+        if (!firstFastSnapshotReady) {
+          firstFastSnapshotReady = true;
+          markFirstFastSnapshotReady();
+        }
+
+        setRuntimeTelemetry(snapshot.telemetry ?? null);
+        setSnapshotLatencyMs(
+          nextFreshness.capturedAtEpochMs > 0
+            ? Math.max(Date.now() - nextFreshness.capturedAtEpochMs, 0)
+            : null
+        );
+        setTrainsAuthoritative(Boolean(snapshot.trains_authoritative));
+        const nextRuntimeTrains = Array.isArray(snapshot.trains) ? snapshot.trains : [];
+        setRuntimeTrains((prev) =>
+          sameRuntimeTrains(prev, nextRuntimeTrains) ? prev : nextRuntimeTrains
+        );
+        const nextStations = Array.isArray(snapshot.stations) ? snapshot.stations : [];
+        const nextLineOps = Array.isArray(snapshot.line_ops) ? snapshot.line_ops : [];
+        setRuntimeStations((prev) =>
+          sameRuntimeStations(prev, nextStations) ? prev : nextStations
+        );
+        setRuntimeLineOps((prev) =>
+          sameRuntimeLineOps(prev, nextLineOps) ? prev : nextLineOps
+        );
+        setClock((prev) => (sameClock(prev, snapshot.clock ?? null) ? prev : snapshot.clock ?? null));
+        publishTemporalDiagnostics({
+          intervalMs: lastFastSnapshotIntervalMs,
+          staleRejected: staleFastSnapshotsRejected,
+          latestClockRevision: latestFastClockRevision,
+          latestTickIndex: nextFreshness.tickIndex,
         });
-    }, 1400);
+      } catch (error) {
+        if (!cancelled) setError(String(error));
+      } finally {
+        if (!cancelled) {
+          const elapsedMs = performance.now() - cycleStartedAtMs;
+          scheduleFastPoll(Math.max(FAST_POLL_INTERVAL_MS - elapsedMs, 0));
+        }
+      }
+    };
+
+    const scheduleStrategicPoll = (delayMs: number) => {
+      if (cancelled) return;
+      strategicTimer = window.setTimeout(() => {
+        void runStrategicPoll();
+      }, Math.max(delayMs, 0));
+    };
+
+    const runStrategicPoll = async (): Promise<void> => {
+      const cycleStartedAtMs = performance.now();
+      try {
+        const res = await getRuntimeStrategicSnapshot(bundle.project_path);
+        if (cancelled || !res) return;
+        const snapshot = res as RuntimeStrategicSnapshot;
+        const strategicTick = finiteNumber(snapshot.telemetry?.tick_index, 0);
+        const strategicCapturedAt = finiteNumber(snapshot.captured_at_epoch_ms, 0);
+        const strategicIsFresh =
+          strategicTick > latestStrategicSnapshotTickRef.current ||
+          (strategicTick === latestStrategicSnapshotTickRef.current &&
+            strategicCapturedAt > latestStrategicSnapshotCapturedRef.current);
+        if (!strategicIsFresh) return;
+        latestStrategicSnapshotTickRef.current = strategicTick;
+        latestStrategicSnapshotCapturedRef.current = strategicCapturedAt;
+        if (snapshot.economy) {
+          setLiveEconomy((prev) =>
+            sameEconomy(prev, snapshot.economy ?? null) ? prev : snapshot.economy ?? null
+          );
+        }
+        const nextServiceLoads: Record<string, number> = {};
+        for (const row of snapshot.frame?.service_loads ?? []) {
+          const serviceId = row.service_id?.trim();
+          if (!serviceId) continue;
+          const ratio = Number.isFinite(row.load_to_capacity)
+            ? Math.max(row.load_to_capacity, 0)
+            : 0;
+          nextServiceLoads[serviceId] = Math.max(nextServiceLoads[serviceId] ?? 0, ratio);
+        }
+        setServiceLoadByServiceId((prev) =>
+          sameServiceLoads(prev, nextServiceLoads) ? prev : nextServiceLoads
+        );
+      } catch (error) {
+        if (!cancelled) setError(String(error));
+      } finally {
+        if (!cancelled) {
+          const elapsedMs = performance.now() - cycleStartedAtMs;
+          scheduleStrategicPoll(Math.max(STRATEGIC_POLL_INTERVAL_MS - elapsedMs, 0));
+        }
+      }
+    };
+
+    void startRuntimeLoop(bundle.project_path)
+      .then(() => {
+        if (cancelled) return;
+        markRuntimeControlReady();
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        const message = String(e);
+        setError(message);
+        reportLifecycleBlockingError("runtime_control", message, true);
+      });
+
+    scheduleFastPoll(0);
+    scheduleStrategicPoll(STRATEGIC_POLL_INTERVAL_MS);
+
     return () => {
       cancelled = true;
-      window.clearInterval(fastTimer);
-      window.clearInterval(strategicTimer);
+      if (fastTimer !== null) window.clearTimeout(fastTimer);
+      if (strategicTimer !== null) window.clearTimeout(strategicTimer);
       void stopRuntimeLoop(bundle.project_path).catch(() => undefined);
     };
   }, [
@@ -257,8 +391,11 @@ export function useRuntimePolling({
     latestClockTickRef,
     latestSnapshotCapturedRef,
     latestSnapshotTickRef,
+    markFirstFastSnapshotReady,
+    markRuntimeControlReady,
     latestStrategicSnapshotCapturedRef,
     latestStrategicSnapshotTickRef,
+    reportLifecycleBlockingError,
     sessionKind,
     setClock,
     setError,
@@ -269,6 +406,7 @@ export function useRuntimePolling({
     setRuntimeTrains,
     setServiceLoadByServiceId,
     setSnapshotLatencyMs,
+    setTemporalDiagnostics,
     setTrainsAuthoritative,
   ]);
 }

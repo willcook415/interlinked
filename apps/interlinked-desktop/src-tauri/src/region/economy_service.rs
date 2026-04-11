@@ -1,6 +1,7 @@
 use crate::*;
 use crate::commands::build_mutation::world_xy_to_lonlat_safe;
 use crate::commands::content_library::{demand_surface_file, primary_project_country_iso2};
+use interlinked_engine::model::Scenario;
 use tauri::AppHandle;
 
 pub(crate) fn get_fare_policy(project_path: String) -> Result<FarePolicyManifest, String> {
@@ -588,6 +589,31 @@ pub(crate) fn list_regions(app: AppHandle, project_path: String) -> Result<Vec<R
     region_status_rows_for_manifest(&app, &manifest)
 }
 
+fn apply_region_scope_runtime_mutation(
+    state: &tauri::State<AppState>,
+    project_path: &str,
+    scenario: &Scenario,
+) -> Result<(), String> {
+    if !project_is_current(state, project_path)? {
+        return Ok(());
+    }
+    {
+        let mut guard = state
+            .game
+            .lock()
+            .map_err(|_| "game mutex poisoned".to_string())?;
+        if let Some(game_state) = guard.as_mut() {
+            rehydrate_game_state_scenario(game_state, scenario);
+        }
+    }
+    let _ = enqueue_runtime_action_with_retry(
+        state.inner(),
+        project_path,
+        RuntimeAction::InvalidateMaterialization,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn unlock_region(
     app: AppHandle,
     state: tauri::State<AppState>,
@@ -678,7 +704,7 @@ pub(crate) fn unlock_region(
     .map_err(|e| e.to_string())?;
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
-    let _ = open_session_internal(&app, &state, &project_root)?;
+    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
 
     Ok(UnlockResult {
         region_id: normalized_region,
@@ -783,7 +809,7 @@ pub(crate) fn unlock_and_focus_region(
     .map_err(|e| e.to_string())?;
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
-    let _ = open_session_internal(&app, &state, &project_root)?;
+    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
 
     Ok(UnlockFocusResult {
         region_id: normalized_region.clone(),
@@ -793,6 +819,12 @@ pub(crate) fn unlock_and_focus_region(
         primary_focus_region_id: normalized_region,
         active_region_ids: manifest.region_state.active_region_ids.clone(),
         materialized_cells,
+        unlocked_region_ids: manifest.region_state.unlocked_region_ids.clone(),
+        unlocked_countries: manifest.economy.unlocked_countries.clone(),
+        scenario: ScenarioDocumentLite {
+            schema_version: doc.schema_version,
+            scenario: doc.scenario,
+        },
     })
 }
 
@@ -840,11 +872,18 @@ pub(crate) fn set_primary_focus_region(
     .map_err(|e| e.to_string())?;
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
-    let _ = open_session_internal(&app, &state, &project_root)?;
+    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
     Ok(FocusResult {
         primary_focus_region_id: normalized_region,
         active_region_ids: manifest.region_state.active_region_ids.clone(),
         materialized_cells,
+        current_balance_base: manifest.economy.current_balance_base,
+        unlocked_region_ids: manifest.region_state.unlocked_region_ids.clone(),
+        unlocked_countries: manifest.economy.unlocked_countries.clone(),
+        scenario: ScenarioDocumentLite {
+            schema_version: doc.schema_version,
+            scenario: doc.scenario,
+        },
     })
 }
 
@@ -900,12 +939,7 @@ pub(crate) fn set_simulation_scope(
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
     let project_path_string = project_root.to_string_lossy().to_string();
-    let _ = enqueue_runtime_action_with_retry(
-        state.inner(),
-        &project_path_string,
-        RuntimeAction::InvalidateMaterialization,
-    )?;
-    let _ = open_session_internal(&app, &state, &project_root)?;
+    apply_region_scope_runtime_mutation(&state, &project_path_string, &doc.scenario)?;
     Ok(ScopeState {
         max_active_zones: manifest.simulation_scope.max_active_zones,
         remote_regions_mode: manifest.simulation_scope.remote_regions_mode.clone(),

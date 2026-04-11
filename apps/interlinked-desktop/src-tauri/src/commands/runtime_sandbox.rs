@@ -264,6 +264,28 @@ pub fn enqueue_runtime_action(
     runtime_loop_status_for_project(state.inner(), &project_path)
 }
 
+fn latest_authoritative_clock_for_project(
+    state: &tauri::State<AppState>,
+    project_path: &str,
+    fallback: &SimulationClock,
+) -> Result<SimulationClock, String> {
+    if let Some(mut snapshot) =
+        latest_runtime_fast_snapshot_for_project(state.inner(), project_path)?
+    {
+        if let Some((running, speed, clock_revision, _queue_depth)) =
+            runtime_control_state_for_project(state.inner(), project_path)?
+        {
+            if snapshot.clock_revision <= clock_revision {
+                snapshot.clock.running = running;
+                snapshot.clock.speed = speed;
+                snapshot.clock_revision = clock_revision;
+            }
+        }
+        return Ok(snapshot.clock);
+    }
+    Ok(fallback.clone())
+}
+
 #[command]
 pub fn set_simulation_speed(
     state: tauri::State<AppState>,
@@ -292,7 +314,11 @@ pub fn set_simulation_speed(
         let mut manifest = read_manifest(&project_root)?;
         manifest.clock_state.running = status.running;
         manifest.clock_state.speed = status.speed;
-        return Ok(manifest.clock_state);
+        return latest_authoritative_clock_for_project(
+            &state,
+            &project_path_string,
+            &manifest.clock_state,
+        );
     }
     let mut manifest = read_manifest(&project_root)?;
     manifest.clock_state.speed = speed;
@@ -336,7 +362,11 @@ pub fn set_simulation_running(
         let mut manifest = read_manifest(&project_root)?;
         manifest.clock_state.running = status.running;
         manifest.clock_state.speed = status.speed;
-        return Ok(manifest.clock_state);
+        return latest_authoritative_clock_for_project(
+            &state,
+            &project_path_string,
+            &manifest.clock_state,
+        );
     }
     let mut manifest = read_manifest(&project_root)?;
     manifest.clock_state.running = running;

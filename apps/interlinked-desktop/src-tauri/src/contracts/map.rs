@@ -64,6 +64,10 @@ pub struct FocusResult {
     pub primary_focus_region_id: String,
     pub active_region_ids: Vec<String>,
     pub materialized_cells: usize,
+    pub current_balance_base: f64,
+    pub unlocked_region_ids: Vec<String>,
+    pub unlocked_countries: Vec<String>,
+    pub scenario: ScenarioDocumentLite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +79,9 @@ pub struct UnlockFocusResult {
     pub primary_focus_region_id: String,
     pub active_region_ids: Vec<String>,
     pub materialized_cells: usize,
+    pub unlocked_region_ids: Vec<String>,
+    pub unlocked_countries: Vec<String>,
+    pub scenario: ScenarioDocumentLite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
