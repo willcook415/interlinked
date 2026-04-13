@@ -1,4 +1,4 @@
-use interlinked_engine::model::{DemandMeta, Scenario};
+use interlinked_engine::model::Scenario;
 use interlinked_engine::platform::{
     scenario_network_stats, to_base_currency, ScenarioDocument, ScenarioService,
 };
@@ -9,15 +9,18 @@ use std::path::{Path, PathBuf};
 use tauri::{command, AppHandle};
 
 use super::super::{
-    apply_country_entry_charges, bootstrap_legacy_projects, capture_persisted_runtime_state,
-    default_ancillary_revenue_rate, default_clock_for, default_demand_surface_manifest,
-    default_economy_manifest, default_fare_policy_manifest, default_maintenance_rate,
-    default_progress_metrics, default_quality_penalty_rates, default_runtime_scheduling_manifest,
-    default_simulation_scope_manifest, default_starting_budget_display, default_template_doc,
-    default_template_doc_at_location, difficulty_label, difficulty_profile_for, economy_config,
-    ensure_project_dirs, new_id, normalize_currency, now_string, open_session_internal,
-    projects_root, read_country_pack_index, read_deleted_index, read_index, read_json_file,
-    read_manifest, remove_index_entry, runs_dir, sandbox_state_path, scenario_path,
+    apply_country_entry_charges, bootstrap_legacy_projects,
+    build_region_catalog_for_surface_with_app, canonical_country_iso2,
+    capture_persisted_runtime_state, default_ancillary_revenue_rate, default_clock_for,
+    default_demand_surface_manifest, default_economy_manifest, default_fare_policy_manifest,
+    default_maintenance_rate, default_progress_metrics, default_quality_penalty_rates,
+    default_runtime_scheduling_manifest, default_simulation_scope_manifest,
+    default_starting_budget_display, default_surface_pipeline_demand_meta, default_template_doc,
+    default_template_doc_at_location, difficulty_label, difficulty_profile_for,
+    display_country_name, economy_config, ensure_project_dirs, load_persisted_sandbox_state,
+    load_surface_wire, nearest_region_for_start, new_id, normalize_currency, now_string,
+    open_session_internal, projects_root, read_country_pack_index, read_deleted_index, read_index,
+    read_json_file, read_manifest, remove_index_entry, runs_dir, sandbox_state_path, scenario_path,
     stop_runtime_loop_internal, sync_progress_budget_from_economy, trash_root, ui_layouts_path,
     update_index_opened, upsert_index_entry, write_deleted_index, write_json_file, write_manifest,
     AppState, DeleteSaveResult, DeletedIndexEntry, DeletedSaveMeta, EconomyManifest,
@@ -25,9 +28,38 @@ use super::super::{
     PersistedSandboxStateFile, ProjectManifest, PurgeSaveResult, RegionStateManifest,
     RestoreSaveResult, RunMeta, RunSummary, SaveIndexEntry, SaveResult, SaveSessionPayload,
     ScenarioCreatePayload, ScenarioSaveMeta, SessionKind, StartLocation, MANIFEST_FILE,
-    SANDBOX_STATE_FILE, SCENARIO_FILE, UI_LAYOUTS_FILE, load_persisted_sandbox_state,
+    SANDBOX_STATE_FILE, SCENARIO_FILE, UI_LAYOUTS_FILE,
 };
-use super::content_library::{country_pack_status_for, rollout_supported_countries};
+use super::content_library::{
+    country_pack_status_for, resolve_demand_surface_path, rollout_supported_countries,
+};
+
+fn seed_start_region_for_new_game(app: &AppHandle, manifest: &mut ProjectManifest) {
+    let Some(start) = manifest.start_location.as_ref() else {
+        return;
+    };
+    let Some(iso) = canonical_country_iso2(&start.country_iso2) else {
+        return;
+    };
+    let Some(resolved_surface) = resolve_demand_surface_path(app, &iso) else {
+        return;
+    };
+    let Ok(surface) = load_surface_wire(&resolved_surface.path) else {
+        return;
+    };
+    let Ok(catalog) = build_region_catalog_for_surface_with_app(app, &iso, &surface) else {
+        return;
+    };
+    let Some(seed_region_id) =
+        nearest_region_for_start(&catalog, manifest.start_location.as_ref(), &iso)
+    else {
+        return;
+    };
+    // New games should start with a meaningful planning-region foothold around the chosen city.
+    manifest.region_state.unlocked_region_ids = vec![seed_region_id.clone()];
+    manifest.region_state.primary_focus_region_id = Some(seed_region_id.clone());
+    manifest.region_state.active_region_ids = vec![seed_region_id];
+}
 
 #[command]
 pub fn list_scenario_saves(app: AppHandle) -> Result<Vec<ScenarioSaveMeta>, String> {
@@ -112,13 +144,14 @@ pub fn create_game(
     state: tauri::State<AppState>,
     payload: GameCreatePayload,
 ) -> Result<OpenSessionResult, String> {
-    if payload.country_iso2.trim().len() != 2 {
+    if canonical_country_iso2(&payload.country_iso2).is_none() {
         return Err("country_iso2 must be a two-letter ISO code".to_string());
     }
     if !payload.city_lon.is_finite() || !payload.city_lat.is_finite() {
         return Err("city coordinates must be finite".to_string());
     }
-    let country_iso2 = payload.country_iso2.trim().to_ascii_uppercase();
+    let country_iso2 = canonical_country_iso2(&payload.country_iso2)
+        .ok_or_else(|| "country_iso2 must be a two-letter ISO code".to_string())?;
     let index = read_country_pack_index(&app)?;
     let rollout = rollout_supported_countries();
     let pack_status = country_pack_status_for(&app, &index, &rollout, &country_iso2);
@@ -146,11 +179,7 @@ pub fn create_game(
     // Game sessions must source demand from installed country surfaces only.
     doc.scenario.world.zones.clear();
     doc.scenario.world.demand_cells.clear();
-    doc.scenario.world.demand_meta = Some(DemandMeta {
-        surface_version: "v4".to_string(),
-        loaded_countries: vec![],
-        source: "surface_v4_region_scope".to_string(),
-    });
+    doc.scenario.world.demand_meta = Some(default_surface_pipeline_demand_meta());
     for st in &mut doc.scenario.world.stops {
         st.country_iso2 = Some(country_iso2.clone());
     }
@@ -199,8 +228,12 @@ pub fn create_game(
             milestones: 0,
         }),
         start_location: Some(StartLocation {
-            country_iso2: payload.country_iso2,
-            country_name: payload.country_name,
+            country_iso2: country_iso2.clone(),
+            country_name: if display_country_name(&country_iso2).is_empty() {
+                payload.country_name
+            } else {
+                display_country_name(&country_iso2).to_string()
+            },
             city_id: payload.city_id,
             city_name: payload.city_name,
             city_lon: payload.city_lon,
@@ -234,6 +267,8 @@ pub fn create_game(
         runtime_scheduling: default_runtime_scheduling_manifest(),
         pack_refs: vec![],
     };
+    let mut manifest = manifest;
+    seed_start_region_for_new_game(&app, &mut manifest);
     write_manifest(&project_root, &manifest)?;
     update_index_opened(&app, &project_root, &manifest)?;
     open_session_internal(&app, &state, &project_root)

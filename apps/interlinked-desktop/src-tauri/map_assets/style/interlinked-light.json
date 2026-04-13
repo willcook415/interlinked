@@ -6,6 +6,7 @@
     "gb-basemap": {
       "type": "vector",
       "tiles": ["__BASE_URL__/map/__COUNTRY_ISO2__/tiles/{z}/{x}/{y}.pbf"],
+      "bounds": [-11.5, 49.3, 2.2, 61.2],
       "minzoom": 0,
       "maxzoom": 14
     }
@@ -15,7 +16,7 @@
       "id": "background",
       "type": "background",
       "paint": {
-        "background-color": "#f7f9fb"
+        "background-color": "#c6ddf3"
       }
     },
     {

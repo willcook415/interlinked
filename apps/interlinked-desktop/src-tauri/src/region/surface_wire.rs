@@ -118,20 +118,326 @@ pub(crate) fn unlocked_country_codes(manifest: &ProjectManifest) -> Vec<String> 
         .economy
         .unlocked_countries
         .iter()
-        .map(|x| x.trim().to_ascii_uppercase())
-        .filter(|x| x.len() == 2)
+        .filter_map(|x| canonical_country_iso2(x))
         .collect::<BTreeSet<_>>();
     if let Some(start) = manifest.start_location.as_ref() {
-        let code = start.country_iso2.trim().to_ascii_uppercase();
-        if code.len() == 2 {
+        if let Some(code) = canonical_country_iso2(&start.country_iso2) {
             set.insert(code);
         }
     }
     set.into_iter().collect()
 }
 
+const UK_LAND_BACKFILL_SOURCE_CODE: &str = "uk_land_backfill_res6";
+
+fn feature_country_iso2(props: Option<&serde_json::Map<String, JsonValue>>) -> Option<String> {
+    let props = props?;
+    let direct = props
+        .get("country_iso2")
+        .and_then(|value| value.as_str())
+        .or_else(|| props.get("iso_a2").and_then(|value| value.as_str()))
+        .or_else(|| props.get("ISO_A2").and_then(|value| value.as_str()))
+        .or_else(|| props.get("iso2").and_then(|value| value.as_str()));
+    direct.and_then(canonical_country_iso2)
+}
+
+fn feature_is_uk_landmask_candidate(
+    props: Option<&serde_json::Map<String, JsonValue>>,
+    default_to_true_when_missing: bool,
+) -> bool {
+    match feature_country_iso2(props) {
+        Some(iso) => is_uk_country_iso2(&iso),
+        None => default_to_true_when_missing,
+    }
+}
+
+fn expected_hexes_res6_from_geojson(
+    path: &Path,
+    default_to_true_when_missing: bool,
+) -> Result<BTreeSet<String>, String> {
+    let value = read_json_file::<JsonValue>(path)?;
+    let geojson = serde_json::from_value::<geojson::GeoJson>(value)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let geojson::GeoJson::FeatureCollection(feature_collection) = geojson else {
+        return Ok(BTreeSet::new());
+    };
+    let config = h3o::geom::PolyfillConfig::new(Resolution::Six)
+        .containment_mode(h3o::geom::ContainmentMode::Covers);
+    let mut out = BTreeSet::<String>::new();
+    use h3o::geom::ToCells;
+    for feature in feature_collection.features {
+        if !feature_is_uk_landmask_candidate(feature.properties.as_ref(), default_to_true_when_missing) {
+            continue;
+        }
+        let Some(geometry) = feature.geometry else {
+            continue;
+        };
+        let geo_geometry = geo::Geometry::try_from(&geometry.value)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let h3_geometry = h3o::geom::Geometry::from_degrees(geo_geometry)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        for cell in h3_geometry.to_cells(config) {
+            if cell.resolution() == Resolution::Six {
+                out.insert(cell.to_string().to_ascii_lowercase());
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn world_context_value_from_path(path: &Path) -> Result<JsonValue, String> {
+    let value = read_json_file::<JsonValue>(path)?;
+    let has_country_iso2 = value
+        .get("features")
+        .and_then(|value| value.as_array())
+        .map(|features| {
+            features.iter().any(|feature| {
+                feature
+                    .get("properties")
+                    .and_then(|props| props.as_object())
+                    .and_then(|props| props.get("country_iso2"))
+                    .and_then(|value| value.as_str())
+                    .is_some()
+            })
+        })
+        .unwrap_or(false);
+    if has_country_iso2 {
+        Ok(value)
+    } else {
+        world_context_from_countries_geojson(value)
+    }
+}
+
+fn expected_uk_land_hexes_res6(path: &Path) -> Result<(BTreeSet<String>, Option<PathBuf>), String> {
+    let mut candidate_paths = Vec::<PathBuf>::new();
+    if let Some(pack_root) = path.parent().and_then(|parent| parent.parent()) {
+        candidate_paths.push(pack_root.join("map").join("counties.geojson"));
+        candidate_paths.push(pack_root.join("map").join("world_context.geojson"));
+    }
+    candidate_paths.push(repo_boundaries_root().join("gb_ceremonial_counties_canonical.geojson"));
+    candidate_paths.push(repo_boundaries_root().join("countries.geojson"));
+    candidate_paths.push(repo_boundaries_root().join("world_context.geojson"));
+
+    let mut seen = HashSet::<PathBuf>::new();
+    for candidate in candidate_paths {
+        if !candidate.exists() || !seen.insert(candidate.clone()) {
+            continue;
+        }
+        let file_name = candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let out = if file_name == "world_context.geojson" || file_name == "countries.geojson" {
+            let remapped = world_context_value_from_path(&candidate)?;
+            let remapped_path = candidate.with_extension("remapped.tmp.json");
+            let geojson = serde_json::from_value::<geojson::GeoJson>(remapped)
+                .map_err(|error| format!("{}: {error}", candidate.display()))?;
+            let geojson::GeoJson::FeatureCollection(feature_collection) = geojson else {
+                continue;
+            };
+            let config = h3o::geom::PolyfillConfig::new(Resolution::Six)
+                .containment_mode(h3o::geom::ContainmentMode::Covers);
+            let mut out = BTreeSet::<String>::new();
+            use h3o::geom::ToCells;
+            for feature in feature_collection.features {
+                if !feature_is_uk_landmask_candidate(feature.properties.as_ref(), false) {
+                    continue;
+                }
+                let Some(geometry) = feature.geometry else {
+                    continue;
+                };
+                let geo_geometry = geo::Geometry::try_from(&geometry.value)
+                    .map_err(|error| format!("{}: {error}", remapped_path.display()))?;
+                let h3_geometry = h3o::geom::Geometry::from_degrees(geo_geometry)
+                    .map_err(|error| format!("{}: {error}", remapped_path.display()))?;
+                for cell in h3_geometry.to_cells(config) {
+                    if cell.resolution() == Resolution::Six {
+                        out.insert(cell.to_string().to_ascii_lowercase());
+                    }
+                }
+            }
+            out
+        } else {
+            expected_hexes_res6_from_geojson(&candidate, true)?
+        };
+        if !out.is_empty() {
+            return Ok((out, Some(candidate)));
+        }
+    }
+    Ok((BTreeSet::new(), None))
+}
+
+fn nearest_template_cell(
+    target: CellIndex,
+    templates_by_id: &HashMap<String, DemandSurfaceCellWire>,
+) -> Option<DemandSurfaceCellWire> {
+    for radius in 1..=4 {
+        for neighbor in target.grid_disk::<Vec<_>>(radius) {
+            if neighbor == target || neighbor.resolution() != Resolution::Six {
+                continue;
+            }
+            let key = neighbor.to_string().to_ascii_lowercase();
+            if let Some(template) = templates_by_id.get(&key) {
+                return Some(template.clone());
+            }
+        }
+    }
+    None
+}
+
+fn synthesize_backfill_res6_cell(
+    cell: CellIndex,
+    country_iso2: &str,
+    template: Option<&DemandSurfaceCellWire>,
+) -> DemandSurfaceCellWire {
+    let center: h3o::LatLng = cell.into();
+    let lon = center.lng();
+    let lat = center.lat();
+    let (x, y) = lonlat_to_web_mercator_m(lon, lat);
+    let fallback_mix = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let template_mix = template
+        .map(|cell| {
+            [
+                cell.activity_mix_residential,
+                cell.activity_mix_office,
+                cell.activity_mix_retail,
+                cell.activity_mix_recreation,
+                cell.activity_mix_industrial,
+                cell.activity_mix_education,
+                cell.activity_mix_health,
+            ]
+        })
+        .unwrap_or(fallback_mix);
+    let normalized_mix = normalize_activity_mix(template_mix);
+
+    DemandSurfaceCellWire {
+        cell_id: cell.to_string().to_ascii_lowercase(),
+        h3_res: 6,
+        lon,
+        lat,
+        x,
+        y,
+        area_m2: cell.area_m2(),
+        country_iso2: country_iso2.to_string(),
+        residents_raw: template.map(|cell| cell.residents_raw).unwrap_or(0.0),
+        jobs_raw: template.map(|cell| cell.jobs_raw).unwrap_or(0.0),
+        residents_smooth: template.map(|cell| cell.residents_smooth).unwrap_or(0.0),
+        jobs_smooth: template.map(|cell| cell.jobs_smooth).unwrap_or(0.0),
+        activity_mix_residential: normalized_mix[0],
+        activity_mix_office: normalized_mix[1],
+        activity_mix_retail: normalized_mix[2],
+        activity_mix_recreation: normalized_mix[3],
+        activity_mix_industrial: normalized_mix[4],
+        activity_mix_education: normalized_mix[5],
+        activity_mix_health: normalized_mix[6],
+        quality: template.map(|cell| cell.quality).unwrap_or(0.0),
+    }
+}
+
+fn apply_uk_land_hex_backfill(
+    source_path: &Path,
+    surface: &mut DemandSurfaceCountryWire,
+) -> Result<(), String> {
+    if !is_uk_country_iso2(&surface.country_iso2) {
+        return Ok(());
+    }
+
+    let (expected_hexes, expected_source_path) = expected_uk_land_hexes_res6(source_path)?;
+    if expected_hexes.is_empty() {
+        return Ok(());
+    }
+
+    let templates_by_id = surface
+        .cells_res6
+        .iter()
+        .filter_map(|cell| {
+            let parsed = cell.cell_id.parse::<CellIndex>().ok()?;
+            (parsed.resolution() == Resolution::Six)
+                .then(|| (cell.cell_id.to_ascii_lowercase(), cell.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let actual_before = templates_by_id.keys().cloned().collect::<BTreeSet<_>>();
+
+    let mut missing_hexes = expected_hexes
+        .difference(&actual_before)
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_hexes.sort();
+
+    let mut synthesized = Vec::<DemandSurfaceCellWire>::new();
+    for missing_hex in &missing_hexes {
+        let Ok(cell) = missing_hex.parse::<CellIndex>() else {
+            continue;
+        };
+        if cell.resolution() != Resolution::Six {
+            continue;
+        }
+        let template = nearest_template_cell(cell, &templates_by_id);
+        synthesized.push(synthesize_backfill_res6_cell(
+            cell,
+            &surface.country_iso2,
+            template.as_ref(),
+        ));
+    }
+    surface.cells_res6.extend(synthesized);
+
+    let actual_after = surface
+        .cells_res6
+        .iter()
+        .filter_map(|cell| {
+            let parsed = cell.cell_id.parse::<CellIndex>().ok()?;
+            (parsed.resolution() == Resolution::Six).then(|| cell.cell_id.to_ascii_lowercase())
+        })
+        .collect::<BTreeSet<_>>();
+    let missing_after = expected_hexes
+        .difference(&actual_after)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !surface.source_provenance.is_object() {
+        surface.source_provenance = serde_json::json!({});
+    }
+    if let Some(provenance) = surface.source_provenance.as_object_mut() {
+        provenance.insert(
+            UK_LAND_BACKFILL_SOURCE_CODE.to_string(),
+            JsonValue::Array(
+                missing_hexes
+                    .iter()
+                    .map(|hex_id| JsonValue::String(hex_id.clone()))
+                    .collect(),
+            ),
+        );
+        provenance.insert(
+            "uk_land_coverage_audit".to_string(),
+            serde_json::json!({
+                "expected_land_hexes_res6": expected_hexes.len(),
+                "actual_land_hexes_before_backfill_res6": actual_before.len(),
+                "actual_land_hexes_after_backfill_res6": actual_after.len(),
+                "missing_land_hexes_before_backfill_res6": missing_hexes.len(),
+                "missing_land_hexes_after_backfill_res6": missing_after.len(),
+                "expected_source_path": expected_source_path.map(|path| path.display().to_string()),
+            }),
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn load_surface_wire(path: &Path) -> Result<DemandSurfaceCountryWire, String> {
     let mut surface: DemandSurfaceCountryWire = read_json_file(path)?;
+    if let Some(canonical_iso2) = canonical_country_iso2(&surface.country_iso2) {
+        surface.country_iso2 = canonical_iso2.clone();
+        for cell in &mut surface.cells_res8 {
+            cell.country_iso2 = canonical_iso2.clone();
+        }
+        for cell in &mut surface.cells_res7 {
+            cell.country_iso2 = canonical_iso2.clone();
+        }
+        for cell in &mut surface.cells_res6 {
+            cell.country_iso2 = canonical_iso2.clone();
+        }
+    }
     if surface.surface_version.eq_ignore_ascii_case("v3") {
         backfill_legacy_surface_mix(&mut surface);
         surface.surface_version = "v4".to_string();
@@ -184,6 +490,8 @@ pub(crate) fn load_surface_wire(path: &Path) -> Result<DemandSurfaceCountryWire,
     validate_cells(&mut surface.cells_res8, "res8")?;
     validate_cells(&mut surface.cells_res7, "res7")?;
     validate_cells(&mut surface.cells_res6, "res6")?;
+    apply_uk_land_hex_backfill(path, &mut surface)?;
+    validate_cells(&mut surface.cells_res6, "res6")?;
     Ok(surface)
 }
 
@@ -224,14 +532,10 @@ pub(crate) fn migrate_legacy_synthetic_demand(scenario: &mut Scenario) -> bool {
         .world
         .demand_meta
         .as_ref()
-        .map(|m| m.source != "surface_v4_region_scope")
+        .map(|m| m.source != DEMAND_PIPELINE_PERSISTED_META_SOURCE)
         .unwrap_or(true);
     if changed || should_reset_meta {
-        scenario.world.demand_meta = Some(DemandMeta {
-            surface_version: "v4".to_string(),
-            loaded_countries: vec![],
-            source: "surface_v4_region_scope".to_string(),
-        });
+        scenario.world.demand_meta = Some(default_surface_pipeline_demand_meta());
         changed = true;
     }
     changed
@@ -252,4 +556,115 @@ pub(crate) fn is_surface_generated_zone_id(zone_id: &str) -> bool {
         .strip_prefix("z:")
         .map(is_surface_generated_cell_id)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uk_surface_path() -> PathBuf {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..");
+        let uk = repo_root
+            .join("data")
+            .join("country_packs")
+            .join("UK")
+            .join("surfaces")
+            .join("UK.surface.json");
+        if uk.exists() {
+            return uk;
+        }
+        repo_root
+            .join("data")
+            .join("country_packs")
+            .join("GB")
+            .join("surfaces")
+            .join("GB.surface.json")
+    }
+
+    fn res6_cell_set(surface: &DemandSurfaceCountryWire) -> BTreeSet<String> {
+        surface
+            .cells_res6
+            .iter()
+            .filter_map(|cell| {
+                let parsed = cell.cell_id.parse::<CellIndex>().ok()?;
+                (parsed.resolution() == Resolution::Six).then(|| cell.cell_id.to_ascii_lowercase())
+            })
+            .collect::<BTreeSet<_>>()
+    }
+
+    #[test]
+    fn uk_surface_backfill_eliminates_expected_land_gaps() {
+        let surface_path = uk_surface_path();
+        let raw_surface =
+            read_json_file::<DemandSurfaceCountryWire>(&surface_path).expect("raw UK surface");
+        let (expected, source_path) =
+            expected_uk_land_hexes_res6(&surface_path).expect("expected UK land hex set");
+        assert!(
+            !expected.is_empty(),
+            "expected UK land set should not be empty (source: {:?})",
+            source_path
+        );
+        assert!(
+            source_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_ascii_lowercase().contains("counties.geojson"))
+                .unwrap_or(false),
+            "expected UK landmask should come from county coastline geometry first; got {:?}",
+            source_path
+        );
+
+        let before_cells = res6_cell_set(&raw_surface);
+        let before_missing = expected
+            .difference(&before_cells)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let repaired_surface = load_surface_wire(&surface_path).expect("repaired UK surface");
+        let after_cells = res6_cell_set(&repaired_surface);
+        let after_missing = expected
+            .difference(&after_cells)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        println!(
+            "uk_land_backfill source={:?} expected={} before_missing={} after_missing={}",
+            source_path,
+            expected.len(),
+            before_missing.len(),
+            after_missing.len()
+        );
+
+        assert!(
+            before_missing.len() >= after_missing.len(),
+            "backfill should not increase missing UK land hexes"
+        );
+        assert!(
+            after_missing.is_empty(),
+            "UK land hexes still missing after backfill: {}",
+            after_missing.join(", ")
+        );
+    }
+
+    #[test]
+    fn uk_surface_includes_known_island_and_coastal_cells() {
+        let surface_path = uk_surface_path();
+        let surface = load_surface_wire(&surface_path).expect("repaired UK surface");
+        let cells = res6_cell_set(&surface);
+        let targets = [
+            ("Isles of Scilly", -6.315, 49.915),
+            ("Orkney (Kirkwall area)", -2.960, 58.984),
+            ("Cornwall coast (Lizard area)", -5.206, 49.968),
+        ];
+        for (label, lon, lat) in targets {
+            let ll = h3o::LatLng::new(lat, lon).expect("valid lon/lat");
+            let cell = ll.to_cell(Resolution::Six).to_string().to_ascii_lowercase();
+            assert!(
+                cells.contains(&cell),
+                "{label} expected res6 cell missing from UK surface: {cell}"
+            );
+        }
+    }
 }

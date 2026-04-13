@@ -1,3 +1,4 @@
+use crate::commands::content_library::resolve_map_assets;
 use crate::*;
 
 pub(crate) fn landuse_class_profile(class_name: &str) -> Option<([f64; 7], f64)> {
@@ -80,12 +81,13 @@ pub(crate) fn county_landuse_file(
     if county.is_empty() {
         return None;
     }
-    let pack_dir = country_pack_dir(app, &iso)?;
-    for dir_name in ["county_basemap_full", "county_basemap_mid"] {
-        let path = pack_dir
-            .join("map")
-            .join(dir_name)
-            .join(format!("{county}.geojson"));
+    let assets = resolve_map_assets(app, &iso);
+    for dir in [
+        assets.county_basemap_full_dir.as_ref(),
+        assets.county_basemap_mid_dir.as_ref(),
+    ] {
+        let Some(dir) = dir else { continue };
+        let path = dir.path.join(format!("{county}.geojson"));
         if path.exists() {
             return Some(path);
         }
@@ -98,9 +100,10 @@ pub(crate) fn load_county_landuse_profile(
     country_iso2: &str,
     county_id: &str,
 ) -> Result<CountyLanduseProfile, String> {
-    let iso = country_iso2.trim().to_ascii_uppercase();
+    let iso = canonical_country_iso2(country_iso2)
+        .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
     let county = county_id.trim().to_ascii_lowercase();
-    if iso != "GB" || county.is_empty() {
+    if !is_uk_country_iso2(&iso) || county.is_empty() {
         return Ok(CountyLanduseProfile::default());
     }
     let cache_key = format!("{iso}:{county}");
@@ -162,7 +165,7 @@ pub(crate) fn enrich_station_inspection_with_landuse(
     else {
         return Ok(());
     };
-    let landuse = load_county_landuse_profile(app, "GB", &county.county_id)?;
+    let landuse = load_county_landuse_profile(app, CANONICAL_UK_ISO2, &county.county_id)?;
     if landuse.samples.is_empty() {
         return Ok(());
     }

@@ -6,7 +6,7 @@ import maplibregl, {
   type PointLike,
 } from "maplibre-gl";
 import type { LinkModeFilter } from "./ui/MapFiltersPanel";
-import { EMPTY_LINE_FILTER, EMPTY_STOP_FILTER, SRC_BUILD_PREVIEW, SRC_COUNTIES, SRC_COUNTY_BASEMAP, SRC_LINKS, SRC_MAJOR_ROADS, SRC_STOPS, SRC_TRANSFERS, SRC_VEHICLES, SRC_WORLD, SRC_WORLD_LABELS, SRC_ZONES, ensureMapLayers } from "./map/style/ensureMapLayers";
+import { EMPTY_LINE_FILTER, EMPTY_STOP_FILTER, SRC_BUILD_PREVIEW, SRC_HEX_COVERAGE_GAPS, SRC_LINKS, SRC_MAJOR_ROADS, SRC_REGIONS, SRC_REGION_HEXES, SRC_STOPS, SRC_TRANSFERS, SRC_VEHICLES, SRC_WORLD, SRC_WORLD_LABELS, SRC_ZONES, ensureMapLayers } from "./map/style/ensureMapLayers";
 import {
   buildServiceById,
   buildVehicleData,
@@ -36,24 +36,21 @@ import { type GeoCollection, fc } from "./map/data/contracts";
 import { lngLatToXY, type XY, xyToLngLat } from "./map/geo/coords";
 import {
   boundsFromGeometry,
-  boundsIntersect,
-  flattenBounds,
-  padBounds,
   pointInGeometry,
 } from "./map/geo/geometry";
 import {
-  basemapTierForZoom,
-  buildCountyBoundsData,
   buildCountyFeatures,
   buildCountyLabelData,
+  buildHexCoverageGapFeatures,
+  buildPlanningHexFeatures,
+  buildUkHexCoverageDiagnostics,
   buildWorldCountryData,
   buildWorldCountryLabelData,
   fetchFeatureCollection,
-  makeUrlFromTemplate,
-  mergeFeatureCollections,
   normalizeBasemapFeatureCollection,
-  parseCountyGeometry,
+  parseRegionGeometry,
 } from "./map/data/worldContext";
+import { buildRegionDisplayNames } from "./map/data/regionPresentation";
 import {
   buildNetworkGeojsonData,
   buildStopPointById,
@@ -68,6 +65,17 @@ import {
 type LabelMarker = {
   marker: maplibregl.Marker;
   element: HTMLDivElement;
+};
+
+type HexInspectDatum = {
+  hexNumber: number | null;
+  hexId: string;
+  regionId: string;
+  regionName: string;
+  assignmentState: string;
+  unassigned: boolean;
+  unlocked: boolean;
+  resolved: boolean;
 };
 
 type RuntimeVehicleKeyframe = {
@@ -168,8 +176,7 @@ export default function MapView(props: {
   const initialCenteredRef = useRef(false);
   const previousFocusRef = useRef<string | null>(null);
   const labelMarkersRef = useRef<LabelMarker[]>([]);
-  const countyBasemapCacheRef = useRef<Map<string, Promise<GeoCollection> | GeoCollection>>(new Map());
-  const lastViewportKeyRef = useRef<string>("");
+  const assetCollectionCacheRef = useRef<Map<string, Promise<GeoCollection> | GeoCollection>>(new Map());
   const suppressNextMapClickRef = useRef(false);
   const hoverPointRef = useRef<MapWorldPoint | null>(null);
   const hoverStopIdRef = useRef<string | null>(null);
@@ -183,16 +190,20 @@ export default function MapView(props: {
   const runtimeVehicleTransitionFrameRef = useRef<number | null>(null);
   const lastFocusedStopTokenRef = useRef<number | null>(null);
   const lastFocusedVehicleTokenRef = useRef<number | null>(null);
+  const authoringModeRef = useRef(false);
+  const hoveredHexIdRef = useRef<string | null>(null);
   const cursorHintRef = useRef<HTMLDivElement | null>(null);
-  const lockedCountyLookupRef = useRef<(point: XY) => string | null>(() => null);
+  const lockedRegionLookupRef = useRef<(point: XY) => string | null>(() => null);
   const [styleReady, setStyleReady] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+  const [authoringMode, setAuthoringMode] = useState(false);
+  const [hoveredHex, setHoveredHex] = useState<HexInspectDatum | null>(null);
+  const [selectedHex, setSelectedHex] = useState<HexInspectDatum | null>(null);
+  const [visibleHexCount, setVisibleHexCount] = useState(0);
   const [runtimeVehicleGeoJsonVersion, setRuntimeVehicleGeoJsonVersion] = useState(0);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [worldContextData, setWorldContextData] = useState<GeoCollection>(fc());
-  const [countyGeometryData, setCountyGeometryData] = useState<GeoCollection>(fc());
   const [majorRoadData, setMajorRoadData] = useState<GeoCollection>(fc());
-  const [countyBasemapData, setCountyBasemapData] = useState<GeoCollection>(fc());
   const hintTimerRef = useRef<number | null>(null);
   const bootReadyEmittedRef = useRef(false);
 
@@ -204,6 +215,31 @@ export default function MapView(props: {
   useEffect(() => {
     propsRef.current = props;
   }, [props]);
+
+  useEffect(() => {
+    authoringModeRef.current = authoringMode;
+  }, [authoringMode]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey && event.key.toLowerCase() === "h") {
+        event.preventDefault();
+        setAuthoringMode((value) => {
+          const next = !value;
+          authoringModeRef.current = next;
+          if (!next) {
+            hoveredHexIdRef.current = null;
+            setHoveredHex(null);
+            setSelectedHex(null);
+            setVisibleHexCount(0);
+          }
+          return next;
+        });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const emitBootProgress = useCallback(
     (payload: {
@@ -221,16 +257,15 @@ export default function MapView(props: {
     selectedVehicleIdRef.current = selectedVehicleId;
   }, [selectedVehicleId]);
 
-  const countyGeometryByRegionId = useMemo(() => {
-    const out = new Map<string, GeoJsonGeometry>();
-    for (const feature of countyGeometryData.features) {
-      const regionId = feature.properties?.region_id;
-      if (typeof regionId === "string" && feature.geometry.type !== "Point" && feature.geometry.type !== "LineString") {
-        out.set(regionId, feature.geometry as GeoJsonGeometry);
-      }
-    }
-    return out;
-  }, [countyGeometryData]);
+  const regionDisplayNameById = useMemo(
+    () => buildRegionDisplayNames(props.regions),
+    [props.regions]
+  );
+
+  const unlockedRegionIds = useMemo(
+    () => new Set(props.regions.filter((region) => region.unlocked).map((region) => region.region_id)),
+    [props.regions]
+  );
 
   const focusRegion = useMemo(
     () => props.regions.find((region) => region.region_id === props.focusRegionId) ?? null,
@@ -264,57 +299,161 @@ export default function MapView(props: {
   const resolveRegionGeometry = useCallback(
     (region: RegionStatus | null): GeoJsonGeometry | null => {
       if (!region) return null;
-      return countyGeometryByRegionId.get(region.region_id) ?? parseCountyGeometry(region);
+      return parseRegionGeometry(region);
     },
-    [countyGeometryByRegionId]
+    []
   );
 
-  const countyFeatures = useMemo<GeoCollection>(
-    () =>
-      buildCountyFeatures({
+  const regionFeatures = useMemo<GeoCollection>(
+    () => {
+      const base = buildCountyFeatures({
         regions: props.regions,
         focusRegionId: props.focusRegionId,
         selectedRegionId: props.selectedRegionId,
         resolveRegionGeometry,
-      }),
-    [props.regions, props.focusRegionId, props.selectedRegionId, resolveRegionGeometry]
+      });
+      return fc(
+        base.features.map((feature) => {
+          const regionId = String(feature.properties?.region_id ?? "");
+          const display = regionDisplayNameById.get(regionId);
+          if (!display) return feature;
+          return {
+            ...feature,
+            properties: {
+              ...feature.properties,
+              name: display,
+            },
+          };
+        })
+      );
+    },
+    [props.regions, props.focusRegionId, props.selectedRegionId, regionDisplayNameById, resolveRegionGeometry]
   );
 
-  const lockedCountyNameAtPoint = useCallback(
+  const lockedRegionNameAtPoint = useCallback(
     (point: XY): string | null => {
-      for (const feature of countyFeatures.features) {
+      for (const feature of regionFeatures.features) {
         if (feature.geometry.type === "Point" || feature.geometry.type === "LineString") continue;
         if (Number(feature.properties?.unlocked ?? 0) === 1) continue;
         if (!pointInGeometry(point, feature.geometry as GeoJsonGeometry)) continue;
         const name = feature.properties?.name;
-        return typeof name === "string" && name.trim().length > 0 ? name : "this county";
+        return typeof name === "string" && name.trim().length > 0 ? name : "this region";
       }
       return null;
     },
-    [countyFeatures]
+    [regionFeatures]
   );
 
   useEffect(() => {
-    lockedCountyLookupRef.current = lockedCountyNameAtPoint;
-  }, [lockedCountyNameAtPoint]);
+    lockedRegionLookupRef.current = lockedRegionNameAtPoint;
+  }, [lockedRegionNameAtPoint]);
 
-  const countyLabelData = useMemo(
+  const regionLabelData = useMemo(
     () =>
       buildCountyLabelData({
         regions: props.regions,
         focusRegionId: props.focusRegionId,
         resolveRegionGeometry,
-      }),
-    [props.regions, props.focusRegionId, resolveRegionGeometry]
+      }).map((label) => ({
+        ...label,
+        name: regionDisplayNameById.get(label.regionId) ?? label.name,
+      })),
+    [props.regions, props.focusRegionId, regionDisplayNameById, resolveRegionGeometry]
   );
 
-  const countyBoundsData = useMemo(
-    () =>
-      buildCountyBoundsData({
+  const planningHexData = useMemo(
+    () => {
+      const raw = buildPlanningHexFeatures({
         regions: props.regions,
-        resolveRegionGeometry,
-      }),
-    [props.regions, resolveRegionGeometry]
+        regionFeatures,
+      });
+      const explicitNumberByFeatureIndex = new Map<number, number>();
+      raw.features.forEach((feature, index) => {
+        const isUnassigned = Number(feature.properties?.hex_unassigned ?? 0) === 1;
+        if (!isUnassigned) return;
+        const name = String(feature.properties?.name ?? "").trim();
+        const match = /^hex\s*#\s*(\d+)$/i.exec(name);
+        if (!match) return;
+        const parsed = Number(match[1]);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          explicitNumberByFeatureIndex.set(index, Math.trunc(parsed));
+        }
+      });
+      const stableOrder = raw.features
+        .map((feature, index) => {
+          const hexId = String(feature.properties?.hex_id ?? "").trim();
+          const regionId = String(feature.properties?.region_id ?? "").trim();
+          const regionName = String(feature.properties?.name ?? "").trim();
+          return {
+            index,
+            key: `${hexId}|${regionId}|${regionName}`,
+          };
+        })
+        .sort((a, b) => a.key.localeCompare(b.key) || a.index - b.index);
+      const displayNumberByFeatureIndex = new Map<number, number>();
+      stableOrder.forEach((entry, orderIndex) => {
+        displayNumberByFeatureIndex.set(entry.index, orderIndex + 1);
+      });
+      return fc(
+        raw.features.map((feature, index) => ({
+          ...feature,
+          properties: {
+            ...feature.properties,
+            hex_num:
+              explicitNumberByFeatureIndex.get(index) ??
+              displayNumberByFeatureIndex.get(index) ??
+              index + 1,
+          },
+        }))
+      );
+    },
+    [regionFeatures, props.regions]
+  );
+
+  const maxPlanningHexNumber = useMemo(
+    () =>
+      planningHexData.features.reduce((max, feature) => {
+        const value = Number(feature.properties?.hex_num ?? 0);
+        if (!Number.isFinite(value)) return max;
+        return Math.max(max, Math.trunc(value));
+      }, 0),
+    [planningHexData]
+  );
+
+  const planningHexSummary = useMemo(() => {
+    const total = planningHexData.features.length;
+    const resolved = planningHexData.features.filter(
+      (feature) => Number(feature.properties?.hex_resolved ?? 0) === 1
+    ).length;
+    const unassigned = planningHexData.features.filter(
+      (feature) => Number(feature.properties?.hex_unassigned ?? 0) === 1
+    ).length;
+    const manualAssigned = planningHexData.features.filter(
+      (feature) => Number(feature.properties?.hex_manual_assigned ?? 0) === 1
+    ).length;
+    const otherAssigned = Math.max(total - unassigned - manualAssigned, 0);
+    return {
+      total,
+      resolved,
+      unresolved: Math.max(total - resolved, 0),
+      unassigned,
+      manualAssigned,
+      otherAssigned,
+    };
+  }, [planningHexData]);
+
+  const ukHexCoverageDiagnostics = useMemo(
+    () => buildUkHexCoverageDiagnostics(worldCountryData, planningHexData),
+    [planningHexData, worldCountryData]
+  );
+
+  const hexCoverageGapData = useMemo(
+    () =>
+      buildHexCoverageGapFeatures(
+        ukHexCoverageDiagnostics.missing_hex_ids.slice(0, 4000),
+        maxPlanningHexNumber + 1
+      ),
+    [maxPlanningHexNumber, ukHexCoverageDiagnostics.missing_hex_ids]
   );
 
   const networkData = useMemo(
@@ -597,20 +736,20 @@ export default function MapView(props: {
   );
 
   const loadBasemapCollection = useCallback(async (url: string): Promise<GeoCollection> => {
-    const cached = countyBasemapCacheRef.current.get(url);
+    const cached = assetCollectionCacheRef.current.get(url);
     if (cached) {
       return cached instanceof Promise ? cached : Promise.resolve(cached);
     }
     const pending = fetchFeatureCollection(url)
       .then((collection) => {
-        countyBasemapCacheRef.current.set(url, collection);
+        assetCollectionCacheRef.current.set(url, collection);
         return collection;
       })
       .catch((error) => {
-        countyBasemapCacheRef.current.delete(url);
+        assetCollectionCacheRef.current.delete(url);
         throw error;
       });
-    countyBasemapCacheRef.current.set(url, pending);
+    assetCollectionCacheRef.current.set(url, pending);
     return pending;
   }, []);
 
@@ -685,58 +824,35 @@ export default function MapView(props: {
     }
   }, []);
 
-  const refreshViewportBasemap = useCallback(() => {
-    const map = mapRef.current;
-    if (!map || usesVectorBasemap || !props.mapRuntimeConfig?.map_ready) {
-      setCountyBasemapData(fc());
-      return;
-    }
-    const tier = basemapTierForZoom(map.getZoom());
-    if (tier === "none") {
-      lastViewportKeyRef.current = "none";
-      setCountyBasemapData(fc());
-      return;
-    }
-    const bounds = map.getBounds();
-    const viewportBounds = padBounds(
-      [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()],
-      tier === "full" ? 0.12 : 0.4
-    );
-    const center = map.getCenter();
-    const visible = countyBoundsData
-      .filter((entry) => boundsIntersect(entry.bounds, viewportBounds))
-      .sort((a, b) => {
-        const aCenterLng = (a.bounds[0] + a.bounds[2]) * 0.5;
-        const aCenterLat = (a.bounds[1] + a.bounds[3]) * 0.5;
-        const bCenterLng = (b.bounds[0] + b.bounds[2]) * 0.5;
-        const bCenterLat = (b.bounds[1] + b.bounds[3]) * 0.5;
-        const aD2 = (aCenterLng - center.lng) ** 2 + (aCenterLat - center.lat) ** 2;
-        const bD2 = (bCenterLng - center.lng) ** 2 + (bCenterLat - center.lat) ** 2;
-        return aD2 - bD2;
-      })
-      .slice(0, map.getZoom() >= 12.5 ? 3 : 1);
-    const template =
-      tier === "full"
-        ? props.mapRuntimeConfig.county_basemap_full_url_template ?? props.mapRuntimeConfig.county_basemap_mid_url_template
-        : props.mapRuntimeConfig.county_basemap_mid_url_template ?? props.mapRuntimeConfig.county_basemap_full_url_template;
-    if (!template || visible.length === 0) {
-      lastViewportKeyRef.current = `${tier}:empty`;
-      setCountyBasemapData(fc());
-      return;
-    }
-    const urls = visible
-      .map((entry) => makeUrlFromTemplate(template, entry.countyId))
-      .filter((url): url is string => Boolean(url))
-      .sort();
-    const viewportKey = `${tier}:${urls.join("|")}`;
-    if (viewportKey === lastViewportKeyRef.current) return;
-    lastViewportKeyRef.current = viewportKey;
-
-    void Promise.all(urls.map((url) => loadBasemapCollection(url).catch(() => fc()))).then((collections) => {
-      if (lastViewportKeyRef.current !== viewportKey) return;
-      setCountyBasemapData(mergeFeatureCollections(collections));
-    });
-  }, [countyBoundsData, loadBasemapCollection, props.mapRuntimeConfig, usesVectorBasemap]);
+  const readHexInspectDatum = useCallback(
+    (feature: { properties?: Record<string, unknown> } | undefined): HexInspectDatum | null => {
+      const hexIdRaw = feature?.properties?.hex_id;
+      const regionIdRaw = feature?.properties?.region_id;
+      if (typeof hexIdRaw !== "string" || !hexIdRaw.trim()) return null;
+      if (typeof regionIdRaw !== "string" || !regionIdRaw.trim()) return null;
+      const regionNameRaw = feature?.properties?.name;
+      const assignmentStateRaw = feature?.properties?.hex_assignment_state;
+      const assignmentState =
+        typeof assignmentStateRaw === "string" && assignmentStateRaw.trim().length > 0
+          ? assignmentStateRaw.trim()
+          : "other_assigned";
+      const hexNumberRaw = Number(feature?.properties?.hex_num ?? NaN);
+      return {
+        hexNumber: Number.isFinite(hexNumberRaw) ? Math.trunc(hexNumberRaw) : null,
+        hexId: hexIdRaw.trim(),
+        regionId: regionIdRaw.trim(),
+        regionName:
+          typeof regionNameRaw === "string" && regionNameRaw.trim().length > 0
+            ? regionNameRaw.trim()
+            : regionIdRaw.trim(),
+        assignmentState,
+        unassigned: Number(feature?.properties?.hex_unassigned ?? 0) === 1,
+        unlocked: Number(feature?.properties?.unlocked ?? 0) === 1,
+        resolved: Number(feature?.properties?.hex_resolved ?? 0) === 1,
+      };
+    },
+    []
+  );
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -753,7 +869,7 @@ export default function MapView(props: {
           version: 8,
           glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
           sources: {},
-          layers: [{ id: "background", type: "background", paint: { "background-color": "#d9e7f6" } }],
+          layers: [{ id: "background", type: "background", paint: { "background-color": "#b7d9f6" } }],
         } as never),
       center: props.startCenter ?? [-2.6, 54.4],
       zoom: props.startCenter ? 8.7 : 4.8,
@@ -767,21 +883,17 @@ export default function MapView(props: {
       if (loadedRef.current || forceCompatibilityBasemap || !propsRef.current.mapRuntimeConfig?.style_url) {
         return;
       }
-      setForceCompatibilityBasemap(true);
-      setHint("Map style failed to load; retrying map rendering.");
+      setHint("Local map tiles are still loading.");
       emitBootProgress({
         stage: "error",
         progress: 0.58,
-        message: "Map style load timed out.",
-        error: "Style timeout. Retry map load.",
+        message: "Map style is taking longer than expected.",
+        error: "Vector style still loading.",
       });
-    }, 4500);
+    }, 30000);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
     map.on("error", (event) => {
       const raw = String((event as { error?: unknown }).error ?? "Map rendering error");
-      if (propsRef.current.mapRuntimeConfig?.style_url && !forceCompatibilityBasemap) {
-        setForceCompatibilityBasemap(true);
-      }
       emitBootProgress({
         stage: "error",
         progress: 0.56,
@@ -835,17 +947,13 @@ export default function MapView(props: {
         ];
         if (mode === "bus") {
           const nearbyRoad = map.queryRenderedFeatures(queryBox, {
-            layers: ["county-basemap-roads", "county-basemap-road-casing", "gb-major-roads"],
+            layers: ["gb-major-roads", "links-major", "links-trunk"],
           });
           if (nearbyRoad.length === 0) return "Bus stops and links must follow roads.";
           return null;
         }
-        const nearbyWater = map.queryRenderedFeatures(queryBox, {
-          layers: ["county-basemap-water"],
-        });
-        if (nearbyWater.length === 0) {
-          return "Ferry stops and links must stay on water or shoreline.";
-        }
+        // County-sliced water overlays are no longer part of the active render path.
+        // Keep ferry placement permissive in compatibility mode.
         return null;
       };
       const emitPointAction = (lng: number, lat: number) => {
@@ -857,10 +965,10 @@ export default function MapView(props: {
             buildAction === "start_line" ||
             buildAction === "add_station_to_line");
         if (buildingPoint) {
-          const blockedCounty = lockedCountyLookupRef.current({ lng, lat });
-          if (blockedCounty) {
+          const blockedRegion = lockedRegionLookupRef.current({ lng, lat });
+          if (blockedRegion) {
             if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-            setHint(`Unlock ${blockedCounty} before building here.`);
+            setHint(`Unlock ${blockedRegion} before building here.`);
             hintTimerRef.current = window.setTimeout(() => setHint(null), 2200);
             return;
           }
@@ -894,10 +1002,10 @@ export default function MapView(props: {
             buildAction === "start_line" ||
             buildAction === "add_station_to_line");
         if (buildingPoint) {
-          const blockedCounty = lockedCountyLookupRef.current({ lng: targetLng, lat: targetLat });
-          if (blockedCounty) {
+          const blockedRegion = lockedRegionLookupRef.current({ lng: targetLng, lat: targetLat });
+          if (blockedRegion) {
             if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-            setHint(`Unlock ${blockedCounty} before building here.`);
+            setHint(`Unlock ${blockedRegion} before building here.`);
             hintTimerRef.current = window.setTimeout(() => setHint(null), 2200);
             return;
           }
@@ -933,7 +1041,35 @@ export default function MapView(props: {
         });
       };
       const interactiveNetworkLayers = ["stops-hit", "links-hit", "vehicles-hit"];
-      map.on("click", "county-fill", (event) => {
+      const setHoveredHexIfChanged = (next: HexInspectDatum | null) => {
+        const nextKey = next ? `${next.hexId}::${next.hexNumber ?? "none"}` : null;
+        if (hoveredHexIdRef.current === nextKey) return;
+        hoveredHexIdRef.current = nextKey;
+        setHoveredHex(next);
+      };
+      const readHexDatumAtPoint = (x: number, y: number): HexInspectDatum | null => {
+        const queryBox: [PointLike, PointLike] = [
+          [x - 5, y - 5],
+          [x + 5, y + 5],
+        ];
+        for (const layer of [
+          "planning-hex-hit",
+          "planning-hex-gap-hit",
+          "planning-hex-fill",
+          "planning-hex-gap-fill",
+          "planning-hex-outline",
+          "planning-hex-gap-outline",
+        ]) {
+          const feature = map.queryRenderedFeatures(queryBox, { layers: [layer] })[0] as
+            | { properties?: Record<string, unknown> }
+            | undefined;
+          const datum = readHexInspectDatum(feature);
+          if (datum) return datum;
+        }
+        return null;
+      };
+      map.on("click", "region-fill", (event) => {
+        if (authoringModeRef.current) return;
         if (propsRef.current.interactionMode === "build") return;
         if (
           map.queryRenderedFeatures(
@@ -952,6 +1088,7 @@ export default function MapView(props: {
         if (typeof regionId === "string" && regionId.length > 0) propsRef.current.onSelectCounty(regionId);
       });
       map.on("click", "world-country-fill", (event) => {
+        if (authoringModeRef.current) return;
         if (propsRef.current.interactionMode === "build") return;
         if (
           map.queryRenderedFeatures(
@@ -966,14 +1103,15 @@ export default function MapView(props: {
         }
         suppressNextMapClickRef.current = true;
         const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
-        const unlockedNow = Number(feature?.properties?.unlocked_now ?? 0) === 1;
-        if (unlockedNow) return;
+        const comingSoon = Number(feature?.properties?.coming_soon ?? 1) === 1;
+        if (!comingSoon) return;
         const name = typeof feature?.properties?.name === "string" ? feature.properties.name : "This country";
         if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
         setHint(`${name} is coming soon.`);
         hintTimerRef.current = window.setTimeout(() => setHint(null), 2400);
       });
       const stopClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
+        if (authoringModeRef.current) return;
         suppressNextMapClickRef.current = true;
         const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
         const stopId = feature?.properties?.id;
@@ -981,6 +1119,7 @@ export default function MapView(props: {
         emitStopAction(stopId, event.lngLat.lng, event.lngLat.lat);
       };
       const lineClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
+        if (authoringModeRef.current) return;
         if (
           map.queryRenderedFeatures(
             [
@@ -1009,6 +1148,7 @@ export default function MapView(props: {
         current.onLineAction?.({ lineId });
       };
       const vehicleClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
+        if (authoringModeRef.current) return;
         suppressNextMapClickRef.current = true;
         const stopFeature = map.queryRenderedFeatures(
           [
@@ -1054,6 +1194,21 @@ export default function MapView(props: {
           return;
         }
         const current = propsRef.current;
+        // Authoring hard override: hex click/clear is authoritative when mode is active.
+        if (authoringModeRef.current) {
+          const hexDatum = readHexDatumAtPoint(event.point.x, event.point.y);
+          if (hexDatum) {
+            setSelectedHex(hexDatum);
+            setHoveredHexIfChanged(hexDatum);
+            setHint(`Pinned Hex #${hexDatum.hexNumber ?? "—"} · ${hexDatum.hexId}`);
+            if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
+            hintTimerRef.current = window.setTimeout(() => setHint(null), 1500);
+          } else {
+            setSelectedHex(null);
+          }
+          setSelectedVehicleId(null);
+          return;
+        }
         const buildAction = current.buildAction ?? "select";
         if (current.interactionMode === "build") {
           if (
@@ -1110,6 +1265,25 @@ export default function MapView(props: {
         current.onClearSelection?.();
       });
       map.on("mousemove", (event) => {
+        const authoringDatum = authoringModeRef.current
+          ? readHexDatumAtPoint(event.point.x, event.point.y)
+          : null;
+        if (authoringModeRef.current) {
+          setHoveredHexIfChanged(authoringDatum);
+          if (authoringDatum) {
+            const numberText =
+              authoringDatum.hexNumber !== null
+                ? `Hex #${authoringDatum.hexNumber.toLocaleString()}`
+                : "Hex";
+            setCursorHint(`${numberText} · ${authoringDatum.hexId}`, {
+              x: event.point.x,
+              y: event.point.y,
+            });
+            map.getCanvas().style.cursor = "crosshair";
+          }
+        } else {
+          setHoveredHexIfChanged(null);
+        }
         const current = propsRef.current;
         const buildAction = current.buildAction ?? "select";
         if (
@@ -1175,7 +1349,9 @@ export default function MapView(props: {
           applyInteractionFilters();
           return;
         }
-        setCursorHint(null);
+        if (!authoringModeRef.current || !authoringDatum) {
+          setCursorHint(null);
+        }
         if (hoverStopIdRef.current) {
           hoverStopIdRef.current = null;
         }
@@ -1186,6 +1362,9 @@ export default function MapView(props: {
         applyInteractionFilters();
       });
       map.on("mouseout", () => {
+        if (authoringModeRef.current) {
+          setHoveredHexIfChanged(null);
+        }
         if (hoverStopIdRef.current) {
           hoverStopIdRef.current = null;
         }
@@ -1200,7 +1379,7 @@ export default function MapView(props: {
         setDefaultCursor();
         applyInteractionFilters();
       });
-      for (const layerId of ["county-fill", "world-country-fill"]) {
+      for (const layerId of ["region-fill", "world-country-fill"]) {
         map.on("mouseenter", layerId, () => {
           if (propsRef.current.interactionMode === "build") {
             setDefaultCursor();
@@ -1212,6 +1391,22 @@ export default function MapView(props: {
           setDefaultCursor();
         });
       }
+      map.on("mouseenter", "planning-hex-hit", () => {
+        if (authoringModeRef.current) {
+          map.getCanvas().style.cursor = "crosshair";
+        }
+      });
+      map.on("mouseleave", "planning-hex-hit", () => {
+        setDefaultCursor();
+      });
+      map.on("mouseenter", "planning-hex-gap-hit", () => {
+        if (authoringModeRef.current) {
+          map.getCanvas().style.cursor = "crosshair";
+        }
+      });
+      map.on("mouseleave", "planning-hex-gap-hit", () => {
+        setDefaultCursor();
+      });
       for (const layerId of [
         "stops-hit",
         "links-hit",
@@ -1366,16 +1561,13 @@ export default function MapView(props: {
 
   useEffect(() => {
     let cancelled = false;
-    countyBasemapCacheRef.current.clear();
-    lastViewportKeyRef.current = "";
+    assetCollectionCacheRef.current.clear();
     setWorldContextData(fc());
-    setCountyGeometryData(fc());
     setMajorRoadData(fc());
-    setCountyBasemapData(fc());
     emitBootProgress({
       stage: "map_context",
       progress: 0.72,
-      message: "Loading world and county context...",
+      message: "Loading world map context...",
     });
     const loadFromRuntimeUrls = async (): Promise<boolean> => {
       const cfg = props.mapRuntimeConfig;
@@ -1388,14 +1580,6 @@ export default function MapView(props: {
           loadedWorld = collection.features.length > 0;
         } catch {
           if (!cancelled) setWorldContextData(fc());
-        }
-      }
-      if (cfg.counties_url?.trim()) {
-        try {
-          const collection = await loadBasemapCollection(cfg.counties_url);
-          if (!cancelled) setCountyGeometryData(collection);
-        } catch {
-          if (!cancelled) setCountyGeometryData(fc());
         }
       }
       if (cfg.major_roads_url?.trim()) {
@@ -1433,9 +1617,6 @@ export default function MapView(props: {
         const loadedFallback = await loadFromContextFallback();
         if (!loadedFallback && !cancelled) {
           setWorldContextData(fc());
-          if (props.mapRuntimeConfig?.style_url && !forceCompatibilityBasemap) {
-            setForceCompatibilityBasemap(true);
-          }
           emitBootProgress({
             stage: "error",
             progress: 0.82,
@@ -1443,9 +1624,6 @@ export default function MapView(props: {
             error: "No world context data was available for this session.",
           });
         } else if (!cancelled) {
-          if (props.mapRuntimeConfig?.style_url && !forceCompatibilityBasemap) {
-            setForceCompatibilityBasemap(true);
-          }
           emitBootProgress({
             stage: "map_context",
             progress: 0.84,
@@ -1465,7 +1643,6 @@ export default function MapView(props: {
     };
   }, [
     emitBootProgress,
-    forceCompatibilityBasemap,
     loadBasemapCollection,
     props.mapRuntimeConfig,
     props.projectPath,
@@ -1485,33 +1662,19 @@ export default function MapView(props: {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !loadedRef.current || usesVectorBasemap) return;
-    const rerender = () => {
-      refreshViewportBasemap();
-    };
-    rerender();
-    map.on("moveend", rerender);
-    map.on("zoomend", rerender);
-    return () => {
-      map.off("moveend", rerender);
-      map.off("zoomend", rerender);
-    };
-  }, [refreshViewportBasemap, usesVectorBasemap]);
-
-  useEffect(() => {
-    const map = mapRef.current;
     if (!map || !loadedRef.current || !styleReady) return;
     ensureMapLayers(map);
     setData(map, SRC_WORLD, worldCountryData);
     setData(map, SRC_WORLD_LABELS, worldCountryLabelData);
-    setData(map, SRC_COUNTIES, countyFeatures);
+    setData(map, SRC_REGIONS, regionFeatures);
+    setData(map, SRC_REGION_HEXES, planningHexData);
+    setData(map, SRC_HEX_COVERAGE_GAPS, hexCoverageGapData);
     setData(map, SRC_MAJOR_ROADS, majorRoadData);
-    setData(map, SRC_COUNTY_BASEMAP, countyBasemapData);
     setData(map, SRC_LINKS, networkData.links);
     setData(map, SRC_TRANSFERS, networkData.transfers);
     setData(map, SRC_STOPS, networkData.stops);
     setData(map, SRC_ZONES, networkData.zones);
-    setVisibility(map, "world-ocean-fill", !usesVectorBasemap);
+    setVisibility(map, "world-ocean-fill", true);
     setVisibility(map, "links-major", props.showLinks);
     setVisibility(map, "links-trunk", props.showLinks);
     setVisibility(map, "links-focus", props.showLinks);
@@ -1548,8 +1711,9 @@ export default function MapView(props: {
     applyInteractionFilters,
     emitBootProgress,
     styleReady,
-    countyFeatures,
-    countyBasemapData,
+    regionFeatures,
+    planningHexData,
+    hexCoverageGapData,
     majorRoadData,
     networkData,
     props.showLinks,
@@ -1561,6 +1725,151 @@ export default function MapView(props: {
     worldCountryData,
     worldCountryLabelData,
   ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !styleReady) return;
+    const hexLayers = [
+      "planning-hex-fill",
+      "planning-hex-outline",
+      "planning-hex-number",
+      "planning-hex-selected-outline",
+      "planning-hex-hover-outline",
+      "planning-hex-gap-fill",
+      "planning-hex-gap-hit",
+      "planning-hex-gap-outline",
+      "planning-hex-hit",
+    ];
+    for (const layerId of hexLayers) {
+      setVisibility(map, layerId, authoringMode);
+    }
+    if (map.getLayer("planning-hex-selected-outline")) {
+      map.setFilter(
+        "planning-hex-selected-outline",
+        ["==", ["get", "hex_id"], selectedHex?.hexId ?? "__none__"] as never
+      );
+    }
+    if (map.getLayer("planning-hex-hover-outline")) {
+      map.setFilter(
+        "planning-hex-hover-outline",
+        ["==", ["get", "hex_id"], hoveredHex?.hexId ?? "__none__"] as never
+      );
+    }
+    if (map.getLayer("region-fill")) {
+      const normalFillOpacity = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        4,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.14,
+          ["==", ["get", "unlocked"], 1],
+          0.06,
+          0.12,
+        ],
+        8,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.1,
+          ["==", ["get", "unlocked"], 1],
+          0.045,
+          0.085,
+        ],
+        11.5,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.07,
+          ["==", ["get", "unlocked"], 1],
+          0.03,
+          0.055,
+        ],
+        14,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.05,
+          ["==", ["get", "unlocked"], 1],
+          0.02,
+          0.04,
+        ],
+      ];
+      const authoringFillOpacity = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        4,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.07,
+          ["==", ["get", "unlocked"], 1],
+          0.025,
+          0.06,
+        ],
+        8,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.05,
+          ["==", ["get", "unlocked"], 1],
+          0.018,
+          0.04,
+        ],
+        11.5,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.032,
+          ["==", ["get", "unlocked"], 1],
+          0.012,
+          0.022,
+        ],
+        14,
+        [
+          "case",
+          ["==", ["get", "focus"], 1],
+          0.02,
+          ["==", ["get", "unlocked"], 1],
+          0.008,
+          0.015,
+        ],
+      ];
+      map.setPaintProperty(
+        "region-fill",
+        "fill-opacity",
+        (authoringMode ? authoringFillOpacity : normalFillOpacity) as never
+      );
+    }
+
+    if (!authoringMode) {
+      hoveredHexIdRef.current = null;
+      setHoveredHex(null);
+      setVisibleHexCount(0);
+      return;
+    }
+
+    const refreshVisibleHexCount = () => {
+      const seen = new Set<string>();
+      for (const feature of map.queryRenderedFeatures({
+        layers: ["planning-hex-hit", "planning-hex-gap-hit"],
+      })) {
+        const hexId = feature.properties?.hex_id;
+        if (typeof hexId === "string" && hexId.trim().length > 0) seen.add(hexId.trim());
+      }
+      setVisibleHexCount(seen.size);
+    };
+    refreshVisibleHexCount();
+    map.on("moveend", refreshVisibleHexCount);
+    map.on("zoomend", refreshVisibleHexCount);
+    return () => {
+      map.off("moveend", refreshVisibleHexCount);
+      map.off("zoomend", refreshVisibleHexCount);
+    };
+  }, [authoringMode, hoveredHex?.hexId, selectedHex?.hexId, styleReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1593,9 +1902,15 @@ export default function MapView(props: {
     for (const item of labelMarkersRef.current) item.marker.remove();
     labelMarkersRef.current = [];
     if (usesVectorBasemap) return;
-    labelMarkersRef.current = countyLabelData.map((label) => {
+    const visibleLabels = regionLabelData.filter(
+      (label) =>
+        label.regionId === props.focusRegionId ||
+        label.regionId === props.selectedRegionId ||
+        unlockedRegionIds.has(label.regionId)
+    );
+    labelMarkersRef.current = visibleLabels.map((label) => {
       const element = document.createElement("div");
-      element.className = "county-label-marker";
+      element.className = "region-label-marker";
       element.textContent = label.name;
       element.style.color = label.focus ? "#315f8d" : "#5b6e84";
       element.style.fontSize = label.focus ? "15px" : "12px";
@@ -1610,7 +1925,7 @@ export default function MapView(props: {
     });
 
     const syncVisibility = () => {
-      const visible = map.getZoom() >= 5.6;
+      const visible = map.getZoom() >= 7.9;
       for (const item of labelMarkersRef.current) {
         item.element.style.display = visible ? "block" : "none";
       }
@@ -1622,12 +1937,315 @@ export default function MapView(props: {
       for (const item of labelMarkersRef.current) item.marker.remove();
       labelMarkersRef.current = [];
     };
-  }, [countyLabelData, usesVectorBasemap]);
+  }, [
+    regionLabelData,
+    props.focusRegionId,
+    props.selectedRegionId,
+    unlockedRegionIds,
+    usesVectorBasemap,
+  ]);
+
+  const pinnedHex = selectedHex;
+  const activeHex = pinnedHex ?? hoveredHex;
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
       <div ref={cursorHintRef} className="map-cursor-hint" style={{ display: "none" }} />
+      <div
+        style={{
+          position: "absolute",
+          right: 18,
+          top: 132,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          alignItems: "flex-end",
+          zIndex: 9000,
+          pointerEvents: "auto",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() =>
+            setAuthoringMode((value) => {
+              const next = !value;
+              authoringModeRef.current = next;
+              if (!next) {
+                hoveredHexIdRef.current = null;
+                setHoveredHex(null);
+                setSelectedHex(null);
+                setVisibleHexCount(0);
+              }
+              return next;
+            })
+          }
+          style={{
+            appearance: "none",
+            border: authoringMode ? "1px solid #1d5ea8" : "1px solid #8aa7c5",
+            background: authoringMode ? "rgba(210,231,255,0.98)" : "rgba(244,250,255,0.98)",
+            color: authoringMode ? "#123e70" : "#2f4f6f",
+            borderRadius: 12,
+            fontSize: 12,
+            fontWeight: 800,
+            letterSpacing: 0.24,
+            padding: "9px 12px",
+            cursor: "pointer",
+            boxShadow: "0 12px 30px rgba(17,45,78,0.24)",
+          }}
+        >
+          {authoringMode ? "Hex Authoring: ON (Alt+H)" : "Hex Authoring: OFF (Alt+H)"}
+        </button>
+        {authoringMode ? (
+          <div
+            style={{
+              minWidth: 260,
+              maxWidth: 340,
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid #c7d4e1",
+              background: "rgba(250,253,255,0.96)",
+              color: "#31485f",
+              boxShadow: "0 14px 30px rgba(20,44,71,0.12)",
+              fontSize: 12,
+              lineHeight: 1.4,
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Hex Reference</div>
+            <div
+              style={{
+                marginBottom: 6,
+                padding: "5px 7px",
+                borderRadius: 8,
+                border: "1px solid #a9c4e2",
+                background: "rgba(217,233,251,0.9)",
+                color: "#1f4f82",
+                fontSize: 11,
+                fontWeight: 800,
+                letterSpacing: 0.25,
+              }}
+            >
+              AUTHORING MODE ACTIVE · HEX OVERRIDE
+            </div>
+            <div>Visible hexes: {visibleHexCount.toLocaleString()}</div>
+            <div>Manual-assigned: {planningHexSummary.manualAssigned.toLocaleString()}</div>
+            <div style={{ color: planningHexSummary.unassigned > 0 ? "#8d1f1f" : "#2f5a37", fontWeight: 700 }}>
+              Unassigned: {planningHexSummary.unassigned.toLocaleString()}
+            </div>
+            <div>
+              Hex validity: {planningHexSummary.resolved.toLocaleString()} resolved /{" "}
+              {planningHexSummary.total.toLocaleString()} total
+            </div>
+            {planningHexSummary.unresolved > 0 ? (
+              <div style={{ color: "#80593c" }}>
+                Unresolved IDs: {planningHexSummary.unresolved.toLocaleString()}
+              </div>
+            ) : null}
+            {ukHexCoverageDiagnostics.error ? (
+              <div style={{ color: "#8a2c2c" }}>
+                Coverage audit error: {ukHexCoverageDiagnostics.error}
+              </div>
+            ) : ukHexCoverageDiagnostics.expected_land_hexes > 0 ? (
+              <>
+                <div>
+                  UK land coverage: {ukHexCoverageDiagnostics.covered_hexes.toLocaleString()} /{" "}
+                  {ukHexCoverageDiagnostics.expected_land_hexes.toLocaleString()} (
+                  {(ukHexCoverageDiagnostics.coverage_ratio * 100).toFixed(1)}%)
+                </div>
+                {ukHexCoverageDiagnostics.missing_land_hexes > 0 ? (
+                  <div style={{ color: "#8d1f1f", fontWeight: 700 }}>
+                    Missing UK land hexes: {ukHexCoverageDiagnostics.missing_land_hexes.toLocaleString()}
+                  </div>
+                ) : (
+                  <div style={{ color: "#2f5a37", fontWeight: 700 }}>No UK land hex gaps detected.</div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: "#6a7f93" }}>UK coverage audit unavailable for current map context.</div>
+            )}
+            <div style={{ marginTop: 8, color: "#48627c" }}>
+              {activeHex
+                ? "Hover any hex for live ID. Click to pin it."
+                : "Move over UK hexes. No hex at cursor means a real coverage gap or non-hex area."}
+            </div>
+            {ukHexCoverageDiagnostics.missing_land_hexes > 0 ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "8px 9px",
+                  borderRadius: 9,
+                  border: "1px solid #e3b3b3",
+                  background: "rgba(255,239,239,0.9)",
+                  color: "#7d1e1e",
+                }}
+              >
+                Missing sample:{" "}
+                {ukHexCoverageDiagnostics.missing_hex_ids.slice(0, 6).join(", ")}
+              </div>
+            ) : null}
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 9px",
+                borderRadius: 9,
+                border: "1px solid #d8e2ee",
+                background: "rgba(243,248,255,0.88)",
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>Hover</div>
+              <div style={{ color: "#3d5671" }}>
+                {hoveredHex
+                  ? `Hex #${hoveredHex.hexNumber ?? "—"} · ${hoveredHex.hexId}`
+                  : "No hex under cursor"}
+              </div>
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 9px",
+                borderRadius: 9,
+                border: "1px solid #ccd8e6",
+                background: "rgba(236,244,254,0.92)",
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>Pinned (click)</div>
+              <div style={{ color: "#304b66" }}>
+                {pinnedHex
+                  ? `Hex #${pinnedHex.hexNumber ?? "—"} · ${pinnedHex.hexId}`
+                  : "Click a visible hex to pin"}
+              </div>
+              {pinnedHex ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedHex(null)}
+                  style={{
+                    marginTop: 6,
+                    appearance: "none",
+                    border: "1px solid #b9c9da",
+                    background: "#f7fbff",
+                    color: "#365678",
+                    borderRadius: 8,
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Clear Pin
+                </button>
+              ) : null}
+            </div>
+            {activeHex ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid #d9e3ee",
+                  display: "grid",
+                  gap: 4,
+                }}
+              >
+                <div>
+                  <strong>Hex #:</strong>{" "}
+                  {activeHex.hexNumber !== null ? activeHex.hexNumber.toLocaleString() : "—"}
+                </div>
+                <div>
+                  <strong>Hex ID:</strong> {activeHex.hexId}
+                </div>
+                <div>
+                  <strong>Region:</strong> {activeHex.regionName}
+                </div>
+                <div>
+                  <strong>Region ID:</strong> {activeHex.regionId}
+                </div>
+                <div>
+                  <strong>Status:</strong> {activeHex.unlocked ? "Unlocked" : "Locked"}
+                  {!activeHex.resolved ? " (fallback id)" : ""}
+                </div>
+                <div>
+                  <strong>Assignment:</strong>{" "}
+                  {activeHex.unassigned ? "Unassigned authoring hex" : activeHex.assignmentState}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeHex.hexNumber === null) return;
+                      void navigator.clipboard?.writeText(String(activeHex.hexNumber));
+                      setHint(`Copied hex number ${activeHex.hexNumber}`);
+                      if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
+                      hintTimerRef.current = window.setTimeout(() => setHint(null), 1800);
+                    }}
+                    style={{
+                      marginTop: 2,
+                      appearance: "none",
+                      border: "1px solid #b9c9da",
+                      background: "#f3f8fe",
+                      color: "#2e4f76",
+                      borderRadius: 8,
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy Hex #
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = activeHex.hexNumber !== null
+                        ? `${activeHex.hexNumber}\t${activeHex.hexId}`
+                        : activeHex.hexId;
+                      void navigator.clipboard?.writeText(text);
+                      setHint("Copied hex reference line");
+                      if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
+                      hintTimerRef.current = window.setTimeout(() => setHint(null), 1800);
+                    }}
+                    style={{
+                      marginTop: 2,
+                      appearance: "none",
+                      border: "1px solid #b9c9da",
+                      background: "#eef6ff",
+                      color: "#2e4f76",
+                      borderRadius: 8,
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy Ref Line
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(activeHex.hexId);
+                      setHint(`Copied hex ID ${activeHex.hexId}`);
+                      if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
+                      hintTimerRef.current = window.setTimeout(() => setHint(null), 1800);
+                    }}
+                    style={{
+                      marginTop: 2,
+                      appearance: "none",
+                      border: "1px solid #b9c9da",
+                      background: "#eef4fb",
+                      color: "#2e4f76",
+                      borderRadius: 8,
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy Hex ID
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       {hint && (
         <div
           style={{

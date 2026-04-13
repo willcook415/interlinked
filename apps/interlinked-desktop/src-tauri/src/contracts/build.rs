@@ -38,6 +38,14 @@ pub struct DemandRebuildResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryPackStatus {
     pub country_iso2: String,
+    #[serde(default)]
+    pub canonical_country_iso2: Option<String>,
+    #[serde(default)]
+    pub runtime_pack_country_iso2: Option<String>,
+    #[serde(default)]
+    pub region_provider_model: Option<String>,
+    #[serde(default)]
+    pub pack_contract_valid: bool,
     pub build_state: String,
     pub surface_version: Option<String>,
     pub cells_count: usize,

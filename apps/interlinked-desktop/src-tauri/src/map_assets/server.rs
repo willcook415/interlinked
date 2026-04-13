@@ -8,11 +8,108 @@ use std::thread;
 use tauri::AppHandle;
 
 use super::{MapAssetServer, MAP_ASSET_SERVER};
-use crate::commands::content_library::{
-    basemap_file, counties_file, county_basemap_full_file, county_basemap_mid_file,
-    major_roads_file, style_template_file, world_context_file,
-};
-use crate::{read_json_file, world_context_from_countries_geojson};
+use crate::commands::content_library::resolve_map_assets;
+use crate::{is_uk_country_iso2, read_json_file, world_context_from_countries_geojson};
+
+fn extract_uk_multipolygon_from_counties(path: &Path) -> Result<Option<JsonValue>, String> {
+    let value = read_json_file::<JsonValue>(path)?;
+    let Some(features) = value.get("features").and_then(|value| value.as_array()) else {
+        return Ok(None);
+    };
+    let mut polygons = Vec::<JsonValue>::new();
+    for feature in features {
+        let props = feature.get("properties").and_then(|value| value.as_object());
+        let country_iso2 = props
+            .and_then(|props| props.get("country_iso2"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_uppercase());
+        if let Some(iso2) = country_iso2 {
+            if !is_uk_country_iso2(&iso2) {
+                continue;
+            }
+        }
+        let Some(geometry) = feature.get("geometry").and_then(|value| value.as_object()) else {
+            continue;
+        };
+        let geometry_type = geometry
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let Some(coords) = geometry.get("coordinates").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        match geometry_type {
+            "Polygon" => polygons.push(JsonValue::Array(coords.clone())),
+            "MultiPolygon" => {
+                for polygon in coords {
+                    if let Some(polygon_coords) = polygon.as_array() {
+                        polygons.push(JsonValue::Array(polygon_coords.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if polygons.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::json!({
+        "type": "MultiPolygon",
+        "coordinates": polygons,
+    })))
+}
+
+fn inject_uk_world_geometry(
+    mut world_context: JsonValue,
+    counties_file: Option<&Path>,
+) -> Result<JsonValue, String> {
+    let Some(counties_path) = counties_file else {
+        return Ok(world_context);
+    };
+    let Some(uk_geometry) = extract_uk_multipolygon_from_counties(counties_path)? else {
+        return Ok(world_context);
+    };
+    let Some(features) = world_context
+        .get_mut("features")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return Ok(world_context);
+    };
+    let mut replaced = false;
+    for feature in features.iter_mut() {
+        let country_iso2 = feature
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .and_then(|props| props.get("country_iso2"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_uppercase())
+            .unwrap_or_default();
+        if !is_uk_country_iso2(&country_iso2) {
+            continue;
+        }
+        if let Some(geometry) = feature.get_mut("geometry") {
+            *geometry = uk_geometry.clone();
+            replaced = true;
+        }
+        if let Some(properties) = feature.get_mut("properties").and_then(|value| value.as_object_mut()) {
+            properties.insert("country_iso2".to_string(), JsonValue::String("UK".to_string()));
+            properties.entry("name".to_string()).or_insert(JsonValue::String("United Kingdom".to_string()));
+        }
+    }
+    if !replaced {
+        features.push(serde_json::json!({
+            "type": "Feature",
+            "geometry": uk_geometry,
+            "properties": {
+                "country_iso2": "UK",
+                "name": "United Kingdom",
+                "playable_now": true,
+                "coming_soon": false
+            }
+        }));
+    }
+    Ok(world_context)
+}
 
 fn write_http_response(
     mut stream: TcpStream,
@@ -64,7 +161,11 @@ fn read_mbtiles_tile(path: &Path, z: u32, x: u32, y: u32) -> Result<Vec<u8>, Str
 
 fn build_runtime_style_json(app: &AppHandle, country_iso2: &str) -> Result<Vec<u8>, String> {
     let iso = country_iso2.trim().to_ascii_lowercase();
-    let style_path = style_template_file(app, country_iso2)
+    let assets = resolve_map_assets(app, country_iso2);
+    let style_path = assets
+        .style_template
+        .as_ref()
+        .map(|entry| entry.path.clone())
         .ok_or_else(|| format!("style template missing for {country_iso2}"))?;
     let server = MAP_ASSET_SERVER
         .get()
@@ -75,7 +176,38 @@ fn build_runtime_style_json(app: &AppHandle, country_iso2: &str) -> Result<Vec<u
     let content = template
         .replace("__BASE_URL__", &server.base_url)
         .replace("__COUNTRY_ISO2__", &iso);
-    Ok(content.into_bytes())
+    let mut style_json: JsonValue = serde_json::from_str(&content)
+        .map_err(|e| format!("{}: style parse error: {e}", style_path.display()))?;
+
+    if is_uk_country_iso2(country_iso2) {
+        if let Some(sources) = style_json
+            .get_mut("sources")
+            .and_then(|v| v.as_object_mut())
+        {
+            for source in sources.values_mut() {
+                let is_vector = source
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.eq_ignore_ascii_case("vector"))
+                    .unwrap_or(false);
+                if !is_vector {
+                    continue;
+                }
+                source["bounds"] = serde_json::json!([-11.5, 49.3, 2.2, 61.2]);
+            }
+        }
+        if let Some(layers) = style_json.get_mut("layers").and_then(|v| v.as_array_mut()) {
+            for layer in layers {
+                let id = layer.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                if id != "background" {
+                    continue;
+                }
+                layer["paint"]["background-color"] = JsonValue::String("#c6ddf3".to_string());
+            }
+        }
+    }
+
+    serde_json::to_vec(&style_json).map_err(|e| e.to_string())
 }
 
 fn map_asset_response_bytes(
@@ -92,6 +224,7 @@ fn map_asset_response_bytes(
             build_runtime_style_json(app, iso).map(|bytes| (bytes, "application/json"))
         }
         ["map", iso, "tiles", z, x, y_file] => {
+            let assets = resolve_map_assets(app, iso);
             let y = y_file
                 .strip_suffix(".pbf")
                 .unwrap_or(y_file)
@@ -99,45 +232,78 @@ fn map_asset_response_bytes(
                 .map_err(|_| "invalid tile y".to_string())?;
             let z = z.parse::<u32>().map_err(|_| "invalid tile z".to_string())?;
             let x = x.parse::<u32>().map_err(|_| "invalid tile x".to_string())?;
-            let file = basemap_file(app, iso).ok_or_else(|| "basemap not found".to_string())?;
+            let file = assets
+                .basemap_mbtiles
+                .as_ref()
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| "basemap not found".to_string())?;
             read_mbtiles_tile(&file, z, x, y)
                 .map(|bytes| (bytes, "application/vnd.mapbox-vector-tile"))
         }
         ["map", iso, "world_context.geojson"] => {
-            let file = world_context_file(app, iso).ok_or_else(|| "asset not found".to_string())?;
-            let value = if file
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(|value| value.eq_ignore_ascii_case("countries.geojson"))
-                .unwrap_or(false)
-            {
+            let assets = resolve_map_assets(app, iso);
+            let file = assets
+                .world_context
+                .as_ref()
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| "asset not found".to_string())?;
+            let mut value = if assets.world_context_requires_country_remap() {
                 world_context_from_countries_geojson(read_json_file::<JsonValue>(&file)?)?
             } else {
                 read_json_file::<JsonValue>(&file)?
             };
+            if is_uk_country_iso2(iso) {
+                value = inject_uk_world_geometry(
+                    value,
+                    assets.counties.as_ref().map(|entry| entry.path.as_path()),
+                )?;
+            }
             let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
             Ok((bytes, "application/geo+json"))
         }
         ["map", iso, "counties.geojson"] => {
-            let file = counties_file(app, iso).ok_or_else(|| "asset not found".to_string())?;
+            let assets = resolve_map_assets(app, iso);
+            let file = assets
+                .counties
+                .as_ref()
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| "asset not found".to_string())?;
             let bytes = fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             Ok((bytes, "application/geo+json"))
         }
         ["map", iso, "major_roads.geojson"] => {
-            let file = major_roads_file(app, iso).ok_or_else(|| "asset not found".to_string())?;
+            let assets = resolve_map_assets(app, iso);
+            let file = assets
+                .major_roads
+                .as_ref()
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| "asset not found".to_string())?;
+            let bytes = fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            Ok((bytes, "application/geo+json"))
+        }
+        ["map", iso, "county_roads", file_name] => {
+            let assets = resolve_map_assets(app, iso);
+            let county_id = file_name.strip_suffix(".geojson").unwrap_or(file_name);
+            let file = assets
+                .county_roads_file(county_id)
+                .ok_or_else(|| "asset not found".to_string())?;
             let bytes = fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             Ok((bytes, "application/geo+json"))
         }
         ["map", iso, "county_basemap_mid", file_name] => {
+            let assets = resolve_map_assets(app, iso);
             let county_id = file_name.strip_suffix(".geojson").unwrap_or(file_name);
-            let file = county_basemap_mid_file(app, iso, county_id)
+            let file = assets
+                .county_basemap_mid_file(county_id)
                 .ok_or_else(|| "asset not found".to_string())?;
             let bytes = fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             Ok((bytes, "application/geo+json"))
         }
         ["map", iso, "county_basemap_full", file_name] => {
+            let assets = resolve_map_assets(app, iso);
             let county_id = file_name.strip_suffix(".geojson").unwrap_or(file_name);
-            let file = county_basemap_full_file(app, iso, county_id)
+            let file = assets
+                .county_basemap_full_file(county_id)
                 .ok_or_else(|| "asset not found".to_string())?;
             let bytes = fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             Ok((bytes, "application/geo+json"))

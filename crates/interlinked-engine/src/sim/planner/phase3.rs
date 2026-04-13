@@ -1,5 +1,5 @@
-use super::*;
 use super::contracts::{purpose_from_index, purpose_index};
+use super::*;
 
 pub(super) fn build_phase3_planning_outputs(
     s: &Scenario,

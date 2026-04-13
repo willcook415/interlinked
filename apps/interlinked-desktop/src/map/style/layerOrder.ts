@@ -15,7 +15,8 @@ import {
   ensureStopShapeLayer,
 } from "./layers/network";
 import {
-  ensureCountySelectedOutlineLayer,
+  ensureRegionSelectedOutlineLayer,
+  ensurePlanningHexAuthoringLayers,
   ensureRegionBasemapLayers,
   ensureRegionBoundaryLayers,
   ensureZoneCentroidLayer,
@@ -27,6 +28,7 @@ export function ensureMapLayerOrder(map: MapLibreMap): void {
   ensureWorldLabelLayers(map);
   ensureRegionBasemapLayers(map);
   ensureRegionBoundaryLayers(map);
+  ensurePlanningHexAuthoringLayers(map);
   ensureNetworkCoreLayers(map);
   ensureTransferFocusLabelLayer(map);
   ensureNetworkSelectionLayers(map);
@@ -38,5 +40,5 @@ export function ensureMapLayerOrder(map: MapLibreMap): void {
   ensureRuntimeLayers(map);
   ensureZoneCentroidLayer(map);
   ensureBuildPreviewLayers(map);
-  ensureCountySelectedOutlineLayer(map);
+  ensureRegionSelectedOutlineLayer(map);
 }

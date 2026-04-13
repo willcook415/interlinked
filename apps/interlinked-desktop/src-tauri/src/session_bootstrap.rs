@@ -268,14 +268,12 @@ pub(crate) fn project_is_current(
 
 fn seed_unlocked_countries(manifest: &mut ProjectManifest) {
     if let Some(start) = manifest.start_location.as_ref() {
-        let code = start.country_iso2.trim().to_ascii_uppercase();
-        if code.len() == 2 {
+        if let Some(code) = canonical_country_iso2(&start.country_iso2) {
             let mut set = manifest
                 .economy
                 .unlocked_countries
                 .iter()
-                .map(|x| x.trim().to_ascii_uppercase())
-                .filter(|x| x.len() == 2)
+                .filter_map(|x| canonical_country_iso2(x))
                 .collect::<BTreeSet<_>>();
             set.insert(code);
             manifest.economy.unlocked_countries = set.into_iter().collect();
@@ -300,10 +298,12 @@ pub(crate) fn apply_country_entry_charges(
         .economy
         .unlocked_countries
         .iter()
-        .map(|x| x.trim().to_ascii_uppercase())
-        .filter(|x| x.len() == 2)
+        .filter_map(|x| canonical_country_iso2(x))
         .collect::<BTreeSet<_>>();
-    let scenario_countries = countries_in_scenario(scenario);
+    let scenario_countries = countries_in_scenario(scenario)
+        .into_iter()
+        .filter_map(|country_iso2| canonical_country_iso2(&country_iso2))
+        .collect::<BTreeSet<_>>();
     let charge_base = scenario_countries
         .iter()
         .filter(|c| !unlocked.contains(*c))

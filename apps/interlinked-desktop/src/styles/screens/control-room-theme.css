@@ -579,6 +579,26 @@ small,
   background: var(--il-surface-dark-1);
 }
 
+.country-info-head p {
+  color: rgba(200, 218, 240, 0.84);
+}
+
+.country-info-head h4 {
+  color: #eaf3ff;
+}
+
+.country-info-head button {
+  border: 1px solid rgba(129, 158, 194, 0.66);
+  background: rgba(19, 39, 62, 0.76);
+  color: #e7f1ff;
+}
+
+.country-info-strip .pill {
+  border-color: rgba(133, 163, 200, 0.7);
+  background: rgba(21, 45, 71, 0.78);
+  color: #e4efff;
+}
+
 .country-section,
 .county-selected,
 .county-row,
@@ -611,6 +631,15 @@ small,
 .country-section-head span,
 .county-row small {
   color: rgba(204, 220, 242, 0.88);
+}
+
+.selected-county-head strong,
+.county-row span {
+  color: #edf5ff;
+}
+
+.country-section .hint-line {
+  color: rgba(196, 213, 236, 0.88);
 }
 
 .build-workspace,

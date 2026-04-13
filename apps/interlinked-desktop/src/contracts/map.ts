@@ -39,10 +39,15 @@ export type GeoJsonFeatureCollection = {
 export type RegionStatus = {
   region_id: string;
   country_iso2: string;
+  region_kind: string;
+  region_token: string;
+  h3_cell_id?: string | null;
   name: string;
   admin_level: string;
   nation?: string | null;
   source_code?: string | null;
+  adjacency_source: string;
+  geometry_source: string;
   unlocked: boolean;
   active: boolean;
   adjacent_region_ids: string[];
@@ -86,10 +91,13 @@ export type MapRuntimeConfig = {
   country_iso2: string;
   style_url?: string | null;
   world_context_url: string;
+  // Compatibility-only legacy fields for non-vector fallback tiers.
+  // Active UK render path uses style_url + world_context_url as authority.
   counties_url?: string | null;
   major_roads_url?: string | null;
   county_basemap_mid_url_template?: string | null;
   county_basemap_full_url_template?: string | null;
+  county_roads_url_template?: string | null;
   default_bounds?: [[number, number], [number, number]] | null;
   map_pack_version?: string | null;
   map_ready: boolean;
@@ -128,12 +136,22 @@ export type UnlockFocusResult = {
 export type SimulationScopeUpdate = {
   max_active_zones?: number;
   remote_regions_mode?: string;
+  remote_update_interval_ticks?: number;
+  focus_max_active_zones?: number;
+  adjacent_max_active_zones?: number;
+  remote_max_active_zones?: number;
+  adjacent_update_interval_ticks?: number;
   active_region_ids?: string[];
 };
 
 export type ScopeState = {
   max_active_zones: number;
   remote_regions_mode: string;
+  remote_update_interval_ticks: number;
+  focus_max_active_zones: number;
+  adjacent_max_active_zones: number;
+  remote_max_active_zones: number;
+  adjacent_update_interval_ticks: number;
   active_region_ids: string[];
   materialized_cells: number;
 };

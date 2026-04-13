@@ -4,14 +4,11 @@ use super::defaults::runtime_trains_authoritative_for_manifest;
 use super::fare::runtime_fare_base_per_boarding;
 use super::models::{RuntimeFareEvents, RuntimeOpsState, RuntimeTrainPhase};
 use super::service_profiles::{
-    build_runtime_reverse_service_pairs,
-    build_runtime_service_profiles,
+    build_runtime_reverse_service_pairs, build_runtime_service_profiles,
     runtime_service_units_assigned,
 };
 use super::train_kernel::{
-    advance_runtime_train,
-    new_runtime_train_state,
-    runtime_train_onboard_total,
+    advance_runtime_train, new_runtime_train_state, runtime_train_onboard_total,
     runtime_train_position_xy,
 };
 
@@ -104,7 +101,6 @@ pub(crate) fn build_live_service_loads(
         })
         .collect::<Vec<_>>()
 }
-
 
 pub(crate) fn build_runtime_ops_views(
     state: &AppState,

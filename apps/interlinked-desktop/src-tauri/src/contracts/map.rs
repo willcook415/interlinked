@@ -4,10 +4,16 @@ use crate::*;
 pub struct RegionStatus {
     pub region_id: String,
     pub country_iso2: String,
+    pub region_kind: String,
+    pub region_token: String,
+    #[serde(default)]
+    pub h3_cell_id: Option<String>,
     pub name: String,
     pub admin_level: String,
     pub nation: Option<String>,
     pub source_code: Option<String>,
+    pub adjacency_source: String,
+    pub geometry_source: String,
     pub unlocked: bool,
     pub active: bool,
     pub adjacent_region_ids: Vec<String>,
@@ -41,11 +47,14 @@ pub struct MapRuntimeConfig {
     #[serde(default)]
     pub style_url: Option<String>,
     pub world_context_url: String,
+    // Compatibility-only legacy fields for non-vector fallback tiers.
+    // Active UK render path uses style_url + world_context_url as authority.
     #[serde(default)]
     pub counties_url: Option<String>,
     pub major_roads_url: Option<String>,
     pub county_basemap_mid_url_template: Option<String>,
     pub county_basemap_full_url_template: Option<String>,
+    pub county_roads_url_template: Option<String>,
     pub default_bounds: Option<[[f64; 2]; 2]>,
     pub map_pack_version: Option<String>,
     pub map_ready: bool,

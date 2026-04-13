@@ -1,6 +1,6 @@
-use crate::*;
 use crate::commands::build_mutation::world_xy_to_lonlat_safe;
-use crate::commands::content_library::{demand_surface_file, primary_project_country_iso2};
+use crate::commands::content_library::{primary_project_country_iso2, resolve_demand_surface_path};
+use crate::*;
 use interlinked_engine::model::Scenario;
 use tauri::AppHandle;
 
@@ -229,7 +229,7 @@ pub(crate) fn list_demand_coverage(
             .count();
         out.push(DemandCoverageMeta {
             country_iso2: iso.clone(),
-            installed: demand_surface_file(&app, &iso).is_some(),
+            installed: resolve_demand_surface_path(&app, &iso).is_some(),
             loaded_in_scenario: cells > 0,
             cells,
             surface_version: manifest
@@ -276,7 +276,7 @@ pub(crate) fn rebuild_demand_for_unlocked(
 }
 
 pub(crate) fn get_financial_dashboard(
-    _app: AppHandle,
+    app: AppHandle,
     project_path: String,
     request: FinancialDashboardRequest,
 ) -> Result<FinancialDashboardResponse, String> {
@@ -316,12 +316,13 @@ pub(crate) fn get_financial_dashboard(
     let filters_active = mode_filter.is_some() || line_filter.is_some() || region_filter.is_some();
 
     let project_country_iso2 = primary_project_country_iso2(&manifest).unwrap_or_default();
-    let gb_counties = if project_country_iso2.eq_ignore_ascii_case("GB") {
-        load_gb_county_boundaries()
-            .ok()
-            .map(|catalog| catalog.counties)
-    } else {
+    let planning_regions = if project_country_iso2.is_empty() {
         None
+    } else {
+        load_region_catalog_for_country(&app, &project_country_iso2)
+            .ok()
+            .flatten()
+            .map(|catalog| catalog.regions)
     };
 
     let mut line_ids = BTreeSet::<String>::new();
@@ -348,7 +349,7 @@ pub(crate) fn get_financial_dashboard(
         };
         let mode = inspection.mode.trim().to_ascii_lowercase();
         let mut region_id = None::<String>;
-        if let Some(counties) = gb_counties.as_ref() {
+        if let Some(regions) = planning_regions.as_ref() {
             let mut counts = HashMap::<String, usize>::new();
             for station in &inspection.stations {
                 let Some((lon, lat)) =
@@ -356,11 +357,15 @@ pub(crate) fn get_financial_dashboard(
                 else {
                     continue;
                 };
-                let county = county_for_lon_lat(counties, lon, lat)
-                    .or_else(|| nearest_county_for_lon_lat(counties, lon, lat));
-                let Some(county) = county else { continue };
-                let key = canonicalize_region_id(&region_id_from_county("GB", &county.county_id))
-                    .unwrap_or_else(|| region_id_from_county("GB", &county.county_id));
+                let (mx, my) = lonlat_to_web_mercator_m(lon, lat);
+                let nearest = regions.iter().min_by(|a, b| {
+                    let da = (a.x - mx).powi(2) + (a.y - my).powi(2);
+                    let db = (b.x - mx).powi(2) + (b.y - my).powi(2);
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let Some(region) = nearest else { continue };
+                let key = canonicalize_region_id(&region.region_id)
+                    .unwrap_or_else(|| region.region_id.clone());
                 *counts.entry(key).or_insert(0) += 1;
             }
             region_id = counts
@@ -583,7 +588,10 @@ pub(crate) fn get_financial_dashboard(
     })
 }
 
-pub(crate) fn list_regions(app: AppHandle, project_path: String) -> Result<Vec<RegionStatus>, String> {
+pub(crate) fn list_regions(
+    app: AppHandle,
+    project_path: String,
+) -> Result<Vec<RegionStatus>, String> {
     let project_root = PathBuf::from(project_path);
     let manifest = read_manifest(&project_root)?;
     region_status_rows_for_manifest(&app, &manifest)
@@ -614,27 +622,36 @@ fn apply_region_scope_runtime_mutation(
     Ok(())
 }
 
-pub(crate) fn unlock_region(
-    app: AppHandle,
-    state: tauri::State<AppState>,
-    project_path: String,
-    region_id: String,
-) -> Result<UnlockResult, String> {
-    let normalized_region =
-        canonicalize_region_id(&region_id).ok_or_else(|| "invalid region_id format".to_string())?;
-    let iso = region_country_iso2(&normalized_region)
-        .ok_or_else(|| "invalid region country code".to_string())?;
-    let Some(catalog) = load_region_catalog_for_country(&app, &iso)? else {
-        return Err(format!("no installed demand pack for country {iso}"));
-    };
+fn commit_region_scope_change(
+    app: &AppHandle,
+    state: &tauri::State<AppState>,
+    project_path: &str,
+    project_root: &Path,
+    manifest: &mut ProjectManifest,
+    doc: &mut ScenarioDocument,
+) -> Result<usize, String> {
+    rematerialize_unlocked_country_surfaces(app, manifest, &mut doc.scenario)?;
+    let materialized_cells = doc.scenario.world.demand_cells.len();
+    ScenarioService::save_to_path(scenario_path(project_root).to_string_lossy().as_ref(), doc)
+        .map_err(|e| e.to_string())?;
+    manifest.updated_at = now_string();
+    write_manifest(project_root, manifest)?;
+    apply_region_scope_runtime_mutation(state, project_path, &doc.scenario)?;
+    Ok(materialized_cells)
+}
+
+fn apply_region_unlock(
+    manifest: &mut ProjectManifest,
+    catalog: &SurfaceRegionCatalog,
+    iso: &str,
+    normalized_region: &str,
+    focus_after_unlock: bool,
+) -> Result<f64, String> {
     let region = catalog
         .by_id
-        .get(&normalized_region)
-        .ok_or_else(|| format!("unknown region_id: {normalized_region}"))?;
-
-    let project_root = PathBuf::from(&project_path);
-    let mut manifest = read_manifest(&project_root)?;
-    let mut unlocked = manifest
+        .get(normalized_region)
+        .ok_or_else(|| format!("UnknownRegion: unknown region_id: {normalized_region}"))?;
+    let unlocked = manifest
         .region_state
         .unlocked_region_ids
         .iter()
@@ -642,69 +659,100 @@ pub(crate) fn unlock_region(
         .collect::<HashSet<_>>();
     let country_unlocked = unlocked
         .iter()
-        .filter(|id| region_country_iso2(id).as_deref() == Some(iso.as_str()))
+        .filter(|id| region_country_iso2(id).as_deref() == Some(iso))
         .cloned()
         .collect::<HashSet<_>>();
-    if !unlocked.contains(&normalized_region)
+    if !unlocked.contains(normalized_region)
         && !country_unlocked.is_empty()
         && !region
             .adjacent_region_ids
             .iter()
             .any(|rid| country_unlocked.contains(rid))
     {
-        return Err("region must be adjacent to an already unlocked region".to_string());
+        return Err(
+            "RegionNotAdjacent: region must be adjacent to an already unlocked region".to_string(),
+        );
     }
 
-    let charge = if unlocked.contains(&normalized_region) {
+    let charge = if unlocked.contains(normalized_region) {
         0.0
     } else {
-        region_unlock_cost_base_for_manifest(&manifest, region)
+        region_unlock_cost_base_for_manifest(manifest, region)
     };
     if charge > 0.0 && manifest.economy.current_balance_base < charge {
         return Err(format!(
-            "insufficient funds: need {:.0} base units, have {:.0}",
+            "InsufficientFunds: need {:.0} base units, have {:.0}",
             charge, manifest.economy.current_balance_base
         ));
     }
-
     if charge > 0.0 {
         manifest.economy.current_balance_base -= charge;
         manifest.economy.cumulative_capex_base += charge;
-        update_region_ledger(&mut manifest, 0.0, 0.0, 0.0, charge);
-        record_monthly_financial_delta(&mut manifest, 0.0, 0.0, charge, 0.0);
-        bump_economy_revision(&mut manifest);
-    }
-    unlocked.insert(normalized_region.clone());
-    manifest.region_state.unlocked_region_ids = unlocked.into_iter().collect();
-    if manifest
-        .region_state
-        .primary_focus_region_id
-        .as_deref()
-        .and_then(canonicalize_region_id)
-        .is_none()
-    {
-        manifest.region_state.primary_focus_region_id = Some(normalized_region.clone());
+        update_region_ledger(&mut *manifest, 0.0, 0.0, 0.0, charge);
+        record_monthly_financial_delta(&mut *manifest, 0.0, 0.0, charge, 0.0);
+        bump_economy_revision(&mut *manifest);
     }
 
-    let mut countries = unlocked_country_codes(&manifest)
+    sync_country_region_state_with_overrides(
+        manifest,
+        catalog,
+        iso,
+        RegionStateOverrides {
+            ensure_unlocked_region_ids: vec![normalized_region.to_string()],
+            force_primary_focus_region_id: focus_after_unlock
+                .then(|| normalized_region.to_string()),
+            force_active_region_ids: None,
+        },
+    )?;
+
+    let mut countries = unlocked_country_codes(manifest)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    countries.insert(iso.clone());
+    countries.insert(iso.to_string());
     manifest.economy.unlocked_countries = countries.into_iter().collect();
-    sync_progress_budget_from_economy(&mut manifest);
+    sync_progress_budget_from_economy(manifest);
+    Ok(charge)
+}
+
+pub(crate) fn unlock_region(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    project_path: String,
+    region_id: String,
+) -> Result<UnlockResult, String> {
+    // Unlock-only compatibility path. Uses the same validation and charging flow as
+    // unlock_and_focus_region, but does not force focus override on success.
+    let normalized_region = canonicalize_region_id(&region_id)
+        .ok_or_else(|| "InvalidRegionId: invalid region_id format".to_string())?;
+    let iso = region_country_iso2(&normalized_region)
+        .ok_or_else(|| "InvalidRegionId: invalid region country code".to_string())?;
+    let Some(catalog) = load_region_catalog_for_country(&app, &iso)? else {
+        return Err(format!(
+            "CountryPackMissing: no installed demand pack for country {iso}"
+        ));
+    };
+
+    let project_root = PathBuf::from(&project_path);
+    let mut manifest = read_manifest(&project_root)?;
+    let project_iso = primary_project_country_iso2(&manifest).unwrap_or_default();
+    if !project_iso.is_empty() && !project_iso.eq_ignore_ascii_case(&iso) {
+        return Err(format!(
+            "WrongCountryScope: region belongs to {iso}, project country is {project_iso}"
+        ));
+    }
+    let charge = apply_region_unlock(&mut manifest, &catalog, &iso, &normalized_region, false)?;
 
     let mut doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
-    rematerialize_unlocked_country_surfaces(&app, &mut manifest, &mut doc.scenario)?;
-    ScenarioService::save_to_path(
-        scenario_path(&project_root).to_string_lossy().as_ref(),
-        &doc,
-    )
-    .map_err(|e| e.to_string())?;
-    manifest.updated_at = now_string();
-    write_manifest(&project_root, &manifest)?;
-    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
+    let _ = commit_region_scope_change(
+        &app,
+        &state,
+        &project_path,
+        &project_root,
+        &mut manifest,
+        &mut doc,
+    )?;
 
     Ok(UnlockResult {
         region_id: normalized_region,
@@ -737,79 +785,19 @@ pub(crate) fn unlock_and_focus_region(
             "CountryPackMissing: no installed demand pack for country {iso}"
         ));
     };
-    let region = catalog
-        .by_id
-        .get(&normalized_region)
-        .ok_or_else(|| format!("UnknownRegion: unknown region_id: {normalized_region}"))?;
-
-    let mut unlocked = manifest
-        .region_state
-        .unlocked_region_ids
-        .iter()
-        .filter_map(|id| canonicalize_region_id(id))
-        .collect::<HashSet<_>>();
-    let country_unlocked = unlocked
-        .iter()
-        .filter(|id| region_country_iso2(id).as_deref() == Some(iso.as_str()))
-        .cloned()
-        .collect::<HashSet<_>>();
-    if !unlocked.contains(&normalized_region)
-        && !country_unlocked.is_empty()
-        && !region
-            .adjacent_region_ids
-            .iter()
-            .any(|rid| country_unlocked.contains(rid))
-    {
-        return Err(
-            "RegionNotAdjacent: region must be adjacent to an already unlocked region".to_string(),
-        );
-    }
-
-    let charge = if unlocked.contains(&normalized_region) {
-        0.0
-    } else {
-        region_unlock_cost_base_for_manifest(&manifest, region)
-    };
-    if charge > 0.0 && manifest.economy.current_balance_base < charge {
-        return Err(format!(
-            "InsufficientFunds: need {:.0} base units, have {:.0}",
-            charge, manifest.economy.current_balance_base
-        ));
-    }
-
-    if charge > 0.0 {
-        manifest.economy.current_balance_base -= charge;
-        manifest.economy.cumulative_capex_base += charge;
-        update_region_ledger(&mut manifest, 0.0, 0.0, 0.0, charge);
-        record_monthly_financial_delta(&mut manifest, 0.0, 0.0, charge, 0.0);
-        bump_economy_revision(&mut manifest);
-    }
-    unlocked.insert(normalized_region.clone());
-    manifest.region_state.unlocked_region_ids = unlocked.iter().cloned().collect();
-    manifest.region_state.primary_focus_region_id = Some(normalized_region.clone());
-    manifest.region_state.active_region_ids =
-        default_active_regions_for_focus(&catalog, &normalized_region, &unlocked);
-
-    let mut countries = unlocked_country_codes(&manifest)
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    countries.insert(iso.clone());
-    manifest.economy.unlocked_countries = countries.into_iter().collect();
-    sync_progress_budget_from_economy(&mut manifest);
+    let charge = apply_region_unlock(&mut manifest, &catalog, &iso, &normalized_region, true)?;
 
     let mut doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
-    rematerialize_unlocked_country_surfaces(&app, &mut manifest, &mut doc.scenario)?;
-    let materialized_cells = doc.scenario.world.demand_cells.len();
-    ScenarioService::save_to_path(
-        scenario_path(&project_root).to_string_lossy().as_ref(),
-        &doc,
-    )
-    .map_err(|e| e.to_string())?;
-    manifest.updated_at = now_string();
-    write_manifest(&project_root, &manifest)?;
-    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
+    let materialized_cells = commit_region_scope_change(
+        &app,
+        &state,
+        &project_path,
+        &project_root,
+        &mut manifest,
+        &mut doc,
+    )?;
 
     Ok(UnlockFocusResult {
         region_id: normalized_region.clone(),
@@ -834,15 +822,19 @@ pub(crate) fn set_primary_focus_region(
     project_path: String,
     region_id: String,
 ) -> Result<FocusResult, String> {
-    let normalized_region =
-        canonicalize_region_id(&region_id).ok_or_else(|| "invalid region_id format".to_string())?;
+    let normalized_region = canonicalize_region_id(&region_id)
+        .ok_or_else(|| "InvalidRegionId: invalid region_id format".to_string())?;
     let iso = region_country_iso2(&normalized_region)
-        .ok_or_else(|| "invalid region country code".to_string())?;
+        .ok_or_else(|| "InvalidRegionId: invalid region country code".to_string())?;
     let Some(catalog) = load_region_catalog_for_country(&app, &iso)? else {
-        return Err(format!("no installed demand pack for country {iso}"));
+        return Err(format!(
+            "CountryPackMissing: no installed demand pack for country {iso}"
+        ));
     };
     if !catalog.by_id.contains_key(&normalized_region) {
-        return Err(format!("unknown region_id: {normalized_region}"));
+        return Err(format!(
+            "UnknownRegion: unknown region_id: {normalized_region}"
+        ));
     }
 
     let project_root = PathBuf::from(&project_path);
@@ -854,25 +846,30 @@ pub(crate) fn set_primary_focus_region(
         .filter_map(|id| canonicalize_region_id(id))
         .collect::<HashSet<_>>();
     if !unlocked.contains(&normalized_region) {
-        return Err("region must be unlocked before setting focus".to_string());
+        return Err("RegionLocked: region must be unlocked before setting focus".to_string());
     }
-    manifest.region_state.primary_focus_region_id = Some(normalized_region.clone());
-    manifest.region_state.active_region_ids =
-        default_active_regions_for_focus(&catalog, &normalized_region, &unlocked);
+    sync_country_region_state_with_overrides(
+        &mut manifest,
+        &catalog,
+        &iso,
+        RegionStateOverrides {
+            ensure_unlocked_region_ids: vec![],
+            force_primary_focus_region_id: Some(normalized_region.clone()),
+            force_active_region_ids: None,
+        },
+    )?;
 
     let mut doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
-    rematerialize_unlocked_country_surfaces(&app, &mut manifest, &mut doc.scenario)?;
-    let materialized_cells = doc.scenario.world.demand_cells.len();
-    ScenarioService::save_to_path(
-        scenario_path(&project_root).to_string_lossy().as_ref(),
-        &doc,
-    )
-    .map_err(|e| e.to_string())?;
-    manifest.updated_at = now_string();
-    write_manifest(&project_root, &manifest)?;
-    apply_region_scope_runtime_mutation(&state, &project_path, &doc.scenario)?;
+    let materialized_cells = commit_region_scope_change(
+        &app,
+        &state,
+        &project_path,
+        &project_root,
+        &mut manifest,
+        &mut doc,
+    )?;
     Ok(FocusResult {
         primary_focus_region_id: normalized_region,
         active_region_ids: manifest.region_state.active_region_ids.clone(),
@@ -895,6 +892,7 @@ pub(crate) fn set_simulation_scope(
 ) -> Result<ScopeState, String> {
     let project_root = PathBuf::from(&project_path);
     let mut manifest = read_manifest(&project_root)?;
+    let requested_active_region_ids = scope.active_region_ids.clone();
     if let Some(max_active) = scope.max_active_zones {
         manifest.simulation_scope.max_active_zones = max_active.clamp(120, 5000);
     }
@@ -918,7 +916,7 @@ pub(crate) fn set_simulation_scope(
     if let Some(v) = scope.adjacent_update_interval_ticks {
         manifest.simulation_scope.adjacent_update_interval_ticks = v.max(1);
     }
-    if let Some(active_ids) = scope.active_region_ids {
+    if let Some(active_ids) = requested_active_region_ids.as_ref() {
         manifest.region_state.active_region_ids = active_ids
             .into_iter()
             .filter_map(|id| canonicalize_region_id(&id))
@@ -926,20 +924,38 @@ pub(crate) fn set_simulation_scope(
             .into_iter()
             .collect();
     }
+    for iso in unlocked_country_codes(&manifest) {
+        let Some(catalog) = load_region_catalog_for_country(&app, &iso)? else {
+            continue;
+        };
+        let active_override = requested_active_region_ids.as_ref().map(|ids| {
+            ids.iter()
+                .filter_map(|id| canonicalize_region_id(id))
+                .filter(|id| region_country_iso2(id).as_deref() == Some(iso.as_str()))
+                .collect::<Vec<_>>()
+        });
+        sync_country_region_state_with_overrides(
+            &mut manifest,
+            &catalog,
+            &iso,
+            RegionStateOverrides {
+                ensure_unlocked_region_ids: vec![],
+                force_primary_focus_region_id: None,
+                force_active_region_ids: active_override,
+            },
+        )?;
+    }
     let mut doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
-    rematerialize_unlocked_country_surfaces(&app, &mut manifest, &mut doc.scenario)?;
-    let materialized_cells = doc.scenario.world.demand_cells.len();
-    ScenarioService::save_to_path(
-        scenario_path(&project_root).to_string_lossy().as_ref(),
-        &doc,
-    )
-    .map_err(|e| e.to_string())?;
-    manifest.updated_at = now_string();
-    write_manifest(&project_root, &manifest)?;
-    let project_path_string = project_root.to_string_lossy().to_string();
-    apply_region_scope_runtime_mutation(&state, &project_path_string, &doc.scenario)?;
+    let materialized_cells = commit_region_scope_change(
+        &app,
+        &state,
+        &project_path,
+        &project_root,
+        &mut manifest,
+        &mut doc,
+    )?;
     Ok(ScopeState {
         max_active_zones: manifest.simulation_scope.max_active_zones,
         remote_regions_mode: manifest.simulation_scope.remote_regions_mode.clone(),
@@ -968,11 +984,20 @@ pub(crate) fn get_demand_tile_source(
         .as_ref()
         .map(|m| m.loaded_countries.clone())
         .unwrap_or_default();
+    let has_cells = !doc.scenario.world.demand_cells.is_empty();
     Ok(DemandTileSourceMeta {
         layer: layer.clone(),
-        source: "scenario.demand_cells".to_string(),
+        source: if has_cells {
+            DEMAND_TILE_SOURCE_PERSISTED_CELLS.to_string()
+        } else {
+            DEMAND_TILE_SOURCE_ZONES_FALLBACK.to_string()
+        },
         countries_loaded: countries,
-        cells: doc.scenario.world.demand_cells.len(),
+        cells: if has_cells {
+            doc.scenario.world.demand_cells.len()
+        } else {
+            doc.scenario.world.zones.len()
+        },
         mode: if layer.eq_ignore_ascii_case("population") || layer.eq_ignore_ascii_case("jobs") {
             "smoothed_raster_overlay".to_string()
         } else {

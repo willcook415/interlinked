@@ -189,7 +189,8 @@ pub fn summarize_network_mutation(
     current_balance_base: Option<f64>,
 ) -> NetworkMutationSummary {
     let defaults = default_build_defaults(cfg);
-    let previous_capex_base = interlinked_engine::platform::estimate_network_capex_base(current, cfg);
+    let previous_capex_base =
+        interlinked_engine::platform::estimate_network_capex_base(current, cfg);
     let next_capex_base = interlinked_engine::platform::estimate_network_capex_base(next, cfg);
     let infra_capex_delta_base = (next_capex_base - previous_capex_base).max(0.0);
 
@@ -325,9 +326,12 @@ pub fn summarize_network_mutation(
         + fleet_transfer_fees_base
         - fleet_salvage_refund_base;
     let capex_delta_base = net_capex_delta_base.max(0.0);
-    let service_opex_per_hour_base = interlinked_engine::platform::estimate_service_opex_per_hour_base(next, cfg);
-    let projected_staff_opex_per_hour_base = super::operations_materialization::estimate_staff_opex_per_hour_base(next, cfg);
-    let estimated_total_opex_per_hour_base = service_opex_per_hour_base + projected_staff_opex_per_hour_base;
+    let service_opex_per_hour_base =
+        interlinked_engine::platform::estimate_service_opex_per_hour_base(next, cfg);
+    let projected_staff_opex_per_hour_base =
+        super::operations_materialization::estimate_staff_opex_per_hour_base(next, cfg);
+    let estimated_total_opex_per_hour_base =
+        service_opex_per_hour_base + projected_staff_opex_per_hour_base;
     let projected_balance_after_apply_base =
         current_balance_base.map(|balance| balance - net_capex_delta_base);
 

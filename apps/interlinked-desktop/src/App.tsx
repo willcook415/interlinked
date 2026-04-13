@@ -136,13 +136,13 @@ function formatBackendError(error: unknown): string {
   const raw = String(error ?? "Unknown error");
   const message = raw.replace(/^Error:\s*/i, "");
   if (message.includes("RegionNotAdjacent")) {
-    return "Unlock failed: the selected county must border one of your unlocked counties.";
+    return "Unlock failed: the selected region must border one of your unlocked regions.";
   }
   if (message.includes("InsufficientFunds")) {
-    return "Unlock failed: insufficient funds for this county.";
+    return "Unlock failed: insufficient funds for this region.";
   }
   if (message.includes("WrongCountryScope")) {
-    return "Unlock failed: this county is outside your current country scope.";
+    return "Unlock failed: this region is outside your current country scope.";
   }
   if (message.includes("CountryPackMissing")) {
     return "Unlock failed: required country data is not installed.";

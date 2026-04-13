@@ -81,7 +81,6 @@ pub struct GameProgressMetrics {
     pub milestones: u32,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DemandSurfaceManifest {
     pub surface_version: String,
@@ -117,7 +116,6 @@ pub struct SimulationScopeManifest {
     #[serde(default = "default_adjacent_update_interval_ticks")]
     pub adjacent_update_interval_ticks: u32,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryPackRef {

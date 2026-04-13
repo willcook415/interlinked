@@ -98,7 +98,7 @@ pub(crate) fn gb_county_adjacency_map(counties: &[CountyBoundary]) -> HashMap<St
         .iter()
         .map(|county| {
             (
-                region_id_from_county("GB", &county.county_id),
+                region_id_from_county(CANONICAL_UK_ISO2, &county.county_id),
                 Vec::<String>::new(),
             )
         })
@@ -110,8 +110,8 @@ pub(crate) fn gb_county_adjacency_map(counties: &[CountyBoundary]) -> HashMap<St
             if !a.geometry.intersects(&b.geometry) {
                 continue;
             }
-            let a_id = region_id_from_county("GB", &a.county_id);
-            let b_id = region_id_from_county("GB", &b.county_id);
+            let a_id = region_id_from_county(CANONICAL_UK_ISO2, &a.county_id);
+            let b_id = region_id_from_county(CANONICAL_UK_ISO2, &b.county_id);
             adjacency
                 .entry(a_id.clone())
                 .or_default()

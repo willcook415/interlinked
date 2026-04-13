@@ -36,9 +36,10 @@ pub(crate) fn region_unlock_cost_base_for_manifest(
 }
 
 pub(crate) fn country_employment_baseline_ratio(country_iso2: &str) -> f64 {
-    match country_iso2.trim().to_ascii_uppercase().as_str() {
-        "GB" => UK_EMPLOYMENT_BASELINE_RATIO,
-        _ => DEFAULT_EMPLOYMENT_BASELINE_RATIO,
+    if is_uk_country_iso2(country_iso2) {
+        UK_EMPLOYMENT_BASELINE_RATIO
+    } else {
+        DEFAULT_EMPLOYMENT_BASELINE_RATIO
     }
 }
 
@@ -62,20 +63,66 @@ pub(crate) fn sync_country_region_state(
     catalog: &SurfaceRegionCatalog,
     country_iso2: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    let iso = country_iso2.trim().to_ascii_uppercase();
+    let resolved = sync_country_region_state_with_overrides(
+        manifest,
+        catalog,
+        country_iso2,
+        RegionStateOverrides::default(),
+    )?;
+    Ok((resolved.unlocked_region_ids, resolved.active_region_ids))
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RegionStateOverrides {
+    pub(crate) ensure_unlocked_region_ids: Vec<String>,
+    pub(crate) force_primary_focus_region_id: Option<String>,
+    pub(crate) force_active_region_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CountryRegionState {
+    pub(crate) country_iso2: String,
+    pub(crate) unlocked_region_ids: Vec<String>,
+    pub(crate) primary_focus_region_id: String,
+    pub(crate) active_region_ids: Vec<String>,
+}
+
+pub(crate) fn sync_country_region_state_with_overrides(
+    manifest: &mut ProjectManifest,
+    catalog: &SurfaceRegionCatalog,
+    country_iso2: &str,
+    overrides: RegionStateOverrides,
+) -> Result<CountryRegionState, String> {
+    // Authoritative country-level region state reconciliation:
+    // canonicalize -> validate against catalog -> apply overrides -> persist merged state.
+    let iso = canonical_country_iso2(country_iso2)
+        .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
     let valid = catalog
         .regions
         .iter()
         .map(|r| r.region_id.clone())
         .collect::<HashSet<_>>();
+    let resolve_for_catalog = |id: &str| canonical_region_for_catalog(catalog, id);
     let mut unlocked_for_country = manifest
         .region_state
         .unlocked_region_ids
         .iter()
-        .filter_map(|id| canonicalize_region_id(id))
+        .filter_map(|id| resolve_for_catalog(id))
         .filter(|id| region_country_iso2(id).as_deref() == Some(iso.as_str()))
         .filter(|id| valid.contains(id))
         .collect::<BTreeSet<_>>();
+
+    for region_id in overrides
+        .ensure_unlocked_region_ids
+        .iter()
+        .filter_map(|id| resolve_for_catalog(id))
+    {
+        if region_country_iso2(&region_id).as_deref() == Some(iso.as_str())
+            && valid.contains(&region_id)
+        {
+            unlocked_for_country.insert(region_id);
+        }
+    }
 
     if unlocked_for_country.is_empty() {
         if let Some(seed_region) =
@@ -88,28 +135,51 @@ pub(crate) fn sync_country_region_state(
         return Err(format!("no regions available for country {iso}"));
     }
 
-    let mut primary = manifest
-        .region_state
-        .primary_focus_region_id
+    let mut primary = overrides
+        .force_primary_focus_region_id
         .as_deref()
-        .and_then(canonicalize_region_id)
-        .filter(|rid| unlocked_for_country.contains(rid));
+        .and_then(resolve_for_catalog)
+        .filter(|rid| unlocked_for_country.contains(rid))
+        .or_else(|| {
+            manifest
+                .region_state
+                .primary_focus_region_id
+                .as_deref()
+                .and_then(resolve_for_catalog)
+                .filter(|rid| unlocked_for_country.contains(rid))
+        });
     if primary.is_none() {
         primary = unlocked_for_country.iter().next().cloned();
     }
     let primary = primary.ok_or_else(|| format!("failed to select primary region for {iso}"))?;
 
     let unlocked_set = unlocked_for_country.iter().cloned().collect::<HashSet<_>>();
-    let mut active_for_country = manifest
-        .region_state
-        .active_region_ids
-        .iter()
-        .filter_map(|id| canonicalize_region_id(id))
-        .filter(|id| unlocked_set.contains(id))
-        .collect::<Vec<_>>();
+    let mut active_for_country = overrides
+        .force_active_region_ids
+        .as_ref()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| resolve_for_catalog(id))
+                .filter(|id| unlocked_set.contains(id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            manifest
+                .region_state
+                .active_region_ids
+                .iter()
+                .filter_map(|id| resolve_for_catalog(id))
+                .filter(|id| unlocked_set.contains(id))
+                .collect::<Vec<_>>()
+        });
     if active_for_country.is_empty() || !active_for_country.contains(&primary) {
         active_for_country = default_active_regions_for_focus(catalog, &primary, &unlocked_set);
     }
+    active_for_country = active_for_country
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     active_for_country.truncate(8);
 
     let mut merged_unlocked = manifest
@@ -135,12 +205,14 @@ pub(crate) fn sync_country_region_state(
         merged_active.insert(rid.clone());
     }
     manifest.region_state.active_region_ids = merged_active.into_iter().collect();
-    manifest.region_state.primary_focus_region_id = Some(primary);
+    manifest.region_state.primary_focus_region_id = Some(primary.clone());
 
-    Ok((
-        unlocked_for_country.into_iter().collect::<Vec<_>>(),
-        active_for_country,
-    ))
+    Ok(CountryRegionState {
+        country_iso2: iso,
+        unlocked_region_ids: unlocked_for_country.into_iter().collect(),
+        primary_focus_region_id: primary,
+        active_region_ids: active_for_country,
+    })
 }
 
 pub(crate) fn materialize_country_surface_scoped(
@@ -149,8 +221,33 @@ pub(crate) fn materialize_country_surface_scoped(
     country_iso2: &str,
     surface: &DemandSurfaceCountryWire,
 ) -> Result<usize, String> {
-    let iso = country_iso2.trim().to_ascii_uppercase();
+    let iso = canonical_country_iso2(country_iso2)
+        .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
     let catalog = build_region_catalog_for_surface(&iso, surface)?;
+    materialize_country_surface_scoped_with_catalog(manifest, scenario, &iso, &catalog)
+}
+
+pub(crate) fn materialize_country_surface_scoped_with_app(
+    app: &AppHandle,
+    manifest: &mut ProjectManifest,
+    scenario: &mut Scenario,
+    country_iso2: &str,
+    surface: &DemandSurfaceCountryWire,
+) -> Result<usize, String> {
+    let iso = canonical_country_iso2(country_iso2)
+        .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
+    let catalog = build_region_catalog_for_surface_with_app(app, &iso, surface)?;
+    materialize_country_surface_scoped_with_catalog(manifest, scenario, &iso, &catalog)
+}
+
+fn materialize_country_surface_scoped_with_catalog(
+    manifest: &mut ProjectManifest,
+    scenario: &mut Scenario,
+    country_iso2: &str,
+    catalog: &SurfaceRegionCatalog,
+) -> Result<usize, String> {
+    let iso = canonical_country_iso2(country_iso2)
+        .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
     let (unlocked_regions, active_regions) = sync_country_region_state(manifest, &catalog, &iso)?;
 
     let max_active_zones = manifest.simulation_scope.max_active_zones.clamp(
@@ -276,7 +373,7 @@ pub(crate) fn upsert_pack_ref(
     iso: &str,
     surface: &DemandSurfaceCountryWire,
 ) {
-    let iso = iso.trim().to_ascii_uppercase();
+    let iso = canonical_country_iso2(iso).unwrap_or_else(|| iso.trim().to_ascii_uppercase());
     manifest.pack_refs.retain(|p| p.country_iso2 != iso);
     manifest.pack_refs.push(CountryPackRef {
         country_iso2: iso,
@@ -293,20 +390,15 @@ pub(crate) fn rematerialize_unlocked_country_surfaces(
     manifest: &mut ProjectManifest,
     scenario: &mut Scenario,
 ) -> Result<Vec<DemandCoverageResult>, String> {
-    scenario
-        .world
-        .demand_cells
-        .retain(|c| !is_surface_generated_cell_id(&c.cell_id));
-    scenario
-        .world
-        .zones
-        .retain(|z| !is_surface_generated_zone_id(&z.id));
+    clear_surface_generated_persisted_demand(scenario);
 
     let mut out = Vec::<DemandCoverageResult>::new();
     let mut loaded_countries = Vec::<String>::new();
     let mut surface_version = None::<String>;
     for iso in unlocked_country_codes(manifest) {
-        let Some(path) = demand_surface_file(app, &iso) else {
+        let Some(resolved_surface) =
+            crate::commands::content_library::resolve_demand_surface_path(app, &iso)
+        else {
             out.push(DemandCoverageResult {
                 country_iso2: iso,
                 installed: false,
@@ -316,8 +408,9 @@ pub(crate) fn rematerialize_unlocked_country_surfaces(
             });
             continue;
         };
-        let surface = load_surface_wire(&path)?;
-        let loaded_count = materialize_country_surface_scoped(manifest, scenario, &iso, &surface)?;
+        let surface = load_surface_wire(&resolved_surface.path)?;
+        let loaded_count =
+            materialize_country_surface_scoped_with_app(app, manifest, scenario, &iso, &surface)?;
         loaded_countries.push(iso.clone());
         surface_version = Some(surface.surface_version.clone());
         upsert_pack_ref(manifest, &iso, &surface);
@@ -327,33 +420,21 @@ pub(crate) fn rematerialize_unlocked_country_surfaces(
             loaded: true,
             cells_loaded: loaded_count,
             message: format!(
-                "Loaded scoped region demand from {}",
-                path.to_string_lossy()
+                "Loaded scoped region demand from {} ({})",
+                resolved_surface.path.to_string_lossy(),
+                resolved_surface.source.as_str()
             ),
         });
     }
 
-    loaded_countries = normalize_loaded_countries(loaded_countries);
-    scenario.world.demand_meta = Some(DemandMeta {
-        surface_version: surface_version.unwrap_or_else(|| "v4".to_string()),
-        loaded_countries: loaded_countries.clone(),
-        source: "surface_v4_region_scope".to_string(),
-    });
-    let mut ds = manifest
-        .demand_surface
-        .clone()
-        .unwrap_or_else(default_demand_surface_manifest);
-    if let Some(version) = scenario
-        .world
-        .demand_meta
-        .as_ref()
-        .map(|m| m.surface_version.clone())
-    {
-        ds.surface_version = version;
-    }
-    ds.loaded_countries = loaded_countries;
-    ds.last_rebuild_at = Some(now_string());
-    manifest.demand_surface = Some(ds);
+    // Persisted gameplay demand authority is updated only here after full rematerialization.
+    let (persisted_surface_version, persisted_loaded_countries) =
+        write_surface_pipeline_demand_meta(scenario, surface_version, loaded_countries);
+    sync_manifest_surface_pipeline_state(
+        manifest,
+        &persisted_surface_version,
+        &persisted_loaded_countries,
+    );
     Ok(out)
 }
 
@@ -435,10 +516,15 @@ pub(crate) fn region_status_rows_for_manifest(
             rows.push(RegionStatus {
                 region_id: region.region_id.clone(),
                 country_iso2: region.country_iso2.clone(),
+                region_kind: region.region_kind.clone(),
+                region_token: region.region_token.clone(),
+                h3_cell_id: region.h3_cell_id.clone(),
                 name: region.name.clone(),
                 admin_level: region.admin_level.clone(),
                 nation: region.nation.clone(),
                 source_code: region.source_code.clone(),
+                adjacency_source: region.adjacency_source.clone(),
+                geometry_source: region.geometry_source.clone(),
                 unlocked: unlocked_regions.contains(&region.region_id),
                 active: active_regions.contains(&region.region_id),
                 adjacent_region_ids: region.adjacent_region_ids.clone(),
@@ -447,13 +533,7 @@ pub(crate) fn region_status_rows_for_manifest(
                 jobs_smooth: region.jobs_smooth,
                 employment_estimate,
                 cells_res8,
-                geometry: if region.country_iso2.eq_ignore_ascii_case("GB")
-                    && counties_file(app, "GB").is_some()
-                {
-                    None
-                } else {
-                    region.geometry.clone()
-                },
+                geometry: region.geometry.clone(),
             });
         }
     }

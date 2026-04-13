@@ -241,11 +241,11 @@ fn load_county_mode_constraints(
         }
     }
 
-    let roads_path = county_roads_file(app, "GB", &county)
-        .or_else(|| county_basemap_full_file(app, "GB", &county))
-        .or_else(|| county_basemap_mid_file(app, "GB", &county));
-    let water_path = county_basemap_full_file(app, "GB", &county)
-        .or_else(|| county_basemap_mid_file(app, "GB", &county));
+    let roads_path = county_roads_file(app, CANONICAL_UK_ISO2, &county)
+        .or_else(|| county_basemap_full_file(app, CANONICAL_UK_ISO2, &county))
+        .or_else(|| county_basemap_mid_file(app, CANONICAL_UK_ISO2, &county));
+    let water_path = county_basemap_full_file(app, CANONICAL_UK_ISO2, &county)
+        .or_else(|| county_basemap_mid_file(app, CANONICAL_UK_ISO2, &county));
 
     let mut merged = CountyModeConstraintData::default();
     if let Some(path) = roads_path.as_ref() {
@@ -501,7 +501,7 @@ fn default_mutation_path_validation_meta() -> MutationPathValidationMeta {
     }
 }
 
-fn validate_mutation_respects_unlocked_gb_counties(
+fn validate_mutation_respects_unlocked_uk_regions(
     app: &AppHandle,
     current: &Scenario,
     next: &Scenario,
@@ -512,7 +512,7 @@ fn validate_mutation_respects_unlocked_gb_counties(
         return Ok(validation_meta);
     }
     let country_iso2 = primary_project_country_iso2(manifest).unwrap_or_default();
-    if !country_iso2.eq_ignore_ascii_case("GB") {
+    if !is_uk_country_iso2(&country_iso2) {
         return Ok(validation_meta);
     }
 
@@ -528,7 +528,7 @@ fn validate_mutation_respects_unlocked_gb_counties(
         .iter()
         .filter_map(|id| canonicalize_region_id(id))
         .filter_map(|id| county_iso_and_id_from_region_id(&id))
-        .filter(|(iso, _)| iso.eq_ignore_ascii_case("GB"))
+        .filter(|(iso, _)| is_uk_country_iso2(iso))
         .map(|(_, county_id)| county_id)
         .collect::<HashSet<_>>();
     if unlocked_county_ids.is_empty() {
@@ -750,7 +750,7 @@ pub fn preview_network_mutation(
     .map_err(|e| e.to_string())?;
     ScenarioService::validate(&next_doc.scenario).map_err(|e| e.to_string())?;
     let manifest = read_manifest(&project_root)?;
-    let path_validation = validate_mutation_respects_unlocked_gb_counties(
+    let path_validation = validate_mutation_respects_unlocked_uk_regions(
         &app,
         &current_doc.scenario,
         &next_doc.scenario,
@@ -796,7 +796,7 @@ pub fn apply_network_mutation(
     ScenarioService::validate(&next_doc.scenario).map_err(|e| e.to_string())?;
 
     let mut manifest = read_manifest(&project_root)?;
-    let path_validation = validate_mutation_respects_unlocked_gb_counties(
+    let path_validation = validate_mutation_respects_unlocked_uk_regions(
         &app,
         &current_doc.scenario,
         &next_doc.scenario,

@@ -19,6 +19,35 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+const CANONICAL_UK_ISO2: &str = "UK";
+const UK_COMPAT_GB_ISO2: &str = "GB";
+const DEFAULT_REGION_PROVIDER_MODEL: &str = "planning_surface_res6_v1";
+
+fn canonical_country_iso2(value: &str) -> Option<String> {
+    let iso = value.trim().to_ascii_uppercase();
+    if iso.len() != 2 {
+        return None;
+    }
+    if iso == CANONICAL_UK_ISO2 || iso == UK_COMPAT_GB_ISO2 {
+        return Some(CANONICAL_UK_ISO2.to_string());
+    }
+    Some(iso)
+}
+
+fn is_uk_country_iso2(value: &str) -> bool {
+    canonical_country_iso2(value)
+        .map(|iso| iso == CANONICAL_UK_ISO2)
+        .unwrap_or(false)
+}
+
+fn boundaries_query_iso2(value: &str) -> String {
+    if is_uk_country_iso2(value) {
+        UK_COMPAT_GB_ISO2.to_string()
+    } else {
+        value.trim().to_ascii_uppercase()
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "interlinked-osm")]
 #[command(about = "Interlinked data backbone tools", long_about = None)]
@@ -193,7 +222,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         raster_only: bool,
     },
-    BuildGbMapAssets {
+    #[command(name = "build-country-map-assets", alias = "build-gb-map-assets")]
+    BuildCountryMapAssets {
         #[arg(long)]
         pbf: String,
         #[arg(long)]
@@ -344,13 +374,21 @@ struct DemandSurfaceCell {
     jobs_raw: f64,
     residents_smooth: f64,
     jobs_smooth: f64,
+    #[serde(default)]
     activity_mix_residential: f64,
+    #[serde(default)]
     activity_mix_office: f64,
+    #[serde(default)]
     activity_mix_retail: f64,
+    #[serde(default)]
     activity_mix_recreation: f64,
+    #[serde(default)]
     activity_mix_industrial: f64,
+    #[serde(default)]
     activity_mix_education: f64,
+    #[serde(default)]
     activity_mix_health: f64,
+    #[serde(default)]
     quality: f64,
 }
 
@@ -372,6 +410,10 @@ struct CountryPackManifest {
     generated_at_epoch_s: u64,
     surface_file: String,
     regions_file: String,
+    // Authoritative runtime region provider contract (Package D).
+    region_provider_model: String,
+    #[serde(default)]
+    compatibility_country_aliases: Vec<String>,
     region_count: usize,
     cells_res8: usize,
     source_provenance: DemandSurfaceProvenance,
@@ -1124,6 +1166,7 @@ fn build_world_context_geojson(
             let iso = normalize_iso(props.get("ISO_A2").and_then(|value| value.as_str())).or_else(
                 || normalize_iso(props.get("ISO_A2_EH").and_then(|value| value.as_str())),
             )?;
+            let canonical_iso = canonical_country_iso2(&iso).unwrap_or(iso);
             let name = props
                 .get("NAME_EN")
                 .and_then(|value| value.as_str())
@@ -1133,10 +1176,19 @@ fn build_world_context_geojson(
                 .to_string();
             let simplified_geometry = simplify_geojson_geometry(geometry, 0.08)?;
             let mut mapped = JsonMap::<String, JsonValue>::new();
-            mapped.insert("country_iso2".to_string(), JsonValue::String(iso.clone()));
+            mapped.insert(
+                "country_iso2".to_string(),
+                JsonValue::String(canonical_iso.clone()),
+            );
             mapped.insert("name".to_string(), JsonValue::String(name));
-            mapped.insert("playable_now".to_string(), JsonValue::Bool(iso == "GB"));
-            mapped.insert("coming_soon".to_string(), JsonValue::Bool(iso != "GB"));
+            mapped.insert(
+                "playable_now".to_string(),
+                JsonValue::Bool(is_uk_country_iso2(&canonical_iso)),
+            );
+            mapped.insert(
+                "coming_soon".to_string(),
+                JsonValue::Bool(!is_uk_country_iso2(&canonical_iso)),
+            );
             Some(Feature {
                 bbox: None,
                 geometry: Some(simplified_geometry),
@@ -1161,11 +1213,20 @@ fn build_world_context_geojson(
     .map_err(|e| format!("{}: {e}", out_path.display()))
 }
 
-fn build_gb_map_artifacts(
+fn build_country_map_artifacts(
+    country_iso2: &str,
     pbf_path: &str,
     country_boundaries_geojson: &str,
     out_dir: &Path,
 ) -> Result<(), String> {
+    let Some(canonical_iso) = canonical_country_iso2(country_iso2) else {
+        return Err("country_iso2 must be two-letter ISO code".to_string());
+    };
+    if !is_uk_country_iso2(&canonical_iso) {
+        return Err(format!(
+            "build-country-map-assets currently supports UK canonical map pack generation only (got {canonical_iso})"
+        ));
+    }
     let counties = load_uk_counties_canonical()?;
     let county_index = CountyBucketIndex::new(&counties, 0.5);
     let map_dir = out_dir.join("map");
@@ -1371,16 +1432,17 @@ fn build_gb_map_artifacts(
         }
     }
 
-    fs::write(
-        map_dir.join("gb_major_roads.geojson"),
-        GeoJson::FeatureCollection(FeatureCollection {
-            bbox: None,
-            features: major_features,
-            foreign_members: None,
-        })
-        .to_string(),
-    )
-    .map_err(|e| e.to_string())?;
+    let major_roads_geojson = GeoJson::FeatureCollection(FeatureCollection {
+        bbox: None,
+        features: major_features,
+        foreign_members: None,
+    })
+    .to_string();
+    fs::write(map_dir.join("major_roads.geojson"), &major_roads_geojson)
+        .map_err(|e| e.to_string())?;
+    // Compatibility output retained for legacy GB-prefixed loaders.
+    fs::write(map_dir.join("gb_major_roads.geojson"), &major_roads_geojson)
+        .map_err(|e| e.to_string())?;
 
     for county in &counties {
         let road_features = county_roads_features
@@ -1426,15 +1488,30 @@ fn build_gb_map_artifacts(
     Ok(())
 }
 
-fn run_build_gb_map_assets(
+// Legacy helper retained for test/compatibility callers that still use GB naming.
+#[allow(dead_code)]
+fn build_gb_map_artifacts(
+    pbf_path: &str,
+    country_boundaries_geojson: &str,
+    out_dir: &Path,
+) -> Result<(), String> {
+    build_country_map_artifacts(CANONICAL_UK_ISO2, pbf_path, country_boundaries_geojson, out_dir)
+}
+
+fn run_build_country_map_assets(
+    country_iso2: &str,
     pbf_path: &str,
     country_boundaries_geojson: &str,
     out_dir: &str,
 ) -> Result<(), String> {
     let out_root = Path::new(out_dir);
     fs::create_dir_all(out_root).map_err(|e| e.to_string())?;
-    build_gb_map_artifacts(pbf_path, country_boundaries_geojson, out_root)?;
-    println!("GB map assets built -> {}", out_root.display());
+    build_country_map_artifacts(country_iso2, pbf_path, country_boundaries_geojson, out_root)?;
+    println!(
+        "Country map assets built: iso={} -> {}",
+        canonical_country_iso2(country_iso2).unwrap_or_else(|| country_iso2.to_ascii_uppercase()),
+        out_root.display()
+    );
     Ok(())
 }
 
@@ -1609,11 +1686,11 @@ fn main() -> Result<(), String> {
             bbox,
             raster_only,
         }),
-        Commands::BuildGbMapAssets {
+        Commands::BuildCountryMapAssets {
             pbf,
             country_boundaries_geojson,
             out_dir,
-        } => run_build_gb_map_assets(&pbf, &country_boundaries_geojson, &out_dir),
+        } => run_build_country_map_assets(CANONICAL_UK_ISO2, &pbf, &country_boundaries_geojson, &out_dir),
         Commands::ValidateCountryPack { pack_dir } => run_validate_country_pack(&pack_dir),
     }
 }
@@ -1805,6 +1882,9 @@ fn parse_country_boundaries(path: &str) -> Result<HashMap<String, MultiPolygon<f
             Path::new(path).display()
         ));
     }
+    if let Some(poly) = out.get(UK_COMPAT_GB_ISO2).cloned() {
+        out.entry(CANONICAL_UK_ISO2.to_string()).or_insert(poly);
+    }
     Ok(out)
 }
 
@@ -1834,14 +1914,14 @@ fn build_demand_fabric_payload(options: &BuildDemandFabricOptions) -> Result<Dem
     let country = options
         .country_iso2
         .as_deref()
-        .map(|x| x.trim().to_ascii_uppercase())
-        .filter(|x| x.len() == 2);
+        .and_then(canonical_country_iso2);
+    let boundary_country = country.as_deref().map(boundaries_query_iso2);
     let boundaries = if let Some(path) = options.country_boundaries_geojson.as_deref() {
         Some(parse_country_boundaries(path)?)
     } else {
         None
     };
-    if let (Some(iso), Some(map)) = (country.as_deref(), boundaries.as_ref()) {
+    if let (Some(iso), Some(map)) = (boundary_country.as_deref(), boundaries.as_ref()) {
         if !map.contains_key(iso) {
             return Err(format!("country '{iso}' not found in boundaries geojson"));
         }
@@ -1852,7 +1932,7 @@ fn build_demand_fabric_payload(options: &BuildDemandFabricOptions) -> Result<Dem
         if lon < min_lon || lon > max_lon || lat < min_lat || lat > max_lat {
             return false;
         }
-        point_is_in_country(lon, lat, country.as_deref(), boundaries.as_ref())
+        point_is_in_country(lon, lat, boundary_country.as_deref(), boundaries.as_ref())
     };
 
     let pop_samples_raw = if let Some(path) = options.population_raster_csv.as_deref() {
@@ -2383,10 +2463,9 @@ fn demand_surface_from_fabric(
 }
 
 fn run_build_demand_surface(options: BuildDemandSurfaceOptions) -> Result<(), String> {
-    let iso = options.country_iso2.trim().to_ascii_uppercase();
-    if iso.len() != 2 {
+    let Some(iso) = canonical_country_iso2(&options.country_iso2) else {
         return Err("country_iso2 must be two-letter ISO code".to_string());
-    }
+    };
     let fabric = build_demand_fabric_payload(&BuildDemandFabricOptions {
         pbf_path: options.pbf_path.clone(),
         out_path: String::new(),
@@ -2433,10 +2512,13 @@ fn run_build_demand_surface_pack(options: BuildDemandSurfacePackOptions) -> Resu
         options
             .countries
             .split(',')
-            .map(|c| c.trim().to_ascii_uppercase())
-            .filter(|c| c.len() == 2)
+            .map(|c| c.trim().to_string())
             .collect::<Vec<_>>()
     };
+    countries = countries
+        .into_iter()
+        .filter_map(|code| canonical_country_iso2(&code))
+        .collect();
     countries.sort();
     countries.dedup();
     if countries.is_empty() {
@@ -2445,7 +2527,8 @@ fn run_build_demand_surface_pack(options: BuildDemandSurfacePackOptions) -> Resu
     fs::create_dir_all(&options.out_dir).map_err(|e| e.to_string())?;
     let mut built = 0usize;
     for iso in countries {
-        if !boundaries.contains_key(&iso) {
+        let boundary_iso = boundaries_query_iso2(&iso);
+        if !boundaries.contains_key(&boundary_iso) {
             eprintln!("Skipping {} (not found in boundaries file)", iso);
             continue;
         }
@@ -2472,10 +2555,9 @@ fn run_build_demand_surface_pack(options: BuildDemandSurfacePackOptions) -> Resu
 }
 
 fn run_build_country_pack(options: BuildCountryPackOptions) -> Result<(), String> {
-    let iso = options.country_iso2.trim().to_ascii_uppercase();
-    if iso.len() != 2 {
+    let Some(iso) = canonical_country_iso2(&options.country_iso2) else {
         return Err("country_iso2 must be two-letter ISO code".to_string());
-    }
+    };
 
     let fabric = build_demand_fabric_payload(&BuildDemandFabricOptions {
         pbf_path: options.pbf_path.clone(),
@@ -2637,26 +2719,33 @@ fn run_build_country_pack(options: BuildCountryPackOptions) -> Result<(), String
     let mut county_roads_dir_rel = None::<String>;
     let mut county_basemap_mid_dir_rel = None::<String>;
     let mut county_basemap_full_dir_rel = None::<String>;
-    if iso == "GB" {
-        build_gb_map_artifacts(
+    if is_uk_country_iso2(&iso) {
+        build_country_map_artifacts(
+            &iso,
             &options.pbf_path,
             &options.country_boundaries_geojson,
             pack_root,
         )?;
         world_context_file = Some("map/world_context.geojson".to_string());
-        major_roads_file = Some("map/gb_major_roads.geojson".to_string());
+        major_roads_file = Some("map/major_roads.geojson".to_string());
         county_roads_dir_rel = Some("map/county_roads".to_string());
         county_basemap_mid_dir_rel = Some("map/county_basemap_mid".to_string());
         county_basemap_full_dir_rel = Some("map/county_basemap_full".to_string());
     }
 
     let manifest = CountryPackManifest {
-        schema_version: 1,
+        schema_version: 2,
         country_iso2: iso.clone(),
         pack_version: "v4".to_string(),
         generated_at_epoch_s: fabric.meta.generated_at_epoch_s,
         surface_file: format!("surfaces/{surface_file}"),
         regions_file: "regions.geojson".to_string(),
+        region_provider_model: DEFAULT_REGION_PROVIDER_MODEL.to_string(),
+        compatibility_country_aliases: if is_uk_country_iso2(&iso) {
+            vec![UK_COMPAT_GB_ISO2.to_string()]
+        } else {
+            Vec::new()
+        },
         region_count: surface.cells_res6.len(),
         cells_res8: surface.cells_res8.len(),
         source_provenance: surface.source_provenance.clone(),
@@ -2696,9 +2785,31 @@ fn run_validate_country_pack(pack_dir: &str) -> Result<(), String> {
     let manifest_raw = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
     let manifest: CountryPackManifest =
         serde_json::from_str(&manifest_raw).map_err(|e| e.to_string())?;
+    let Some(canonical_manifest_iso2) = canonical_country_iso2(&manifest.country_iso2) else {
+        return Err("manifest.country_iso2 must be two-letter ISO code".to_string());
+    };
+    if manifest.region_provider_model.trim().is_empty()
+        || !manifest.region_provider_model.starts_with("planning_surface_")
+    {
+        return Err(
+            "manifest.region_provider_model must start with planning_surface_".to_string(),
+        );
+    }
     let surface_path = root.join(&manifest.surface_file);
     if !surface_path.exists() {
         return Err(format!("surface file missing: {}", surface_path.display()));
+    }
+    let surface_raw = fs::read_to_string(&surface_path).map_err(|e| e.to_string())?;
+    let surface: DemandSurfaceCountry =
+        serde_json::from_str(&surface_raw).map_err(|e| e.to_string())?;
+    let Some(canonical_surface_iso2) = canonical_country_iso2(&surface.country_iso2) else {
+        return Err("surface country_iso2 must be two-letter ISO code".to_string());
+    };
+    if canonical_surface_iso2 != canonical_manifest_iso2 {
+        return Err(format!(
+            "surface country mismatch: manifest={} surface={}",
+            canonical_manifest_iso2, canonical_surface_iso2
+        ));
     }
     if !root.join(&manifest.regions_file).exists() {
         return Err(format!(

@@ -228,7 +228,9 @@ fn service_route_link_ids(
             )
         } else {
             let distance_m = match (stop_lookup.get(from_stop), stop_lookup.get(to_stop)) {
-                (Some(from), Some(to)) => ((from.x - to.x).powi(2) + (from.y - to.y).powi(2)).sqrt(),
+                (Some(from), Some(to)) => {
+                    ((from.x - to.x).powi(2) + (from.y - to.y).powi(2)).sqrt()
+                }
                 _ => 0.0,
             };
             (distance_m, 12.0, None)
@@ -541,7 +543,10 @@ pub fn inspect_line_from_scenario(
                     demand_meta: None,
                 },
             };
-            interlinked_engine::platform::estimate_service_opex_per_hour_base(&service_scenario, cfg)
+            interlinked_engine::platform::estimate_service_opex_per_hour_base(
+                &service_scenario,
+                cfg,
+            )
         })
         .sum();
     let defaults = default_build_defaults(cfg);
@@ -573,14 +578,17 @@ pub fn inspect_line_from_scenario(
     let line_capacity_per_hour = effective_tph * line.vehicle_capacity_effective.max(0.0);
     let spare_units = owned_units.saturating_sub(assigned_units);
     let stock_tier_id = Some(normalize_tier_id(line.stock_tier_id.as_deref()));
-    let stock_tier_label = preset.and_then(|resolved| tier_label(resolved, stock_tier_id.as_deref()));
+    let stock_tier_label =
+        preset.and_then(|resolved| tier_label(resolved, stock_tier_id.as_deref()));
     let units_shortage_now = required_units.saturating_sub(assigned_units);
     let units_surplus_now = assigned_units.saturating_sub(required_units);
     let staff_opex_per_hour_base = preset
         .map(|resolved| staff_opex_for_line(&line, resolved))
         .unwrap_or(0.0);
     let fleet_value_base = preset
-        .map(|resolved| line.stock_units_owned as f64 * tier_cost_base(resolved, stock_tier_id.as_deref()))
+        .map(|resolved| {
+            line.stock_units_owned as f64 * tier_cost_base(resolved, stock_tier_id.as_deref())
+        })
         .unwrap_or(0.0);
 
     Ok(LineInspection {
@@ -621,7 +629,8 @@ pub fn inspect_line_from_scenario(
         fleet_state: LineFleetState {
             pending_orders: line.pending_orders.clone(),
             package_id: line.stock_tier_id.clone(),
-            package_label: preset.and_then(|resolved| tier_label(resolved, line.stock_tier_id.as_deref())),
+            package_label: preset
+                .and_then(|resolved| tier_label(resolved, line.stock_tier_id.as_deref())),
             cars_per_unit: line.cars_per_unit,
             speed_level: line.speed_level.clone(),
             comfort_level: line.comfort_level.clone(),

@@ -71,7 +71,8 @@ pub(super) fn build_temporal_bundle_outputs(
             {
                 continue;
             }
-            let nested = super::run_simulation_internal(s, settings, None, Some(ctx.clone()), false)?;
+            let nested =
+                super::run_simulation_internal(s, settings, None, Some(ctx.clone()), false)?;
             contexts.push(TemporalContextAggregate {
                 context: nested.active_temporal_slice.clone(),
                 latent_od_demand: nested.latent_od_demand,
@@ -736,4 +737,3 @@ fn build_temporal_mode_summaries(
 
     (by_time_slice, by_day_type)
 }
-

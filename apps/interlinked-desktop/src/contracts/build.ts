@@ -165,6 +165,10 @@ export type CountryPackBuildState = "missing" | "installed" | "outdated" | "buil
 
 export type CountryPackStatus = {
   country_iso2: string;
+  canonical_country_iso2?: string | null;
+  runtime_pack_country_iso2?: string | null;
+  region_provider_model?: string | null;
+  pack_contract_valid?: boolean;
   build_state: CountryPackBuildState | string;
   surface_version?: string | null;
   cells_count: number;

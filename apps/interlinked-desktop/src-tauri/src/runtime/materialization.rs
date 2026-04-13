@@ -106,6 +106,8 @@ pub(crate) fn ensure_runtime_materialized_scenario(
         || minute_of_day != materialization.minute_of_day
         || cap_rebalance_due;
     if needs_materialization {
+        // Runtime materialization mutates only the in-memory GameState scenario.
+        // Persisted demand authority remains in scenario/current.scenario.json.
         let cfg = economy_config();
         let mut materialized = gs.store.scenario().clone();
         strip_auto_reverse_runtime_artifacts(&mut materialized);
@@ -113,7 +115,7 @@ pub(crate) fn ensure_runtime_materialized_scenario(
         apply_fare_policy_to_params(&mut materialized.params, &manifest.economy.fare_policy);
         synthesize_auto_reverse_runtime_services(&mut materialized);
         materialize_line_operations_for_minute(&mut materialized, &cfg, minute_of_day);
-        apply_game_runtime_perf_budget(&mut materialized, adaptive_cap);
+        apply_runtime_transient_demand_perf_budget(&mut materialized, adaptive_cap);
         gs.store = ScenarioStore::new(materialized);
         materialization.topology_hash = topology_hash;
         materialization.scope_hash = active_scope_hash;

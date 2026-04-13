@@ -1,4 +1,5 @@
 import type { RegionStatus } from "../types";
+import { buildRegionDisplayNames } from "../map/data/regionPresentation";
 
 function fmtCompact(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
@@ -13,6 +14,34 @@ type Group = {
   title: string;
   rows: RegionStatus[];
 };
+
+const MAX_ROWS_PER_GROUP = 36;
+
+function countryNameFromIso2(iso2: string | null): string {
+  if (!iso2) return "Country";
+  const normalized = iso2.trim().toUpperCase();
+  if (normalized === "UK" || normalized === "GB") return "United Kingdom";
+  return normalized;
+}
+
+function parseHexIdFromRegion(region: RegionStatus | null): string | null {
+  if (!region) return null;
+  const explicit = region.h3_cell_id?.trim().toLowerCase();
+  if (explicit) return explicit;
+  const parts = region.region_id.trim().split(":");
+  if (parts.length >= 3 && parts[0].toLowerCase() === "r6") {
+    const token = parts[2].trim().toLowerCase();
+    if (/^[0-9a-f]{10,}$/i.test(token)) return token;
+  }
+  return null;
+}
+
+function parseHexNumberFromName(name: string): number | null {
+  const match = /^hex\s+#(\d+)$/i.exec(name.trim());
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? Math.trunc(value) : null;
+}
 
 export default function CountryInfoDrawer(props: {
   open: boolean;
@@ -30,9 +59,23 @@ export default function CountryInfoDrawer(props: {
 
   const selected = props.regions.find((r) => r.region_id === props.selectedRegionId) ?? null;
   const focused = props.regions.find((r) => r.region_id === props.focusRegionId) ?? null;
+  const countryIso2 =
+    selected?.country_iso2 ?? focused?.country_iso2 ?? props.regions[0]?.country_iso2 ?? null;
   const unlockedSet = new Set(props.regions.filter((r) => r.unlocked).map((r) => r.region_id));
+  const displayNames = buildRegionDisplayNames(props.regions);
+  const regionCountText =
+    props.regions.length > 999 ? "999+" : fmtCompact(props.regions.length);
+  const regionName = (region: RegionStatus | null): string => {
+    if (!region) return "";
+    return displayNames.get(region.region_id) ?? region.name;
+  };
   const isFocused = Boolean(selected && selected.region_id === props.focusRegionId);
   const isUnlocked = Boolean(selected?.unlocked);
+  const selectedHexNumber = selected ? parseHexNumberFromName(selected.name) : null;
+  const selectedHexId = parseHexIdFromRegion(selected);
+  const isUnassignedHexRegion = Boolean(
+    selected && (selected.source_code ?? "").trim().toLowerCase() === "manual_region_unassigned_hex"
+  );
   const isAdjacent = Boolean(
     selected && selected.adjacent_region_ids.some((regionId) => unlockedSet.has(regionId))
   );
@@ -44,9 +87,9 @@ export default function CountryInfoDrawer(props: {
 
   let unlockReason = "";
   if (selected && !selected.unlocked) {
-    if (!isAdjacent) unlockReason = "Unlock a neighboring county first.";
+    if (!isAdjacent) unlockReason = "Unlock a neighboring region first.";
     else if (!hasFunds) unlockReason = "Insufficient funds for this unlock.";
-    else unlockReason = "Adjacent county available to unlock.";
+    else unlockReason = "Adjacent region available to unlock.";
   }
 
   const groups: Group[] = [
@@ -77,7 +120,7 @@ export default function CountryInfoDrawer(props: {
       <aside className="country-info-drawer">
         <div className="country-info-head">
           <div>
-            <p>Great Britain</p>
+            <p>{countryNameFromIso2(countryIso2)}</p>
             <h4>Country Info</h4>
           </div>
           <button onClick={props.onClose}>Close</button>
@@ -85,22 +128,28 @@ export default function CountryInfoDrawer(props: {
 
         <div className="country-info-strip">
           <span className="pill">Balance: {fmtMoney(props.currentBalanceBase)}</span>
-          <span className="pill">Counties: {props.regions.length}</span>
-          {focused ? <span className="pill">Focus: {focused.name}</span> : null}
+          <span className="pill">Planning Regions: {regionCountText}</span>
+          {focused ? <span className="pill">Focus: {regionName(focused)}</span> : null}
         </div>
 
         {selected ? (
           <section className="country-section selected-county-card">
             <div className="selected-county-head">
               <div>
-                <strong>{selected.name}</strong>
-                <p>{isFocused ? "Focused county" : selected.unlocked ? "Unlocked county" : "Locked county"}</p>
+                <strong>{regionName(selected)}</strong>
+                <p>{isFocused ? "Focused region" : selected.unlocked ? "Unlocked region" : "Locked region"}</p>
               </div>
               {selected.nation ? <span className="status active">{selected.nation}</span> : null}
             </div>
             <div className="selected-county-grid">
               <p>Cells: {fmtCompact(selected.cells_res8)}</p>
               <p>Unlock cost: {fmtCompact(selected.unlock_cost_base)}</p>
+              {isUnassignedHexRegion ? (
+                <>
+                  <p>Hex #: {selectedHexNumber !== null ? fmtCompact(selectedHexNumber) : "-"}</p>
+                  <p>Hex ID: {selectedHexId ?? "-"}</p>
+                </>
+              ) : null}
             </div>
             {!selected.unlocked && unlockReason ? <p className="hint-line">{unlockReason}</p> : null}
             <div className="form-actions">
@@ -114,7 +163,7 @@ export default function CountryInfoDrawer(props: {
           </section>
         ) : (
           <section className="country-section">
-            <p className="hint-line">Select a county on the map or from the list below.</p>
+            <p className="hint-line">Select a region on the map or from the list below.</p>
           </section>
         )}
 
@@ -126,7 +175,7 @@ export default function CountryInfoDrawer(props: {
                 <span>{group.rows.length}</span>
               </div>
               <div className="county-list">
-                {group.rows.map((region) => {
+                {group.rows.slice(0, MAX_ROWS_PER_GROUP).map((region) => {
                   const active = region.region_id === props.selectedRegionId;
                   return (
                     <button
@@ -134,11 +183,17 @@ export default function CountryInfoDrawer(props: {
                       className={`county-row${active ? " active" : ""}`}
                       onClick={() => props.onSelectRegion(region.region_id)}
                     >
-                      <span>{region.name}</span>
+                      <span>{regionName(region)}</span>
                       <small>{region.unlocked ? "unlocked" : "locked"}</small>
                     </button>
                   );
                 })}
+                {group.rows.length > MAX_ROWS_PER_GROUP ? (
+                  <p className="hint-line">
+                    Showing first {MAX_ROWS_PER_GROUP}. +{group.rows.length - MAX_ROWS_PER_GROUP} more
+                    internal planning regions.
+                  </p>
+                ) : null}
               </div>
             </section>
           ))}

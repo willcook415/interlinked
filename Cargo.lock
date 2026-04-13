@@ -1462,6 +1462,21 @@ dependencies = [
 
 [[package]]
 name = "geo"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4841b40fdbccd4b7042bd6195e4de91da54af34c50632e371bcbfcdfb558b873"
+dependencies = [
+ "float_next_after",
+ "geo-types",
+ "geographiclib-rs",
+ "log",
+ "num-traits",
+ "robust",
+ "rstar 0.11.0",
+]
+
+[[package]]
+name = "geo"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f811f663912a69249fa620dcd2a005db7254529da2d8a0b23942e81f47084501"
@@ -1719,6 +1734,8 @@ dependencies = [
  "ahash",
  "either",
  "float_eq",
+ "geo 0.27.0",
+ "geojson",
  "h3o-bit",
  "konst",
  "libm",
@@ -2145,7 +2162,7 @@ dependencies = [
 name = "interlinked-desktop"
 version = "0.1.0"
 dependencies = [
- "geo",
+ "geo 0.28.0",
  "geojson",
  "h3o",
  "interlinked-engine",
@@ -2174,7 +2191,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
- "geo",
+ "geo 0.28.0",
  "geojson",
  "h3o",
  "interlinked-engine",

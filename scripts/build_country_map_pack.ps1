@@ -1,7 +1,8 @@
 param(
   [string]$Pbf = "data/osm/GBR.osm.pbf",
+  [string]$CountryIso2 = "UK",
   [string]$CountryBoundariesGeoJson = "data/boundaries/countries.geojson",
-  [string]$OutDir = "data/country_packs/GB",
+  [string]$OutDir = "data/country_packs/UK",
   [switch]$SkipPlanetiler,
   [switch]$Force
 )
@@ -42,6 +43,14 @@ if (-not (Test-Path $canonicalScript)) {
   throw "County canonicalization script not found: $canonicalScript"
 }
 
+$countryIso2 = $CountryIso2.Trim().ToUpperInvariant()
+if ($countryIso2 -eq "GB") {
+  $countryIso2 = "UK"
+}
+if ($countryIso2.Length -ne 2) {
+  throw "CountryIso2 must be a two-letter ISO code"
+}
+
 Write-Host "Generating canonical GB ceremonial counties"
 & python $canonicalScript
 if ($LASTEXITCODE -ne 0) {
@@ -60,15 +69,21 @@ $worldOut = Join-Path $mapDir "world_context.geojson"
 @"
 import json
 from pathlib import Path
+import sys
 
 source = Path(r"$CountryBoundariesGeoJson")
 out = Path(r"$worldOut")
+country_iso2 = sys.argv[1].strip().upper()
 data = json.loads(source.read_text(encoding="utf-8"))
 features = []
 for feature in data.get("features", []):
     props = feature.get("properties") or {}
     iso = (props.get("ISO_A2") or props.get("ISO_A2_EH") or "").strip().upper()
-    if len(iso) != 2 or iso == "GB":
+    if iso == "GB":
+        iso = "UK"
+    if len(iso) != 2:
+        continue
+    if iso == country_iso2:
         continue
     name = (props.get("NAME_EN") or props.get("ADMIN") or "").strip()
     features.append({
@@ -84,7 +99,7 @@ for feature in data.get("features", []):
 
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps({"type": "FeatureCollection", "features": features}, separators=(",", ":")), encoding="utf-8")
-"@ | python -
+"@ | python - $countryIso2
 if ($LASTEXITCODE -ne 0) {
   throw "world context generation failed with exit code $LASTEXITCODE"
 }
@@ -96,11 +111,11 @@ if (-not $SkipPlanetiler) {
   }
 
   $java = Resolve-JavaPath
-  $mbtiles = Join-Path $mapDir "gb_basemap.mbtiles"
+  $mbtiles = Join-Path $mapDir "basemap.mbtiles"
   if ((Test-Path $mbtiles) -and -not $Force) {
     Write-Host "Skipping Planetiler build; basemap already exists. Use -Force to rebuild."
   } else {
-    Write-Host "Building GB vector basemap MBTiles"
+    Write-Host "Building $countryIso2 vector basemap MBTiles"
     & $java `
       "-Xmx12g" `
       "-jar" $planetilerJar `
@@ -116,4 +131,4 @@ if (-not $SkipPlanetiler) {
   }
 }
 
-Write-Host ("GB country map pack assembled at {0}" -f (Resolve-Path $OutDir))
+Write-Host ("$countryIso2 country map pack assembled at {0}" -f (Resolve-Path $OutDir))

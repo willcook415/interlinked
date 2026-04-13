@@ -150,9 +150,67 @@ fn normalized_iso_a2(value: Option<&str>) -> Option<String> {
     Some(iso)
 }
 
+fn normalized_iso_a3(value: Option<&str>) -> Option<String> {
+    let iso = value?.trim().to_ascii_uppercase();
+    if iso.len() != 3 || iso == "-99" || !iso.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(iso)
+}
+
+fn slug_country_token(name: &str) -> Option<String> {
+    let mut out = String::with_capacity(24);
+    let mut last_dash = false;
+    for ch in name.trim().chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if out.is_empty() || last_dash {
+                continue;
+            }
+            out.push('-');
+            last_dash = true;
+            continue;
+        }
+        out.push(mapped);
+        last_dash = false;
+        if out.len() >= 24 {
+            break;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 fn world_context_iso2_from_props(props: &JsonValue) -> Option<String> {
     normalized_iso_a2(props.get("ISO_A2").and_then(|v| v.as_str()))
         .or_else(|| normalized_iso_a2(props.get("ISO_A2_EH").and_then(|v| v.as_str())))
+        .and_then(|iso| canonical_country_iso2(&iso))
+}
+
+fn world_context_country_code_from_props(props: &JsonValue) -> Option<String> {
+    if let Some(iso2) = world_context_iso2_from_props(props) {
+        return Some(iso2);
+    }
+    let iso3 = normalized_iso_a3(props.get("ISO_A3").and_then(|v| v.as_str()))
+        .or_else(|| normalized_iso_a3(props.get("ADM0_A3").and_then(|v| v.as_str())))
+        .or_else(|| normalized_iso_a3(props.get("SOV_A3").and_then(|v| v.as_str())));
+    if let Some(iso3) = iso3 {
+        return Some(format!("X3:{iso3}"));
+    }
+    let name = props
+        .get("NAME_EN")
+        .and_then(|v| v.as_str())
+        .or_else(|| props.get("ADMIN").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    slug_country_token(&name).map(|slug| format!("NAME:{slug}"))
 }
 
 pub(crate) fn world_context_from_countries_geojson(value: JsonValue) -> Result<JsonValue, String> {
@@ -164,7 +222,7 @@ pub(crate) fn world_context_from_countries_geojson(value: JsonValue) -> Result<J
         .filter_map(|feature| {
             let geometry = feature.get("geometry")?.clone();
             let props = feature.get("properties")?;
-            let iso = world_context_iso2_from_props(props)?;
+            let country_code = world_context_country_code_from_props(props)?;
             let name = props
                 .get("NAME_EN")
                 .and_then(|v| v.as_str())
@@ -172,14 +230,15 @@ pub(crate) fn world_context_from_countries_geojson(value: JsonValue) -> Result<J
                 .unwrap_or("")
                 .trim()
                 .to_string();
+            let playable_now = is_uk_country_iso2(&country_code);
             Some(serde_json::json!({
                 "type": "Feature",
                 "geometry": geometry,
                 "properties": {
-                    "country_iso2": iso,
+                    "country_iso2": country_code,
                     "name": name,
-                    "playable_now": iso == "GB",
-                    "coming_soon": iso != "GB"
+                    "playable_now": playable_now,
+                    "coming_soon": !playable_now
                 }
             }))
         })
@@ -360,7 +419,8 @@ fn parse_uk_counties_canonical_geojson(
             county_id: entry.county_id,
             name: entry.name,
             nation: entry.nation,
-            country_iso2: entry.country_iso2,
+            country_iso2: canonical_country_iso2(&entry.country_iso2)
+                .unwrap_or_else(|| entry.country_iso2.clone()),
             source_code: entry.source_code,
             geometry_json: multipolygon_to_geojson_value(&geometry),
             geometry,
@@ -378,7 +438,7 @@ pub(crate) fn load_gb_county_boundaries() -> Result<CountyBoundaryCatalog, Strin
         let counties = parse_uk_counties_canonical_geojson(&index_file.counties)?;
         if counties.is_empty() {
             return Err(format!(
-                "GB county geometry missing in {}",
+                "UK compatibility county geometry missing in {}",
                 repo_boundaries_root()
                     .join("gb_ceremonial_counties_canonical.geojson")
                     .display()

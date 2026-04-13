@@ -1,5 +1,5 @@
 param(
-  [string[]]$Countries = @("GB"),
+  [string[]]$Countries = @("UK"),
   [string]$CountryBoundariesGeoJson = "data/boundaries/countries.geojson",
   [string]$PopulationRaster = "data/raw/population/worldpop.tif",
   [string]$BuiltRaster = "data/raw/built/ghsl_built.tif",
@@ -27,6 +27,7 @@ function Write-Log {
 function Get-Iso3ForIso2 {
   param([string]$Iso2)
   $map = @{
+    "UK" = "GBR"
     "GB" = "GBR"
     "LU" = "LUX"
     "ES" = "SPA"
@@ -64,7 +65,10 @@ for ft in features:
         if isinstance(v, str) and len(v.strip()) == 2:
             cand = v.strip().upper()
             break
-    if cand == iso:
+    targets = {iso}
+    if iso == "UK":
+        targets.add("GB")
+    if cand in targets:
         target = ft
         break
 if target is None:
@@ -190,6 +194,7 @@ Write-Log "Countries: $($Countries -join ', ') | sample_deg=$SampleDeg | h3_res=
 
 foreach ($code in $Countries) {
   $iso2 = $code.Trim().ToUpperInvariant()
+  if ($iso2 -eq "GB") { $iso2 = "UK" }
   if ($iso2.Length -ne 2) {
     Write-Log "SKIP $code (invalid ISO2)"
     continue

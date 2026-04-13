@@ -9,7 +9,7 @@ pub use defaults::{
     default_build_defaults, BuildDefaults, ComfortLevelPreset, ModeBuildPreset,
     RollingStockTierPreset, SpeedLevelPreset,
 };
-pub use fleet_state::{FleetPurchaseOrderState, LineScheduleState, settle_pending_purchase_orders};
+pub use fleet_state::{settle_pending_purchase_orders, FleetPurchaseOrderState, LineScheduleState};
 pub use inspection_line::{
     compute_lines, inspect_line_from_scenario, LineComputed, LineCostStory, LineDirectionSummary,
     LineFleetState, LineInspection, LineOperationsNow, LineStationSummary,

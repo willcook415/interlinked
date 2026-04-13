@@ -43,16 +43,16 @@ use super::types::{
 };
 use crate::model::{DemandCell, Scenario, Service, Stop, World, Zone};
 
-mod operations;
-mod modal;
-mod economics;
-mod temporal;
-mod zone_geography;
-mod demand;
-mod mode_choice;
 mod assignment;
 mod contracts;
+mod demand;
+mod economics;
+mod modal;
+mod mode_choice;
+mod operations;
 mod phase3;
+mod temporal;
+mod zone_geography;
 use assignment::run_assignment_kernel;
 use demand::build_latent_demand_foundation;
 use economics::{apply_economics_to_planning, build_economics_outputs};
@@ -150,7 +150,7 @@ fn run_simulation_internal(
     temporal_context: Option<TemporalDemandSlice>,
     include_temporal_bundle: bool,
 ) -> Result<SimulationOutput, String> {
-    let s_eff = materialize_effective_zones(s);
+    let s_eff = materialize_planner_effective_scenario(s);
     let s = &s_eff;
     validate(s)?;
     let pending_od = state_in.map(|st| &st.pending_od_trips);
@@ -1457,7 +1457,11 @@ fn validate(s: &Scenario) -> Result<(), String> {
     Ok(())
 }
 
-fn materialize_effective_zones(s: &Scenario) -> Scenario {
+fn materialize_planner_effective_scenario(s: &Scenario) -> Scenario {
+    // Planner-effective demand authority:
+    // if demand cells are present, planner trusts cells as canonical substrate and derives
+    // effective zones from them for assignment/demand profile calculations.
+    // otherwise planner uses persisted world.zones as legacy fallback.
     if s.world.demand_cells.is_empty() {
         return s.clone();
     }

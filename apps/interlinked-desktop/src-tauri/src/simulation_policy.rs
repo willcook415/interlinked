@@ -337,7 +337,9 @@ pub(crate) fn distribute_month_points(
     out
 }
 
-pub(crate) fn aggregate_year_points(points: &[FinancialDashboardPoint]) -> Vec<FinancialDashboardPoint> {
+pub(crate) fn aggregate_year_points(
+    points: &[FinancialDashboardPoint],
+) -> Vec<FinancialDashboardPoint> {
     let mut grouped = BTreeMap::<i64, FinancialDashboardPoint>::new();
     for point in points {
         let year_index = (point.period_index / 12).max(0);
@@ -710,7 +712,13 @@ pub(crate) fn apply_game_runtime_demand_tuning(params: &mut Params) {
     params.gravity_beta = params.gravity_beta.min(0.00025);
 }
 
-pub(crate) fn apply_game_runtime_perf_budget(scenario: &mut Scenario, max_cells: usize) {
+pub(crate) fn apply_runtime_transient_demand_perf_budget(
+    scenario: &mut Scenario,
+    max_cells: usize,
+) {
+    // Runtime-transient demand shaping only:
+    // trims the in-memory runtime clone to fit current performance budget.
+    // Persisted scenario demand substrate must remain untouched.
     if max_cells == 0 || scenario.world.demand_cells.len() <= max_cells {
         return;
     }

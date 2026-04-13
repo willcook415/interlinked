@@ -5,7 +5,10 @@ pub(crate) const AUTO_REVERSE_LINK_PREFIX: &str = "auto_reverse_link::";
 pub(crate) const FLEET_EXPEDITE_MULTIPLIER: f64 = 1.75;
 pub(crate) const FLEET_EXPEDITE_MIN_SURCHARGE_BASE: f64 = 100_000.0;
 
-pub(crate) fn hash_string_seq(values: &[String], hasher: &mut std::collections::hash_map::DefaultHasher) {
+pub(crate) fn hash_string_seq(
+    values: &[String],
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+) {
     for value in values {
         value.hash(hasher);
     }
@@ -176,7 +179,10 @@ pub(crate) fn estimate_unit_purchase_cost_base_for_service(
     }
 }
 
-pub(crate) fn resolve_order_unit_cost_base(order: &PurchaseOrder, fallback: Option<f64>) -> Option<f64> {
+pub(crate) fn resolve_order_unit_cost_base(
+    order: &PurchaseOrder,
+    fallback: Option<f64>,
+) -> Option<f64> {
     if let Some(unit_cost) = order.unit_cost_base {
         if unit_cost.is_finite() && unit_cost > 0.0 {
             return Some(unit_cost);

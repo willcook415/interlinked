@@ -9,7 +9,7 @@ import { type XY, safeRes6Token, xyToLngLat } from "../geo/coords";
 import { pointInGeometry } from "../geo/geometry";
 import { serviceLineId } from "../runtimeVehicleOverlay";
 import { fc, type GeoCollection, type GeoFeature } from "./contracts";
-import { parseLegacyH3Region } from "./worldContext";
+import { regionH3CellId } from "./worldContext";
 
 const MODE_COLOR_BY_CLASS: Record<string, string> = {
   metro: "#0f5ca8",
@@ -191,13 +191,10 @@ export function buildNetworkGeojsonData(args: {
     if (allowedCountries && iso && !allowedCountries.has(iso)) continue;
     stopCoords.set(stop.id, coord);
     const inFocusByGeometry = pointInGeometry(coord, resolveRegionGeometry(focusRegion));
-    const inFocusByLegacyH3 =
+    const inFocusByH3Region =
       !inFocusByGeometry &&
-      Boolean(
-        focusRegion &&
-          parseLegacyH3Region(focusRegion.region_id) === safeRes6Token(coord.lat, coord.lng)
-      );
-    stopInFocus.set(stop.id, inFocusByGeometry || inFocusByLegacyH3);
+      Boolean(focusRegion && regionH3CellId(focusRegion) === safeRes6Token(coord.lat, coord.lng));
+    stopInFocus.set(stop.id, inFocusByGeometry || inFocusByH3Region);
   }
 
   const linkFeatures: GeoFeature[] = [];

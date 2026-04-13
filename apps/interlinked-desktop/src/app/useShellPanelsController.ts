@@ -514,7 +514,7 @@ export function useShellCommandOrchestration(args: {
       {
         id: "open_counties",
         label: "Toggle County Info",
-        detail: "Open county progression panel",
+        detail: "Open region progression panel",
         disabled: !inGame || !inViewMode,
         run: () => {
           panels.toggleCountryInfoPanel();

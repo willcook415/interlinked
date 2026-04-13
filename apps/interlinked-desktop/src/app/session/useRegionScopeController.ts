@@ -54,7 +54,9 @@ export function useRegionScopeController({
     (regionId: string) => {
       params.setSelectedRegionId(regionId);
       const region = params.regions.find((row) => row.region_id === regionId) ?? null;
-      params.setShowCountryInfo(Boolean(region && !region.unlocked));
+      const sourceCode = (region?.source_code ?? "").trim().toLowerCase();
+      const isManualUnassignedHex = sourceCode === "manual_region_unassigned_hex";
+      params.setShowCountryInfo(Boolean(region && (!region.unlocked || isManualUnassignedHex)));
     },
     [params]
   );
@@ -152,7 +154,7 @@ export function useRegionScopeController({
     applyRegionRows(outcome.regions, outcome.focus.primary_focus_region_id);
     applyDemandCoverageRows(outcome.demandCoverage);
     params.setShowCountryInfo(false);
-    params.setSaveStatus(`Focused county ${outcome.focus.primary_focus_region_id}`);
+    params.setSaveStatus("Focused selected region");
   }, [
     applyDemandCoverageRows,
     applyRegionMutation,
@@ -182,7 +184,7 @@ export function useRegionScopeController({
     applyRegionRows(outcome.regions, outcome.unlock.primary_focus_region_id);
     applyDemandCoverageRows(outcome.demandCoverage);
     params.setShowCountryInfo(false);
-    params.setSaveStatus(`Unlocked and focused county ${outcome.unlock.region_id}`);
+    params.setSaveStatus("Unlocked and focused selected region");
   }, [
     applyDemandCoverageRows,
     applyRegionMutation,

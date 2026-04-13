@@ -15,7 +15,11 @@ export const SRC_WORLD = "world-context";
 export const SRC_WORLD_LABELS = "world-country-labels";
 export const SRC_OCEAN = "world-ocean";
 export const SRC_OCEAN_LABELS = "world-ocean-labels";
-export const SRC_COUNTIES = "counties";
+export const SRC_REGIONS = "regions";
+// Back-compat alias for older region layer/source naming.
+export const SRC_COUNTIES = SRC_REGIONS;
+export const SRC_REGION_HEXES = "planning-region-hexes";
+export const SRC_HEX_COVERAGE_GAPS = "planning-region-hex-coverage-gaps";
 export const SRC_MAJOR_ROADS = "major-roads";
 export const SRC_COUNTY_BASEMAP = "county-basemap";
 export const SRC_LINKS = "links";
@@ -86,7 +90,13 @@ export function ensureMapSources(map: MapLibreMap): void {
   if (!map.getSource(SRC_OCEAN_LABELS)) {
     map.addSource(SRC_OCEAN_LABELS, { type: "geojson", data: WORLD_OCEAN_LABELS as never });
   }
-  if (!map.getSource(SRC_COUNTIES)) map.addSource(SRC_COUNTIES, { type: "geojson", data: fc() as never });
+  if (!map.getSource(SRC_REGIONS)) map.addSource(SRC_REGIONS, { type: "geojson", data: fc() as never });
+  if (!map.getSource(SRC_REGION_HEXES)) {
+    map.addSource(SRC_REGION_HEXES, { type: "geojson", data: fc() as never });
+  }
+  if (!map.getSource(SRC_HEX_COVERAGE_GAPS)) {
+    map.addSource(SRC_HEX_COVERAGE_GAPS, { type: "geojson", data: fc() as never });
+  }
   if (!map.getSource(SRC_MAJOR_ROADS)) map.addSource(SRC_MAJOR_ROADS, { type: "geojson", data: fc() as never });
   if (!map.getSource(SRC_COUNTY_BASEMAP)) map.addSource(SRC_COUNTY_BASEMAP, { type: "geojson", data: fc() as never });
   if (!map.getSource(SRC_LINKS)) map.addSource(SRC_LINKS, { type: "geojson", data: fc() as never });

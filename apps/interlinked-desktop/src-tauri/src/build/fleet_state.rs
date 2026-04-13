@@ -186,7 +186,10 @@ pub(super) fn tph_for_band(schedule: &LineScheduleState, band: &str) -> f64 {
     }
 }
 
-pub(super) fn normalized_cars_for_mode(preset: &ModeBuildPreset, cars_per_unit: Option<u32>) -> u32 {
+pub(super) fn normalized_cars_for_mode(
+    preset: &ModeBuildPreset,
+    cars_per_unit: Option<u32>,
+) -> u32 {
     if !preset.supports_carriages {
         return 1;
     }

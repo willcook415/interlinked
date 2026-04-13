@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct World {
+    // Persisted zone substrate. Planner may override this at runtime by deriving
+    // effective zones from demand_cells when demand_cells are populated.
     #[serde(default)]
     pub zones: Vec<Zone>,
 
@@ -21,9 +23,11 @@ pub struct World {
     #[serde(default)]
     pub transfer_rules: Option<Vec<TransferRule>>, // NEW: mode-aware rules
 
+    // Persisted materialized gameplay demand substrate (country-surface derived in game mode).
     #[serde(default)]
     pub demand_cells: Vec<DemandCell>,
 
+    // Persisted provenance for demand_cells/zones materialization source and loaded countries.
     #[serde(default)]
     pub demand_meta: Option<DemandMeta>,
 }

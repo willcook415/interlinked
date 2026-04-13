@@ -130,7 +130,20 @@ pub(crate) fn read_country_pack_index(app: &AppHandle) -> Result<CountryPackInde
             packs: vec![],
         });
     }
-    read_json_file(&path)
+    let mut idx: CountryPackIndex = read_json_file(&path)?;
+    idx.version = idx.version.max(1);
+    let mut dedup = BTreeMap::<String, CountryPackEntry>::new();
+    for mut entry in idx.packs.into_iter() {
+        let Some(iso) = canonical_country_iso2(&entry.country_iso2) else {
+            continue;
+        };
+        entry.country_iso2 = iso.clone();
+        dedup.insert(iso, entry);
+    }
+    idx.packs = dedup.into_values().collect();
+    idx.packs
+        .sort_by(|a, b| a.country_iso2.cmp(&b.country_iso2));
+    Ok(idx)
 }
 
 pub(crate) fn write_country_pack_index(
@@ -246,49 +259,30 @@ pub(crate) fn read_manifest(project_root: &Path) -> Result<ProjectManifest, Stri
             parsed.economy.difficulty_profile =
                 difficulty_profile_for_label(parsed.economy.difficulty.as_str());
         }
-        parsed.economy.unlocked_countries = parsed
-            .economy
-            .unlocked_countries
-            .iter()
-            .map(|x| x.trim().to_ascii_uppercase())
-            .filter(|x| x.len() == 2)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        parsed.economy.unlocked_countries =
+            canonicalize_country_codes(parsed.economy.unlocked_countries.clone());
         sanitize_economy_manifest(&mut parsed.economy);
         canonicalize_region_ledger(&mut parsed.economy.region_ledger);
         if parsed.demand_surface.is_none() {
             parsed.demand_surface = Some(default_demand_surface_manifest());
         }
-        parsed.region_state.unlocked_region_ids = parsed
-            .region_state
-            .unlocked_region_ids
-            .iter()
-            .filter_map(|x| canonicalize_region_id(x))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        parsed.region_state.active_region_ids = parsed
-            .region_state
-            .active_region_ids
-            .iter()
-            .filter_map(|x| canonicalize_region_id(x))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        parsed.region_state.primary_focus_region_id = parsed
-            .region_state
-            .primary_focus_region_id
-            .as_deref()
-            .and_then(canonicalize_region_id);
+        if let Some(ds) = parsed.demand_surface.as_mut() {
+            ds.loaded_countries = canonicalize_country_codes(ds.loaded_countries.clone());
+        }
+        if let Some(start) = parsed.start_location.as_mut() {
+            if let Some(canonical_iso2) = canonical_country_iso2(&start.country_iso2) {
+                start.country_iso2 = canonical_iso2.clone();
+                if !display_country_name(&canonical_iso2).is_empty() {
+                    start.country_name = display_country_name(&canonical_iso2).to_string();
+                }
+            }
+        }
+        canonicalize_region_state_manifest(&mut parsed.region_state);
         parsed.pack_refs = parsed
             .pack_refs
             .into_iter()
             .filter_map(|mut p| {
-                let iso = p.country_iso2.trim().to_ascii_uppercase();
-                if iso.len() != 2 {
-                    return None;
-                }
+                let iso = canonical_country_iso2(&p.country_iso2)?;
                 p.country_iso2 = iso;
                 Some(p)
             })
@@ -484,49 +478,30 @@ pub(crate) fn read_manifest(project_root: &Path) -> Result<ProjectManifest, Stri
                 parsed.economy.difficulty_profile =
                     difficulty_profile_for_label(parsed.economy.difficulty.as_str());
             }
-            parsed.economy.unlocked_countries = parsed
-                .economy
-                .unlocked_countries
-                .iter()
-                .map(|x| x.trim().to_ascii_uppercase())
-                .filter(|x| x.len() == 2)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            parsed.economy.unlocked_countries =
+                canonicalize_country_codes(parsed.economy.unlocked_countries.clone());
             sanitize_economy_manifest(&mut parsed.economy);
             canonicalize_region_ledger(&mut parsed.economy.region_ledger);
             if parsed.demand_surface.is_none() {
                 parsed.demand_surface = Some(default_demand_surface_manifest());
             }
-            parsed.region_state.unlocked_region_ids = parsed
-                .region_state
-                .unlocked_region_ids
-                .iter()
-                .filter_map(|x| canonicalize_region_id(x))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            parsed.region_state.active_region_ids = parsed
-                .region_state
-                .active_region_ids
-                .iter()
-                .filter_map(|x| canonicalize_region_id(x))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            parsed.region_state.primary_focus_region_id = parsed
-                .region_state
-                .primary_focus_region_id
-                .as_deref()
-                .and_then(canonicalize_region_id);
+            if let Some(ds) = parsed.demand_surface.as_mut() {
+                ds.loaded_countries = canonicalize_country_codes(ds.loaded_countries.clone());
+            }
+            if let Some(start) = parsed.start_location.as_mut() {
+                if let Some(canonical_iso2) = canonical_country_iso2(&start.country_iso2) {
+                    start.country_iso2 = canonical_iso2.clone();
+                    if !display_country_name(&canonical_iso2).is_empty() {
+                        start.country_name = display_country_name(&canonical_iso2).to_string();
+                    }
+                }
+            }
+            canonicalize_region_state_manifest(&mut parsed.region_state);
             parsed.pack_refs = parsed
                 .pack_refs
                 .into_iter()
                 .filter_map(|mut p| {
-                    let iso = p.country_iso2.trim().to_ascii_uppercase();
-                    if iso.len() != 2 {
-                        return None;
-                    }
+                    let iso = canonical_country_iso2(&p.country_iso2)?;
                     p.country_iso2 = iso;
                     Some(p)
                 })
