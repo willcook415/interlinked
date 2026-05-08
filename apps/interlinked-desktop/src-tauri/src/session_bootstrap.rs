@@ -4,10 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use tauri::AppHandle;
 
 fn start_location_from_manifest(manifest: &ProjectManifest) -> Option<StartLocation> {
     manifest.start_location.clone()
+}
+
+fn perf_log(label: &str, started: Instant) {
+    eprintln!("[perf] {label}: {}ms", started.elapsed().as_millis());
 }
 
 pub(crate) fn open_session_internal(
@@ -15,7 +20,9 @@ pub(crate) fn open_session_internal(
     state: &tauri::State<AppState>,
     project_root: &Path,
 ) -> Result<OpenSessionResult, String> {
+    let open_started = Instant::now();
     let project_path_string = project_root.to_string_lossy().to_string();
+    let stop_runtime_started = Instant::now();
     let should_stop_runtime = {
         let guard = state
             .runtime_loop
@@ -41,11 +48,28 @@ pub(crate) fn open_session_internal(
         );
         thread::sleep(Duration::from_millis(12));
     }
+    perf_log("open_session.stop_runtime_transition", stop_runtime_started);
+
+    let clear_runtime_started = Instant::now();
     {
         let mut snapshots = state
             .runtime_snapshots
             .lock()
             .map_err(|_| "runtime_snapshots mutex poisoned".to_string())?;
+        snapshots.clear();
+    }
+    {
+        let mut snapshots = state
+            .runtime_fast_snapshots
+            .lock()
+            .map_err(|_| "runtime_fast_snapshots mutex poisoned".to_string())?;
+        snapshots.clear();
+    }
+    {
+        let mut snapshots = state
+            .runtime_strategic_snapshots
+            .lock()
+            .map_err(|_| "runtime_strategic_snapshots mutex poisoned".to_string())?;
         snapshots.clear();
     }
     {
@@ -55,6 +79,9 @@ pub(crate) fn open_session_internal(
             .map_err(|_| "runtime_materialization mutex poisoned".to_string())?;
         *materialization = None;
     }
+    perf_log("open_session.clear_runtime_cache", clear_runtime_started);
+
+    let manifest_started = Instant::now();
     let persisted_sandbox_state = load_persisted_sandbox_state(project_root);
     let persisted_runtime_state = persisted_sandbox_state
         .as_ref()
@@ -80,11 +107,15 @@ pub(crate) fn open_session_internal(
     sync_progress_budget_from_economy(&mut manifest);
     manifest.updated_at = now_string();
     write_manifest(project_root, &manifest)?;
+    perf_log("open_session.load_manifest_and_state", manifest_started);
 
+    let scenario_load_started = Instant::now();
     let mut doc =
         ScenarioService::load_from_path(scenario_path(project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
+    perf_log("open_session.load_scenario_doc", scenario_load_started);
     if manifest.session_kind == SessionKind::Game {
+        let ensure_surfaces_started = Instant::now();
         let (center_lon, center_lat, city_population, country_iso2) = manifest
             .start_location
             .as_ref()
@@ -127,10 +158,18 @@ pub(crate) fn open_session_internal(
             )
             .map_err(|e| e.to_string())?;
         }
+        perf_log(
+            "open_session.ensure_unlocked_surfaces",
+            ensure_surfaces_started,
+        );
     }
+    let charges_started = Instant::now();
     let _country_charge = apply_country_entry_charges(&mut manifest, &doc.scenario);
     manifest.updated_at = now_string();
     write_manifest(project_root, &manifest)?;
+    perf_log("open_session.apply_country_charges", charges_started);
+
+    let init_game_started = Instant::now();
     let scenario = ScenarioDocumentLite {
         schema_version: doc.schema_version,
         scenario: doc.scenario,
@@ -153,6 +192,9 @@ pub(crate) fn open_session_internal(
         manifest.updated_at = now_string();
         write_manifest(project_root, &manifest)?;
     }
+    perf_log("open_session.init_game_state", init_game_started);
+
+    let bind_state_started = Instant::now();
     let mut game_guard = state
         .game
         .lock()
@@ -165,7 +207,9 @@ pub(crate) fn open_session_internal(
         .map_err(|_| "current_project mutex poisoned".to_string())?;
     *current_guard = Some(project_path_string.clone());
     drop(current_guard);
+    perf_log("open_session.bind_project_state", bind_state_started);
 
+    let restore_snapshot_started = Instant::now();
     if let Some(runtime) = persisted_runtime_state.as_ref() {
         if let Some(ops_wire) = runtime.runtime_ops.as_ref() {
             let mut ops = state
@@ -190,6 +234,12 @@ pub(crate) fn open_session_internal(
             snapshots.push_back(restored);
         }
     }
+    perf_log(
+        "open_session.restore_runtime_snapshot",
+        restore_snapshot_started,
+    );
+
+    let bootstrap_runtime_started = Instant::now();
     if manifest.session_kind == SessionKind::Game {
         if let Ok(bootstrap) = bootstrap_runtime_snapshot_from_state(
             state.inner(),
@@ -205,7 +255,12 @@ pub(crate) fn open_session_internal(
         }
     }
     commands::runtime_sandbox::reset_runtime_tick(state, &project_path_string)?;
+    perf_log(
+        "open_session.bootstrap_runtime_snapshot_and_reset_tick",
+        bootstrap_runtime_started,
+    );
 
+    let load_meta_started = Instant::now();
     let mut runs = Vec::<RunMeta>::new();
     for run_id in &manifest.recent_runs {
         let meta_path = runs_dir(project_root).join(run_id).join("meta.json");
@@ -229,8 +284,13 @@ pub(crate) fn open_session_internal(
         }
         snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     }
+    perf_log("open_session.load_runs_and_snapshots", load_meta_started);
 
+    let update_index_started = Instant::now();
     update_index_opened(app, project_root, &manifest)?;
+    perf_log("open_session.update_index", update_index_started);
+
+    perf_log("open_session.total", open_started);
 
     Ok(OpenSessionResult {
         project_path: project_root.to_string_lossy().to_string(),

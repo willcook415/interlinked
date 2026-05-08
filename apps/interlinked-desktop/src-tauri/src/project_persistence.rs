@@ -1,6 +1,7 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -192,7 +193,75 @@ pub(crate) fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    let parent = path
+        .parent()
+        .ok_or_else(|| "json write path has no parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "json write path has invalid filename".to_string())?;
+    let temp_name = format!(
+        ".{}.tmp-{}-{}",
+        file_name,
+        std::process::id(),
+        now_epoch_ms()
+    );
+    let temp_path = parent.join(temp_name);
+    let mut temp_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut temp_file, json.as_bytes()).map_err(|e| e.to_string())?;
+    temp_file.sync_all().map_err(|e| e.to_string())?;
+    drop(temp_file);
+    if let Err(error) = replace_file_atomic(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileExW(
+            lpExistingFileName: *const u16,
+            lpNewFileName: *const u16,
+            dwFlags: u32,
+        ) -> i32;
+    }
+
+    fn to_utf16_null(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let source_w = to_utf16_null(source.as_os_str());
+    let destination_w = to_utf16_null(destination.as_os_str());
+    // Replace manifest/index files atomically so readers never observe truncated JSON.
+    let moved = unsafe {
+        MoveFileExW(
+            source_w.as_ptr(),
+            destination_w.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|e| e.to_string())
 }
 
 pub(crate) fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {

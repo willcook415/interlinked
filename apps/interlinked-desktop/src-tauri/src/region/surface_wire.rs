@@ -1,4 +1,5 @@
 use crate::*;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DemandSurfaceCountryWire {
@@ -130,6 +131,10 @@ pub(crate) fn unlocked_country_codes(manifest: &ProjectManifest) -> Vec<String> 
 
 const UK_LAND_BACKFILL_SOURCE_CODE: &str = "uk_land_backfill_res6";
 
+fn perf_log(label: &str, started: Instant) {
+    eprintln!("[perf] {label}: {}ms", started.elapsed().as_millis());
+}
+
 fn feature_country_iso2(props: Option<&serde_json::Map<String, JsonValue>>) -> Option<String> {
     let props = props?;
     let direct = props
@@ -151,11 +156,11 @@ fn feature_is_uk_landmask_candidate(
     }
 }
 
-fn expected_hexes_res6_from_geojson(
+fn expected_hexes_res6_from_geojson_value(
+    value: JsonValue,
     path: &Path,
     default_to_true_when_missing: bool,
 ) -> Result<BTreeSet<String>, String> {
-    let value = read_json_file::<JsonValue>(path)?;
     let geojson = serde_json::from_value::<geojson::GeoJson>(value)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let geojson::GeoJson::FeatureCollection(feature_collection) = geojson else {
@@ -166,7 +171,10 @@ fn expected_hexes_res6_from_geojson(
     let mut out = BTreeSet::<String>::new();
     use h3o::geom::ToCells;
     for feature in feature_collection.features {
-        if !feature_is_uk_landmask_candidate(feature.properties.as_ref(), default_to_true_when_missing) {
+        if !feature_is_uk_landmask_candidate(
+            feature.properties.as_ref(),
+            default_to_true_when_missing,
+        ) {
             continue;
         }
         let Some(geometry) = feature.geometry else {
@@ -183,6 +191,14 @@ fn expected_hexes_res6_from_geojson(
         }
     }
     Ok(out)
+}
+
+fn expected_hexes_res6_from_geojson(
+    path: &Path,
+    default_to_true_when_missing: bool,
+) -> Result<BTreeSet<String>, String> {
+    let value = read_json_file::<JsonValue>(path)?;
+    expected_hexes_res6_from_geojson_value(value, path, default_to_true_when_missing)
 }
 
 fn world_context_value_from_path(path: &Path) -> Result<JsonValue, String> {
@@ -208,6 +224,22 @@ fn world_context_value_from_path(path: &Path) -> Result<JsonValue, String> {
     }
 }
 
+fn expected_uk_land_hexes_for_candidate(
+    candidate: &Path,
+    default_to_true_when_missing: bool,
+) -> Result<BTreeSet<String>, String> {
+    let file_name = candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if file_name == "world_context.geojson" || file_name == "countries.geojson" {
+        let remapped = world_context_value_from_path(candidate)?;
+        return expected_hexes_res6_from_geojson_value(remapped, candidate, false);
+    }
+    expected_hexes_res6_from_geojson(candidate, default_to_true_when_missing)
+}
+
 fn expected_uk_land_hexes_res6(path: &Path) -> Result<(BTreeSet<String>, Option<PathBuf>), String> {
     let mut candidate_paths = Vec::<PathBuf>::new();
     if let Some(pack_root) = path.parent().and_then(|parent| parent.parent()) {
@@ -223,49 +255,30 @@ fn expected_uk_land_hexes_res6(path: &Path) -> Result<(BTreeSet<String>, Option<
         if !candidate.exists() || !seen.insert(candidate.clone()) {
             continue;
         }
-        let file_name = candidate
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let out = if file_name == "world_context.geojson" || file_name == "countries.geojson" {
-            let remapped = world_context_value_from_path(&candidate)?;
-            let remapped_path = candidate.with_extension("remapped.tmp.json");
-            let geojson = serde_json::from_value::<geojson::GeoJson>(remapped)
-                .map_err(|error| format!("{}: {error}", candidate.display()))?;
-            let geojson::GeoJson::FeatureCollection(feature_collection) = geojson else {
-                continue;
-            };
-            let config = h3o::geom::PolyfillConfig::new(Resolution::Six)
-                .containment_mode(h3o::geom::ContainmentMode::Covers);
-            let mut out = BTreeSet::<String>::new();
-            use h3o::geom::ToCells;
-            for feature in feature_collection.features {
-                if !feature_is_uk_landmask_candidate(feature.properties.as_ref(), false) {
-                    continue;
-                }
-                let Some(geometry) = feature.geometry else {
-                    continue;
-                };
-                let geo_geometry = geo::Geometry::try_from(&geometry.value)
-                    .map_err(|error| format!("{}: {error}", remapped_path.display()))?;
-                let h3_geometry = h3o::geom::Geometry::from_degrees(geo_geometry)
-                    .map_err(|error| format!("{}: {error}", remapped_path.display()))?;
-                for cell in h3_geometry.to_cells(config) {
-                    if cell.resolution() == Resolution::Six {
-                        out.insert(cell.to_string().to_ascii_lowercase());
-                    }
-                }
-            }
-            out
-        } else {
-            expected_hexes_res6_from_geojson(&candidate, true)?
-        };
+        let out = expected_uk_land_hexes_for_candidate(&candidate, true)?;
         if !out.is_empty() {
             return Ok((out, Some(candidate)));
         }
     }
     Ok((BTreeSet::new(), None))
+}
+
+fn uk_land_backfill_audit_complete(surface: &DemandSurfaceCountryWire) -> bool {
+    if !is_uk_country_iso2(&surface.country_iso2) {
+        return false;
+    }
+    let Some(audit) = surface
+        .source_provenance
+        .get("uk_land_coverage_audit")
+        .and_then(|value| value.as_object())
+    else {
+        return false;
+    };
+    let missing = audit
+        .get("missing_land_hexes_after_backfill_res6")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(u64::MAX);
+    missing == 0
 }
 
 fn nearest_template_cell(
@@ -339,11 +352,17 @@ fn apply_uk_land_hex_backfill(
     source_path: &Path,
     surface: &mut DemandSurfaceCountryWire,
 ) -> Result<(), String> {
+    let backfill_started = Instant::now();
     if !is_uk_country_iso2(&surface.country_iso2) {
         return Ok(());
     }
 
+    let expected_started = Instant::now();
     let (expected_hexes, expected_source_path) = expected_uk_land_hexes_res6(source_path)?;
+    perf_log(
+        "load_surface_wire.backfill.expected_uk_land_hexes_res6",
+        expected_started,
+    );
     if expected_hexes.is_empty() {
         return Ok(());
     }
@@ -416,16 +435,57 @@ fn apply_uk_land_hex_backfill(
                 "actual_land_hexes_after_backfill_res6": actual_after.len(),
                 "missing_land_hexes_before_backfill_res6": missing_hexes.len(),
                 "missing_land_hexes_after_backfill_res6": missing_after.len(),
-                "expected_source_path": expected_source_path.map(|path| path.display().to_string()),
+                "expected_source_path": expected_source_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
             }),
         );
     }
 
+    eprintln!(
+        "[perf] load_surface_wire.backfill.summary: before_missing={} after_missing={} expected={} source={}",
+        missing_hexes.len(),
+        missing_after.len(),
+        expected_hexes.len(),
+        expected_source_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    perf_log("load_surface_wire.backfill.total", backfill_started);
     Ok(())
 }
 
 pub(crate) fn load_surface_wire(path: &Path) -> Result<DemandSurfaceCountryWire, String> {
+    let load_started = Instant::now();
+    static SURFACE_CACHE: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                std::path::PathBuf,
+                (std::time::SystemTime, DemandSurfaceCountryWire),
+            >,
+        >,
+    > = std::sync::OnceLock::new();
+    let cache =
+        SURFACE_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_mtime, cached_surface)) = guard.get(path) {
+            // Invalidate cache when the underlying source file changes.
+            if *cached_mtime == mtime {
+                perf_log("load_surface_wire.cache_hit", load_started);
+                return Ok(cached_surface.clone());
+            }
+        }
+    }
+
+    let read_started = Instant::now();
     let mut surface: DemandSurfaceCountryWire = read_json_file(path)?;
+    perf_log("load_surface_wire.read_json", read_started);
     if let Some(canonical_iso2) = canonical_country_iso2(&surface.country_iso2) {
         surface.country_iso2 = canonical_iso2.clone();
         for cell in &mut surface.cells_res8 {
@@ -487,11 +547,26 @@ pub(crate) fn load_surface_wire(path: &Path) -> Result<DemandSurfaceCountryWire,
         Ok(())
     };
 
+    let validate_started = Instant::now();
     validate_cells(&mut surface.cells_res8, "res8")?;
     validate_cells(&mut surface.cells_res7, "res7")?;
     validate_cells(&mut surface.cells_res6, "res6")?;
-    apply_uk_land_hex_backfill(path, &mut surface)?;
+    perf_log("load_surface_wire.validate_cells_initial", validate_started);
+    if !uk_land_backfill_audit_complete(&surface) {
+        apply_uk_land_hex_backfill(path, &mut surface)?;
+    }
+    let validate_after_backfill_started = Instant::now();
     validate_cells(&mut surface.cells_res6, "res6")?;
+    perf_log(
+        "load_surface_wire.validate_cells_after_backfill",
+        validate_after_backfill_started,
+    );
+
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_path_buf(), (mtime, surface.clone()));
+    }
+
+    perf_log("load_surface_wire.total", load_started);
     Ok(surface)
 }
 
@@ -610,7 +685,10 @@ mod tests {
         assert!(
             source_path
                 .as_ref()
-                .map(|path| path.to_string_lossy().to_ascii_lowercase().contains("counties.geojson"))
+                .map(|path| path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("counties.geojson"))
                 .unwrap_or(false),
             "expected UK landmask should come from county coastline geometry first; got {:?}",
             source_path
@@ -657,6 +735,7 @@ mod tests {
             ("Isles of Scilly", -6.315, 49.915),
             ("Orkney (Kirkwall area)", -2.960, 58.984),
             ("Cornwall coast (Lizard area)", -5.206, 49.968),
+            ("Belfast metro core", -5.9301, 54.5973),
         ];
         for (label, lon, lat) in targets {
             let ll = h3o::LatLng::new(lat, lon).expect("valid lon/lat");

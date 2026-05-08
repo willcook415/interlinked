@@ -18,7 +18,9 @@ fn extract_uk_multipolygon_from_counties(path: &Path) -> Result<Option<JsonValue
     };
     let mut polygons = Vec::<JsonValue>::new();
     for feature in features {
-        let props = feature.get("properties").and_then(|value| value.as_object());
+        let props = feature
+            .get("properties")
+            .and_then(|value| value.as_object());
         let country_iso2 = props
             .and_then(|props| props.get("country_iso2"))
             .and_then(|value| value.as_str())
@@ -35,7 +37,10 @@ fn extract_uk_multipolygon_from_counties(path: &Path) -> Result<Option<JsonValue
             .get("type")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let Some(coords) = geometry.get("coordinates").and_then(|value| value.as_array()) else {
+        let Some(coords) = geometry
+            .get("coordinates")
+            .and_then(|value| value.as_array())
+        else {
             continue;
         };
         match geometry_type {
@@ -91,9 +96,17 @@ fn inject_uk_world_geometry(
             *geometry = uk_geometry.clone();
             replaced = true;
         }
-        if let Some(properties) = feature.get_mut("properties").and_then(|value| value.as_object_mut()) {
-            properties.insert("country_iso2".to_string(), JsonValue::String("UK".to_string()));
-            properties.entry("name".to_string()).or_insert(JsonValue::String("United Kingdom".to_string()));
+        if let Some(properties) = feature
+            .get_mut("properties")
+            .and_then(|value| value.as_object_mut())
+        {
+            properties.insert(
+                "country_iso2".to_string(),
+                JsonValue::String("UK".to_string()),
+            );
+            properties
+                .entry("name".to_string())
+                .or_insert(JsonValue::String("United Kingdom".to_string()));
         }
     }
     if !replaced {

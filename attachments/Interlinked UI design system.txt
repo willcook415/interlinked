@@ -1,0 +1,765 @@
+Interlinked UI design system
+The visual north star for all interface work
+
+What Interlinked’s UI is trying to be
+
+Interlinked is not a casual toy, a spreadsheet with a map attached, or a generic dashboard template wearing dark mode.
+
+Interlinked should feel like a premium transport control platform for shaping living cities and regions.
+
+The interface should communicate, immediately and consistently, that the player is working with a serious system:
+a real geography
+a real network
+real constraints
+real performance tradeoffs
+real strategic decisions
+
+The player should feel like:
+planner
+operator
+strategist
+network architect
+civic systems designer
+
+The UI must support that fantasy at all times.
+
+Core emotional target
+
+Every screen in Interlinked should feel:
+authoritative
+calm
+precise
+intelligent
+premium
+strategic
+grounded
+beautiful without being showy
+
+The interface should not feel:
+childish
+generic
+template-like
+overly gamified
+sci-fi for the sake of it
+noisy
+cluttered
+fake-enterprise
+visually insecure
+
+The correct tone is:
+transport command centre
+premium strategy platform
+modern map intelligence tool
+serious public infrastructure simulation
+
+The fundamental design laws
+
+1. The map is the workspace.
+
+Everything in Interlinked exists to support action on the map or understanding of the map.
+The map must always feel like the centre of the experience.
+Panels, inspectors, modals, dashboards, alerts, and overlays are supporting layers around a live transport geography.
+
+2. Calm authority over visual noise.
+
+The interface should never shout.
+It should feel composed, deliberate, and confident.
+No random bright accents.
+No visual clutter pretending to mean depth.
+No messy over-layering.
+No decorative junk.
+
+3. Depth without overwhelm.
+
+Interlinked is a deep game, but the UI should reveal that depth with hierarchy and structure, not through dumping everything on screen at once.
+Complexity should feel discoverable and learnable.
+The player should feel supported, not buried.
+
+4. 2D only, but premium.
+
+Interlinked is a 2D game.
+Do not imitate a 3D city builder.
+Do not fake depth with false perspective gimmicks.
+The goal is to make 2D transport planning feel luxurious, atmospheric, rich, and world-class through cartography, hierarchy, materials, lighting cues, and interface composition.
+
+5. Grounded realism over sci-fi spectacle.
+
+The interface can be sleek and dramatic, but it must remain believable.
+It should evoke real transport systems, planning tools, operations centres, and infrastructure control environments.
+Avoid anything that feels like a spaceship HUD, military fantasy interface, or cyberpunk hologram toy.
+
+6. The shell must support mastery.
+
+The player will spend long sessions in Interlinked.
+The interface structure must therefore be stable, predictable, and learnable.
+High-frequency actions should live in reliable places.
+The player should build muscle memory quickly.
+
+7. Every panel must justify itself.
+
+No panel should exist just to fill space.
+Every persistent UI surface should either:
+enable action
+explain the current system
+surface a decision
+communicate status
+reduce friction
+
+8. Typography carries seriousness.
+
+Interlinked’s typography should do a large amount of the work in communicating quality, hierarchy, and authority.
+Text should feel engineered, deliberate, and premium.
+Avoid generic web-app text styling.
+
+9. Network colours belong to the network.
+
+Route colours, line identities, and modal colours should be reserved primarily for the transport network itself.
+The overall shell and chrome should not become a rainbow.
+The UI framework should stay disciplined and neutral enough to let the transport layer shine.
+
+10. Motion must clarify, not perform.
+
+Animation should communicate state, focus, transition, and confidence.
+It should never feel flashy for its own sake.
+No pointless bouncing, glowing, spinning, or gamified theatre.
+
+The visual identity pillars
+
+The first pillar: map-first composition
+
+Interlinked should always feel like a transport geography with a premium operational shell wrapped around it.
+
+It should not feel like:
+a software page with a map inside it
+
+It should feel like:
+a live transport world with high-quality control surfaces
+
+This means:
+the central map canvas must remain dominant
+major UI surfaces should hug edges or emerge contextually
+the map must breathe
+panels should not suffocate the workspace
+large screens should maintain strong geographic presence
+
+The second pillar: dark premium operational environment
+
+Interlinked should live visually in a world of:
+deep navy
+midnight blue
+blue-charcoal
+smoked glass
+cold graphite
+dim steel
+muted blueprint tones
+
+The overall impression should be:
+night operations
+infrastructure at scale
+strategic calm
+systems under control
+
+The third pillar: structured density
+
+The game should feel rich, not empty, but never chaotic.
+Information density should be deliberate.
+Major numbers should breathe.
+Metadata should support, not compete with, primary values.
+Inspectors should feel full of useful structure, not cramped.
+
+The fourth pillar: beautiful cartographic 2D
+
+The map is one of Interlinked’s greatest opportunities for identity.
+
+The 2D map should feel:
+curated
+premium
+readable
+urban
+strategic
+atmospheric
+worthy of long-term play
+
+It should not feel like:
+raw web-map output
+debug geography
+placeholder cartography
+generic open-source styling with a few tweaks
+
+The fifth pillar: civic and infrastructural seriousness
+
+Interlinked is about public transport, mobility systems, network planning, and world response.
+The interface should reflect civic scale and infrastructural weight.
+It should feel like the player is shaping meaningful systems, not moving coloured toys around a board.
+
+Brand personality
+
+If the product had a personality, it would be:
+highly competent
+modern
+quietly ambitious
+disciplined
+clear-headed
+systems-obsessed
+composed under pressure
+serious without being sterile
+elegant without being vain
+
+The UI should therefore speak visually in a way that is:
+specific
+calm
+declarative
+precise
+unpretentious
+well structured
+slightly grand, but never pompous
+
+Colour philosophy
+
+The base palette
+
+The main shell should be built from a disciplined family of dark cool tones:
+deep navy
+ink blue
+graphite blue
+desaturated slate
+dark steel
+muted blue-grey
+
+These tones should form the backbone of:
+top bars
+left rails
+right inspectors
+modals
+dashboards
+menus
+shell chrome
+inactive controls
+panel backgrounds
+
+Accent usage
+
+Primary accent
+
+Interlinked’s main interaction accent should be a strong but controlled civic blue.
+This accent should feel premium, infrastructural, crisp, and modern.
+It is the primary signifier for:
+active states
+selection
+focused controls
+primary actions
+current tab
+current tool
+important but neutral-positive interaction signals
+
+Secondary accents
+
+Green is for healthy system state:
+good performance
+service operating well
+positive trends
+stable or live systems
+healthy satisfaction or reliability
+
+Amber or gold is for:
+pause state
+construction
+caution
+temporary constraints
+attention without panic
+infrastructure work
+simulation state banners when a warmer tone is appropriate
+
+Red is reserved for:
+destructive actions
+failures
+critical alerts
+severe breakdowns
+danger states
+
+White and pale neutral tones are used for:
+high-priority text
+crisp numerals
+major labels
+important control contrast
+
+Route colours
+
+Route colours are sacred to the network layer.
+They should be vibrant and distinct where needed, but they should primarily live on:
+lines
+routes
+stops
+interchanges
+network overlays
+service maps
+line-specific identities
+
+Do not let general interface chrome steal the visual vocabulary of the network.
+
+Contrast rules
+
+Interlinked should be crisp and legible.
+Never rely on muddy low-contrast styling to appear modern.
+Avoid grey-on-grey text.
+Avoid washed-out controls.
+Avoid ghostly labels that disappear into the panel background.
+
+Readability and authority matter more than fake subtlety.
+
+Typography system
+
+Typography role in Interlinked
+
+Typography is one of the main ways Interlinked communicates seriousness.
+Strong hierarchy, disciplined casing, spacing, and weight should make the interface feel more like a flagship simulation product and less like a random web interface.
+
+The desired typographic character
+
+The typography should feel:
+engineered
+institutional in a good way
+modern
+geometric
+crisp
+purposeful
+transport-adjacent
+premium
+
+Display and title text
+
+Major titles should feel bold, clean, and ownable.
+Game title
+screen titles
+main dashboard headings
+modal titles
+hero menu headings
+selected-object identity headers
+
+These should feel strong and premium, with enough weight and spacing discipline to establish presence.
+
+Section labels and micro-headings
+
+Small labels such as:
+workspace
+panel sections
+group titles
+system ribbons
+minor headings
+field labels
+status bands
+
+should often use:
+uppercase
+slightly increased tracking
+compact structure
+clear hierarchy
+
+This gives the interface discipline and rhythm.
+
+Operational metrics text
+
+Budget, riders, satisfaction, uptime, on-time performance, frequency, travel time, demand, and financial values must be extremely legible.
+Metrics should never feel visually weak.
+They are the language of the simulation.
+They should feel stable, readable, and trusted.
+
+Typography rules
+
+Do not let everything look like body text.
+Do not let headers and metadata blur together.
+Do not use weak generic sentence-case card titles everywhere.
+Do not allow visual sameness across all text roles.
+
+Shape language
+
+Interlinked should use structured, moderately rounded geometry.
+
+The interface should avoid both extremes:
+not harsh brutalist square boxes
+not soft playful mobile-app bubbles
+
+The ideal shape language is:
+clean rectangles
+disciplined rounded corners
+confident button shapes
+soft but serious panels
+engineered geometry
+
+Large surfaces can have slightly more generous radii.
+Smaller controls should feel tighter and crisper.
+Everything should feel consistent across the product.
+
+Materials and depth
+
+The material goal
+
+Interlinked’s interface surfaces should feel like dark, premium, slightly translucent control materials placed above a living map.
+The right language is:
+smoked glass
+subtle internal gradients
+lightly illuminated edges
+controlled depth
+soft separation from the map
+refined translucency where useful
+
+Panels should feel layered, not pasted on.
+They should feel premium, not flat.
+They should feel calm, not flashy.
+
+What to avoid
+
+Avoid:
+flat placeholder rectangles
+generic dashboard cards
+heavy unrefined drop shadows
+thick white borders everywhere
+random gradients with no system
+glossy mobile-app style materials
+cheap glassmorphism gimmicks
+
+The material system should feel deliberate and restrained.
+
+Iconography
+
+Icon style should feel:
+geometric
+clean
+precise
+modern
+consistent
+transport-appropriate
+part of a real product system
+
+Avoid:
+cartoonish icons
+mixed styles
+thick playful iconography
+overly decorative symbols
+random third-party inconsistency
+
+Icons matter especially in:
+tool rails
+top bars
+alerts
+map modes
+inspector actions
+service categories
+economy and planning symbols
+
+Layout philosophy
+
+The global shell
+
+The correct high-level shell for Interlinked is:
+top command bar
+left workspace or tool rail
+right contextual inspector
+bottom optional analytics, alerts, or summary strip
+large central map canvas
+
+This shell should feel:
+stable
+persistent
+predictable
+mastery-friendly
+
+Players should quickly learn:
+state lives in the top bar
+tools and modes live on the left
+selected object detail lives on the right
+alerts, summaries, or analytics live below or contextually
+the map is always the main workspace
+
+Layout behaviour
+
+No modal soup.
+No random floating windows unless the interaction specifically calls for it.
+No covering the map with unnecessary full-screen surfaces when a smaller, clearer pattern exists.
+Use overlays, drawers, panels, and inspectors with discipline.
+
+Component principles
+
+Buttons
+
+Buttons should feel:
+decisive
+tactile
+crisp
+weighty
+premium
+
+Primary buttons should feel strong and obvious.
+Secondary buttons should still feel coherent and intentional.
+Hover and pressed states should communicate confidence.
+Buttons should not feel generic or cheap.
+
+Panels
+
+Panels should feel:
+intelligent
+layered
+substantial
+clean
+operational
+
+A panel should always look like it can hold serious information without collapsing into clutter.
+Spacing inside panels matters.
+Grouping matters.
+Rhythm matters.
+
+Tabs
+
+Tabs should feel:
+clear
+confident
+easy to scan
+obvious when active
+not tiny or fiddly
+
+State changes in tabs should be immediately legible.
+The active tab should feel meaningfully active.
+
+Metric cards
+
+Metrics should feel:
+high-signal
+clean
+important
+legible
+structured
+
+Large values should dominate when appropriate.
+Secondary context should support them.
+Positive and negative state colours should be used only when meaningful.
+
+Inspectors
+
+Inspectors are one of Interlinked’s signature surfaces.
+They should feel like real transport operating panels:
+selected object identity at the top
+status clearly visible
+actions clearly grouped
+important performance and structural information prioritised
+secondary detail discoverable through tabs or sections
+
+Inspectors should feel rich and professional, not cramped or boxy.
+
+Alerts
+
+Alerts should be concise, actionable, and triaged.
+They should support the player’s next decision rather than merely reporting noise.
+An alert system should separate:
+urgent actionable items
+non-urgent issues
+background trends
+suggestions where relevant
+
+Map art direction
+
+The map target
+
+Interlinked needs a premium 2D cartographic style.
+The map should be one of the strongest identity features in the game.
+
+It should feel:
+elegant
+strategic
+urban
+operational
+clean
+readable
+atmospheric
+alive
+
+Basemap principles
+
+The basemap should have:
+clear land and water distinction
+refined road hierarchy
+strong enough labels to orient the player
+subtle but intentional district and region structure
+good visual discipline at both local and broader zoom levels
+enough quietness to support the network overlay
+
+The basemap should not overpower the transport layer, but it must not feel cheap or raw.
+
+Water treatment
+
+Water should feel deliberate and calm.
+It should help define geography clearly.
+It should contribute to place identity and visual depth without becoming flashy.
+
+Road and infrastructure treatment
+
+Roads should have clear hierarchy.
+Major corridors should read clearly.
+Minor roads should support context without creating map noise.
+The map should look curated, not merely extracted.
+
+Labels
+
+Place labels should feel elegant and well considered.
+Important places should stand out more than minor places.
+Labels should support orientation and atmosphere, not fight the player for attention.
+
+Region and planning boundaries
+
+Planning, district, or authority boundaries should feel intentional and integrated.
+They should not feel like debug polygons dumped onto the map.
+Boundary styling should match the seriousness of the product.
+
+Network rendering
+
+Transit line rendering should be one of the most satisfying visual elements in the game.
+Lines should feel:
+crisp
+clean
+confident
+beautiful in overlap
+easy to follow
+strong against the basemap
+
+Use line thickness, glow, contrast, and node treatment with care.
+Interchanges and significant stops should feel meaningful.
+Selected lines should feel elevated and clear.
+Inactive or de-emphasised network elements should still remain legible.
+
+Stops and stations
+
+Stops and stations should not look like default map markers.
+They should feel like important network infrastructure objects with visual hierarchy.
+
+Differentiate:
+ordinary stops
+important stations
+interchanges
+terminals
+selected nodes
+hovered nodes
+
+They should feel purposeful and premium.
+
+Motion philosophy
+
+Motion should be used for:
+opening and closing inspectors
+changing tool states
+hover feedback
+highlight transitions
+mode changes
+alert surfacing
+selection confirmation
+gentle map-supportive transitions
+
+Motion should not be used for:
+empty spectacle
+attention begging
+constant unnecessary animation
+showing off
+
+Interlinked should feel composed in motion, not hyperactive.
+
+Modal and dashboard behaviour
+
+Dashboards and management surfaces should feel like part of the same product family as the main map shell.
+Even when a modal or dashboard is open, the player should feel they are still inside the same premium transport system.
+
+Modals should:
+feel significant
+have strong visual hierarchy
+respect the map underneath when appropriate
+avoid feeling like generic admin popups
+present information with structure and confidence
+
+Dashboard surfaces should feel:
+serious
+analytical
+curated
+strategic
+not spreadsheet-like unless absolutely necessary
+
+Menu and shell identity
+
+The main menu, load flow, in-game UI, and dashboards must all feel like the same product.
+The player should not feel like they are moving between separate applications.
+The design language must be continuous across:
+branding
+typography
+colour
+shell materials
+buttons
+panels
+control states
+spacing
+tone
+
+Branding and logo direction
+
+Interlinked needs:
+a strong wordmark
+a compact app icon
+a visual identity that works at both large and tiny scale
+
+The wordmark should feel:
+clean
+premium
+strong
+modern
+ownable
+
+The app icon should feel:
+simple
+recognisable
+linked to networks, nodes, and flow
+good at small sizes
+not like default framework branding
+not like a generic startup mark
+
+Accessibility and ergonomics
+
+Interlinked is a long-session game.
+Readability, contrast, click confidence, and visual fatigue matter.
+
+The interface should support:
+high legibility
+clear active states
+predictable control regions
+comfortable repeated use
+strong enough contrast for long play sessions
+clean spacing
+good visual scanning
+
+Do not sacrifice usability for aesthetic vanity.
+
+What Interlinked must never become
+
+Interlinked must never feel like:
+a generic dark React admin panel
+a fake enterprise SaaS dashboard
+a cluttered spreadsheet simulator
+a neon cyberpunk gimmick
+a childish transport tycoon toy
+a random collection of mismatched panels
+a pseudo-3D city-builder imitation
+a visually muddy low-contrast “modern” interface
+
+The one-line standard
+
+Interlinked’s UI should feel like a premium, map-first, dark-mode transport command platform that makes 2D public transport planning feel elegant, authoritative, strategic, and world-class.
+
+How to use this document in future UI work
+
+Whenever designing, refining, or rebuilding a UI surface in Interlinked, judge the work against the following questions:
+
+Does this still make the map feel like the workspace?
+Does this feel calm and authoritative rather than noisy or generic?
+Does this increase clarity without flattening depth?
+Does this feel premium in 2D rather than compensating for lack of 3D?
+Does this belong to a serious transport simulation rather than a dashboard template?
+Is the hierarchy strong enough?
+Do the typography and materials feel deliberate?
+Does the shell remain stable and learnable?
+Are we using colour with discipline?
+Is every panel earning its place?
+Does this feel like Interlinked?

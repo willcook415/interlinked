@@ -71,8 +71,8 @@ export function ensureNetworkSelectionLayers(map: MapLibreMap): void {
       filter: EMPTY_LINE_FILTER as never,
       paint: {
         "line-color": ["coalesce", ["get", "display_color"], "#6ddcff"],
-        "line-opacity": 0.52,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 9.4, 13, 18.8, 15, 22.0],
+        "line-opacity": 0.0,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.1, 13, 0.1, 15, 0.1],
       },
     } as never);
   }
@@ -84,8 +84,8 @@ export function ensureNetworkSelectionLayers(map: MapLibreMap): void {
       filter: EMPTY_LINE_FILTER as never,
       paint: {
         "line-color": "#ffffff",
-        "line-opacity": 0.92,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 6.0, 13, 11.4, 15, 13.6],
+        "line-opacity": 0.9,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 3.8, 13, 7.1, 15, 8.8],
       },
     } as never);
   }
@@ -96,9 +96,9 @@ export function ensureNetworkSelectionLayers(map: MapLibreMap): void {
       source: SRC_LINKS,
       filter: EMPTY_LINE_FILTER as never,
       paint: {
-        "line-color": ["coalesce", ["get", "display_color"], "#ffd15e"],
+        "line-color": ["coalesce", ["get", "display_color"], "#2f6fb6"],
         "line-opacity": 1.0,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 4.4, 13, 7.8, 15, 9.6],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 2.8, 13, 5.2, 15, 6.4],
       },
     } as never);
   }
@@ -110,7 +110,7 @@ export function ensureNetworkSelectionLayers(map: MapLibreMap): void {
       filter: EMPTY_LINE_FILTER as never,
       paint: {
         "line-color": "#7f93aa",
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.16, 13, 0.28, 15, 0.34],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.1, 13, 0.18, 15, 0.22],
         "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.8, 13, 2.8, 15, 3.2],
       },
     } as never);
@@ -152,7 +152,7 @@ export function ensureStopNetworkLayers(map: MapLibreMap): void {
       id: "stops-major",
       type: "circle",
       source: SRC_STOPS,
-      filter: ["==", ["get", "major_interchange"], 1],
+      filter: ["all", ["==", ["get", "major_interchange"], 1], ["!=", ["get", "in_focus"], 1]],
       paint: {
         "circle-color": "#143759",
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 2.0, 12, 5.5],

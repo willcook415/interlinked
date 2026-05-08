@@ -151,6 +151,7 @@ impl ScenarioService {
                         centrality_score: 0.0,
                         data_quality_score: 0.5,
                         country_iso2: z.country_iso2.clone(),
+                        allocation_diagnostics: None,
                     })
                     .collect();
             } else if !out.world.demand_cells.is_empty() && out.world.zones.is_empty() {

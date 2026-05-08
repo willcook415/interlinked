@@ -9,13 +9,18 @@ pub use defaults::{
     default_build_defaults, BuildDefaults, ComfortLevelPreset, ModeBuildPreset,
     RollingStockTierPreset, SpeedLevelPreset,
 };
-pub use fleet_state::{settle_pending_purchase_orders, FleetPurchaseOrderState, LineScheduleState};
+pub use fleet_state::{
+    line_activation_diagnostics, resolve_assigned_units_for_line_mode,
+    settle_pending_purchase_orders, FleetPurchaseOrderState, LineActivationDiagnostics,
+    LineActivationReason, LineScheduleState,
+};
 pub use inspection_line::{
     compute_lines, inspect_line_from_scenario, LineComputed, LineCostStory, LineDirectionSummary,
     LineFleetState, LineInspection, LineOperationsNow, LineStationSummary,
 };
 pub use inspection_station::{
     inspect_station_from_scenario, StationInspection, StationJourneyTime, StationLineSummary,
+    StationRuntimeDiagnostics, StationRuntimeServiceDiagnostics,
 };
 pub use mutation_costing::{
     apply_build_budget, balance_display_amount, mutation_cost_breakdown,
@@ -35,9 +40,9 @@ mod tests {
     };
     use interlinked_engine::sim::{
         BoardLoad, BoardingTimeBin, CitywideModeShareSummary, DemandDiagnostics, Diagnostics,
-        EconomicDiagnostics, FareFlowSummary, Kpis, LinkLoad, ModalDemandDiagnostics,
-        NetworkFinancialSummary, OutputMeta, ServiceReliabilityDiagnostics, SimulationOutput,
-        TemporalDemandDiagnostics, TemporalDemandSlice,
+        EconomicDiagnostics, FareFlowSummary, Kpis, LifecycleConservationSummary, LinkLoad,
+        ModalDemandDiagnostics, NetworkFinancialSummary, OutputMeta, ServiceReliabilityDiagnostics,
+        SimulationOutput, TemporalDemandDiagnostics, TemporalDemandSlice,
     };
 
     fn approx(a: f64, b: f64, eps: f64) {
@@ -283,6 +288,7 @@ mod tests {
                         centrality_score: 0.7,
                         data_quality_score: 0.9,
                         country_iso2: Some("GB".to_string()),
+                        allocation_diagnostics: None,
                     },
                     DemandCell {
                         cell_id: "dc_b_east".to_string(),
@@ -301,6 +307,7 @@ mod tests {
                         centrality_score: 0.75,
                         data_quality_score: 0.9,
                         country_iso2: Some("GB".to_string()),
+                        allocation_diagnostics: None,
                     },
                 ],
                 demand_meta: None,
@@ -394,6 +401,7 @@ mod tests {
             stop_flows: vec![],
             passenger_cohorts: vec![],
             fare_flow: FareFlowSummary::default(),
+            lifecycle_conservation: LifecycleConservationSummary::default(),
             zone_demand_profiles: vec![],
             latent_od_demand: vec![],
             assigned_od_flows: vec![],
@@ -446,6 +454,7 @@ mod tests {
                 msa_iterations: 1,
                 msa_final_max_rel_change: 0.0,
                 sample_paths: vec![],
+                planner_passenger_trace: interlinked_engine::sim::PlannerPassengerTrace::default(),
             },
         }
     }

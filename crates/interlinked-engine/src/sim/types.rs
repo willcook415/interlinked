@@ -2923,6 +2923,10 @@ pub struct SimulationOutput {
     #[serde(default)]
     pub fare_flow: FareFlowSummary,
     #[serde(default)]
+    pub lifecycle_conservation: LifecycleConservationSummary,
+    #[serde(default)]
+    pub strategic_planner_timing: StrategicPlannerTimingDiagnostics,
+    #[serde(default)]
     pub zone_demand_profiles: Vec<ZoneDemandProfile>,
     #[serde(default)]
     pub latent_od_demand: Vec<LatentOdDemand>,
@@ -3158,6 +3162,8 @@ pub struct PassengerCohortFlow {
     pub attempted_pax: f64,
     pub boarded_pax: f64,
     pub alighted_pax: f64,
+    #[serde(default)]
+    pub fare_delta_base: f64,
     pub queue_end_pax: f64,
 }
 
@@ -3171,6 +3177,140 @@ pub struct FareFlowSummary {
     pub completed_journeys_pax: f64,
     #[serde(default)]
     pub recognized_revenue_base: f64,
+}
+
+/// Compact fast-kernel lifecycle accounting for regression tests and diagnostics.
+///
+/// This covers only aggregate simulation-owned fast lifecycle state. Strategic
+/// planner estimates and desktop projection/animation counters must not be
+/// mixed into these conservation balances.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LifecycleConservationSummary {
+    #[serde(default)]
+    pub source_label: String,
+    #[serde(default)]
+    pub queue_start_pax: f64,
+    #[serde(default)]
+    pub new_waiting_pax: f64,
+    #[serde(default)]
+    pub boarded_pax: f64,
+    #[serde(default)]
+    pub queue_overflow_dropped_pax: f64,
+    #[serde(default)]
+    pub queue_end_pax: f64,
+    #[serde(default)]
+    pub queue_balance_error: f64,
+    #[serde(default)]
+    pub onboard_start_pax: f64,
+    #[serde(default)]
+    pub onboard_end_pax: f64,
+    #[serde(default)]
+    pub alighted_pax: f64,
+    #[serde(default)]
+    pub onboard_balance_error: f64,
+    #[serde(default)]
+    pub fare_recognized_pax: f64,
+    #[serde(default)]
+    pub fare_recognized_base: f64,
+    #[serde(default)]
+    pub missing_fare_basis_pax: f64,
+}
+
+/// Compact strategic planner stage timings for perf harness diagnostics.
+///
+/// These timings describe legitimate strategic refresh work only. They are not
+/// fast-kernel lifecycle conservation truth, and they should stay compact enough
+/// to inspect without adding per-tick event-list overhead.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StrategicPlannerTimingDiagnostics {
+    #[serde(default)]
+    pub source_label: String,
+    #[serde(default)]
+    pub output_mode: String,
+    #[serde(default)]
+    pub total_ms: f64,
+    #[serde(default)]
+    pub materialize_effective_scenario_ms: f64,
+    #[serde(default)]
+    pub validate_index_ms: f64,
+    #[serde(default)]
+    pub graph_build_ms: f64,
+    #[serde(default)]
+    pub latent_demand_ms: f64,
+    #[serde(default)]
+    pub pending_od_ms: f64,
+    #[serde(default)]
+    pub mode_choice_ms: f64,
+    #[serde(default)]
+    pub assignment_ms: f64,
+    #[serde(default)]
+    pub lightweight_outputs_ms: f64,
+    #[serde(default)]
+    pub full_layers_ms: f64,
+    #[serde(default)]
+    pub operations_ms: f64,
+    #[serde(default)]
+    pub modal_outputs_ms: f64,
+    #[serde(default)]
+    pub phase3_outputs_ms: f64,
+    #[serde(default)]
+    pub economics_outputs_ms: f64,
+    #[serde(default)]
+    pub demand_diagnostics_ms: f64,
+    #[serde(default)]
+    pub temporal_bundle_ms: f64,
+    #[serde(default)]
+    pub include_temporal_bundle: bool,
+    #[serde(default)]
+    pub injected_pending_od_rows: usize,
+    #[serde(default)]
+    pub zones: usize,
+    #[serde(default)]
+    pub stops: usize,
+    #[serde(default)]
+    pub links: usize,
+    #[serde(default)]
+    pub services: usize,
+    #[serde(default)]
+    pub demand_cells: usize,
+    #[serde(default)]
+    pub graph_nodes: usize,
+    #[serde(default)]
+    pub graph_edges: usize,
+    #[serde(default)]
+    pub transfer_edges: usize,
+    #[serde(default)]
+    pub access_edges: usize,
+    #[serde(default)]
+    pub egress_edges: usize,
+    #[serde(default)]
+    pub active_latent_rows: usize,
+    #[serde(default)]
+    pub mode_choice_rows: usize,
+    #[serde(default)]
+    pub assigned_od_rows: usize,
+    #[serde(default)]
+    pub board_load_rows: usize,
+    #[serde(default)]
+    pub passenger_cohort_rows: usize,
+    #[serde(default)]
+    pub mode_choice_candidate_paths_raw_total: usize,
+    #[serde(default)]
+    pub mode_choice_candidate_paths_boardable_total: usize,
+    #[serde(default)]
+    pub assignment_candidate_paths_raw_total: usize,
+    #[serde(default)]
+    pub assignment_candidate_paths_boardable_total: usize,
+    #[serde(default)]
+    pub assignment_iter_path_cache_hits: usize,
+    #[serde(default)]
+    pub assignment_iter_path_cache_misses: usize,
+    #[serde(default)]
+    pub assignment_kpi_path_cache_hits: usize,
+    #[serde(default)]
+    pub assignment_kpi_path_cache_misses: usize,
+    #[serde(default)]
+    pub assignment_attempted_pax_total: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3190,4 +3330,82 @@ pub struct Diagnostics {
     // --- NEW: route-choice debug samples ---
     #[serde(default)]
     pub sample_paths: Vec<SampleOdPaths>,
+    #[serde(default)]
+    pub planner_passenger_trace: PlannerPassengerTrace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlannerServiceStopTrace {
+    pub service_id: String,
+    #[serde(default)]
+    pub line_id: Option<String>,
+    pub stop_id: String,
+    #[serde(default)]
+    pub raw_candidate_paths: usize,
+    #[serde(default)]
+    pub boardable_candidate_paths: usize,
+    #[serde(default)]
+    pub rejected_no_board_or_alight_paths: usize,
+    #[serde(default)]
+    pub rejected_unpaired_board_alight_paths: usize,
+    #[serde(default)]
+    pub planner_attempted_pax: f64,
+    #[serde(default)]
+    pub planner_assigned_pax: f64,
+    #[serde(default)]
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlannerPassengerTrace {
+    #[serde(default)]
+    pub demand_cells_total: usize,
+    #[serde(default)]
+    pub demand_cells_nonzero_activity: usize,
+    #[serde(default)]
+    pub zones_total: usize,
+    #[serde(default)]
+    pub zones_nonzero_activity: usize,
+    #[serde(default)]
+    pub latent_rows_total: usize,
+    #[serde(default)]
+    pub latent_pax_total: f64,
+    #[serde(default)]
+    pub mode_choice_rows_total: usize,
+    #[serde(default)]
+    pub mode_choice_rows_with_transit_capture: usize,
+    #[serde(default)]
+    pub mode_choice_transit_captured_pax: f64,
+    #[serde(default)]
+    pub mode_choice_candidate_paths_raw_total: usize,
+    #[serde(default)]
+    pub mode_choice_candidate_paths_boardable_total: usize,
+    #[serde(default)]
+    pub mode_choice_rejected_no_board_or_alight_total: usize,
+    #[serde(default)]
+    pub mode_choice_rejected_unpaired_board_alight_total: usize,
+    #[serde(default)]
+    pub assignment_od_rows_with_transit_latent: usize,
+    #[serde(default)]
+    pub assignment_od_rows_with_attempted: usize,
+    #[serde(default)]
+    pub assignment_attempted_pax_total: f64,
+    #[serde(default)]
+    pub assignment_candidate_paths_raw_total: usize,
+    #[serde(default)]
+    pub assignment_candidate_paths_boardable_total: usize,
+    #[serde(default)]
+    pub assignment_rejected_no_board_or_alight_total: usize,
+    #[serde(default)]
+    pub assignment_rejected_unpaired_board_alight_total: usize,
+    #[serde(default)]
+    pub passenger_cohort_rows_total: usize,
+    #[serde(default)]
+    pub passenger_cohort_attempted_pax_total: f64,
+    #[serde(default)]
+    pub first_zero_stage: Option<String>,
+    #[serde(default)]
+    pub first_zero_reason: Option<String>,
+    #[serde(default)]
+    pub service_stop_traces: Vec<PlannerServiceStopTrace>,
 }

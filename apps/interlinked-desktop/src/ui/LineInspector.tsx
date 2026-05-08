@@ -1,6 +1,15 @@
-import { useEffect, useState } from "react";
-import type { CurrencyCode, LineInspection, ModeBuildPreset } from "../types";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import type {
+  CurrencyCode,
+  LineActivationReason,
+  LineInspection,
+  ModeBuildPreset,
+} from "../types";
+import { formatCounterProvenance } from "../app/counterProvenance";
 import type { LocalLineDetail } from "../build/helpers";
+import type { BuildAction } from "../build/types";
+import { buildPerfEvent, buildPerfMeasure } from "../perf/buildPerf";
+import InspectorPanel from "./InspectorPanel";
 
 type DraftLinePreview = {
   lineId: string;
@@ -60,8 +69,39 @@ function minuteToClock(minute: number): string {
   return `${hh}:${mm}`;
 }
 
-export default function LineInspectorSheet(props: {
-  open: boolean;
+function formatServiceBandLabel(value: string | null | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return "-";
+  if (normalized === "off_peak") return "Off-Peak";
+  if (normalized === "peak") return "Peak";
+  if (normalized === "overnight") return "Overnight";
+  return normalized
+    .split("_")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function formatActivationReasonLabel(reason: LineActivationReason | null | undefined): string | null {
+  switch (reason) {
+    case "no_target_tph_in_active_band":
+      return "0 TPH in active band";
+    case "no_assigned_units":
+      return "no units assigned";
+    case "no_owned_units":
+      return "no owned stock";
+    case "fleet_insufficient_for_round_trip":
+      return "insufficient fleet for round trip";
+    case "invalid_headway_or_disabled":
+      return "invalid headway or disabled";
+    case "no_required_units":
+      return "no required units";
+    default:
+      return null;
+  }
+}
+
+export default function LineInspector(props: {
   inspection: LineInspection | null;
   lineDetail: LocalLineDetail | null;
   draftPreview?: DraftLinePreview | null;
@@ -71,32 +111,43 @@ export default function LineInspectorSheet(props: {
   presets: ModeBuildPreset[];
   selectedPresetId: string | null;
   budgetCurrency: CurrencyCode;
+  draftToolMode?: BuildAction;
   estimatedCapexBase: number | null;
   stationCapexBase: number | null;
+  extensionAddedStations?: number;
+  extensionAddedLengthM?: number;
+  hasPendingBuildChanges?: boolean;
+  awaitingExtensionTerminus?: boolean;
+  extensionAnchorStopName?: string | null;
   addingStationMode?: boolean;
+  canUndoDraftPlacement?: boolean;
   onClose: () => void;
   onAddStationToLine: () => void;
+  onFinishDraftRoute?: () => void;
+  onUndoDraftPlacement?: () => void;
   onDelete: () => void;
   onNameChange: (value: string) => void;
   onColorChange: (value: string) => void;
-  onPresetChange: (value: string) => void;
   onStationClick?: (stopId: string) => void;
   onOpenRollingStockEditor: () => void;
   onOpenScheduleEditor: () => void;
   onRemoveDraftStation?: (stopId: string) => void;
 }) {
-  if (!props.open) return null;
-  if (!props.lineDetail && !props.draftPreview) return null;
+  if (!props.lineDetail && !props.draftPreview && !props.forceDraftMode) return null;
 
   const live = props.inspection;
-  const isDraftOnly = (props.forceDraftMode ?? false) || (!props.lineDetail && Boolean(props.draftPreview));
+  const hasDraftContext = Boolean(props.draftPreview) || Boolean(props.forceDraftMode);
+  const isDraftOnly = (props.forceDraftMode ?? false) || (!props.lineDetail && hasDraftContext);
   const canEdit = (props.editable ?? true) && Boolean(props.lineDetail);
-  const lineName = props.lineDetail?.name ?? props.draftPreview?.lineName ?? "New Line";
+  const lineName = props.lineDetail?.name ?? props.draftPreview?.lineName ?? "New Metro Line";
   const lineNameDisplay = lineName.trim() ? lineName : "Untitled Line";
+  const inspectorStateLabel = isDraftOnly
+    ? "New Metro Line"
+    : canEdit
+      ? "Editing Metro Line"
+      : "Viewing Metro Line";
   const displayColor =
     props.lineDetail?.displayColor ?? live?.display_color ?? props.draftPreview?.displayColor ?? "#1f3e63";
-  const mode = props.lineDetail?.mode ?? props.draftPreview?.modeLabel ?? "Draft";
-  const modeVariant = props.lineDetail?.modeVariant ?? live?.mode_variant ?? null;
   const selectedPreset = props.presets.find((preset) => preset.id === props.selectedPresetId) ?? null;
   const stationCount = props.lineDetail?.stationIds.length ?? props.draftPreview?.stationNames.length ?? 0;
   const lengthM = props.lineDetail?.lengthM ?? live?.length_m ?? null;
@@ -104,15 +155,38 @@ export default function LineInspectorSheet(props: {
     live?.estimated_capex_base ??
     props.estimatedCapexBase ??
     ((props.stationCapexBase ?? 0) * stationCount + ((lengthM ?? 0) / 1000) * 0);
+  const activation = live?.activation;
   const operationsNow = live?.operations_now;
-  const activeBand = operationsNow?.active_band ?? "off_peak";
-  const activeTph = operationsNow?.live_tph ?? props.lineDetail?.effectiveTph ?? live?.effective_tph ?? 0;
+  const fleetState = live?.fleet_state;
+  const activeBand = activation?.active_band ?? operationsNow?.active_band ?? "off_peak";
+  const activeBandLabel = formatServiceBandLabel(activeBand);
+  const activeTph =
+    activation?.effective_tph ??
+    operationsNow?.live_tph ??
+    props.lineDetail?.effectiveTph ??
+    live?.effective_tph ??
+    0;
+  const targetTphNow = activation?.target_tph ?? live?.target_tph ?? 0;
+  const activationReason = activation?.reason ?? null;
+  const activationOwnedUnits = activation?.units_owned ?? (fleetState?.units_owned ?? props.lineDetail?.stockUnitsOwned ?? live?.owned_units ?? 0);
+  const activationAssignedUnits =
+    activation?.units_assigned ??
+    (fleetState?.units_assigned ?? props.lineDetail?.stockUnitsAssigned ?? live?.assigned_units ?? 0);
+  const activationRequiredUnits =
+    activation?.required_units ??
+    (fleetState?.units_required_now ?? props.lineDetail?.requiredUnits ?? live?.required_units ?? 0);
+  const activationEnabled = activation?.enabled ?? activeTph > 0;
+  const activationReasonLabel = formatActivationReasonLabel(activationReason);
+  const serviceStatusText = activationEnabled
+    ? `${activeTph.toFixed(1)} TPH`
+    : `Not Running${activationReasonLabel ? ` - ${activationReasonLabel}` : ""}`;
   const activeWaitS = operationsNow?.avg_wait_s ?? props.lineDetail?.averageWaitS ?? live?.avg_wait_s ?? null;
   const activeCapacity = operationsNow?.capacity_per_hour ?? props.lineDetail?.lineCapacityPerHour ?? 0;
-  const fleetState = live?.fleet_state;
   const unitsOwned = fleetState?.units_owned ?? props.lineDetail?.stockUnitsOwned ?? live?.owned_units ?? 0;
   const unitsAssigned = fleetState?.units_assigned ?? props.lineDetail?.stockUnitsAssigned ?? live?.assigned_units ?? 0;
   const unitsRequired = fleetState?.units_required_now ?? props.lineDetail?.requiredUnits ?? live?.required_units ?? 0;
+  const fleetReadyForTimetable = unitsOwned > 0 || unitsAssigned > 0;
+  const performanceReady = !isDraftOnly && !props.hasPendingBuildChanges;
   const vehicleCapacity = fleetState?.vehicle_capacity_effective ?? live?.vehicle_capacity_effective ?? null;
   const schedule = live?.schedule_state ?? {
     peak_start_minute: props.lineDetail?.scheduleProfile.peak_start_minute ?? 420,
@@ -124,28 +198,93 @@ export default function LineInspectorSheet(props: {
     tph_overnight: props.lineDetail?.scheduleProfile.tph_overnight ?? 0,
   };
   const costStory = live?.cost_story;
-  const diagramStops = props.lineDetail
-      ? props.lineDetail.stations.map((station) => {
-        const decoration = props.stationDecorations?.[station.stop_id];
-        return {
-          key: station.stop_id,
-          stopId: station.stop_id,
-          name: station.name,
-          interchange: decoration?.interchange ?? false,
-          connectedLines: decoration?.connectedLines ?? [],
-        };
-      })
-    : (props.draftPreview?.stationNames ?? []).map((stationName, index) => ({
-        key: `draft:${index}:${stationName}`,
-        stopId: props.draftPreview?.stationIds?.[index] ?? null,
-        name: stationName,
-        interchange: false,
-        connectedLines: [] as Array<{ lineId: string; lineName: string; displayColor?: string | null }>,
-      }));
+  const passengerProvenanceLabel = formatCounterProvenance(
+    live?.passenger_counter_provenance ?? "strategic_estimate"
+  );
+  const addedTrackKm = Math.max(props.extensionAddedLengthM ?? 0, 0) / 1000;
+  const awaitingTerminusSelection =
+    Boolean(props.awaitingExtensionTerminus) &&
+    (props.draftToolMode === "add_station_to_line" || props.addingStationMode);
+  const draftModeStateLabel =
+    props.draftToolMode === "start_line"
+      ? "Editing on Map"
+      : awaitingTerminusSelection
+        ? "Select Terminus on Map"
+        : props.draftToolMode === "add_station_to_line"
+          ? props.extensionAnchorStopName
+            ? `Extending from ${props.extensionAnchorStopName}`
+            : "Editing on Map"
+          : "Editing on Map";
+  const draftStatusText =
+    props.draftToolMode === "start_line"
+      ? stationCount > 0
+        ? "Route draft active. Keep plotting stations on the map."
+        : "Click the map to place the first station."
+      : awaitingTerminusSelection
+        ? "Select one terminus station on this line to begin extension."
+        : props.draftToolMode === "add_station_to_line"
+          ? "Extension active. Place the next station on the map."
+          : "Select a line and continue drafting on the map.";
+  const diagramStops = useMemo(
+    () =>
+      buildPerfMeasure(
+        "build.ui.derive.line_inspector.diagram_stops",
+        () =>
+          props.lineDetail
+            ? props.lineDetail.stations.map((station) => {
+                const decoration = props.stationDecorations?.[station.stop_id];
+                return {
+                  key: station.stop_id,
+                  stopId: station.stop_id,
+                  name: station.name,
+                  interchange: decoration?.interchange ?? false,
+                  connectedLines: decoration?.connectedLines ?? [],
+                };
+              })
+            : (props.draftPreview?.stationNames ?? []).map((stationName, index) => ({
+                key: `draft:${index}:${stationName}`,
+                stopId: props.draftPreview?.stationIds?.[index] ?? null,
+                name: stationName,
+                interchange: false,
+                connectedLines: [] as Array<{
+                  lineId: string;
+                  lineName: string;
+                  displayColor?: string | null;
+                }>,
+              })),
+        {
+          stationCount:
+            props.lineDetail?.stations.length ?? props.draftPreview?.stationNames.length ?? 0,
+          draftOnly: isDraftOnly,
+        },
+        { minDurationMs: 1, throttleMs: 150 }
+      ),
+    [props.draftPreview?.stationIds, props.draftPreview?.stationNames, props.lineDetail, props.stationDecorations]
+  );
   const [hexInput, setHexInput] = useState(normalizeHexColor(displayColor) ?? "#1f3e63");
   const [activeTab, setActiveTab] = useState<LineInspectorTab>(isDraftOnly ? "route" : "overview");
   const tubeColor = normalizeHexColor(displayColor) ?? "#4f76a3";
   const lineSessionKey = `${props.lineDetail?.lineId ?? props.draftPreview?.lineId ?? "draft"}:${isDraftOnly ? "draft" : "live"}`;
+  const tabSpec = useMemo(
+    () =>
+      buildPerfMeasure(
+        "build.ui.derive.line_inspector.tab_spec",
+        () => [
+          { id: "overview" as const, label: "Overview", disabled: isDraftOnly },
+          { id: "route" as const, label: "Route", disabled: false },
+          { id: "fleet" as const, label: "Fleet", disabled: isDraftOnly },
+          {
+            id: "timetable" as const,
+            label: "Timetable",
+            disabled: isDraftOnly || !fleetReadyForTimetable,
+          },
+          { id: "performance" as const, label: "Performance", disabled: !performanceReady },
+        ],
+        { isDraftOnly, fleetReadyForTimetable, performanceReady },
+        { minDurationMs: 1, throttleMs: 250 }
+      ),
+    [fleetReadyForTimetable, isDraftOnly, performanceReady]
+  );
 
   useEffect(() => {
     setHexInput(normalizeHexColor(displayColor) ?? "#1f3e63");
@@ -154,6 +293,27 @@ export default function LineInspectorSheet(props: {
   useEffect(() => {
     setActiveTab(isDraftOnly ? "route" : "overview");
   }, [isDraftOnly, lineSessionKey]);
+
+  useEffect(() => {
+    buildPerfEvent("build.ui.line_inspector.open", {
+      lineId: props.lineDetail?.lineId ?? props.draftPreview?.lineId ?? null,
+      draftOnly: isDraftOnly,
+      initialTab: isDraftOnly ? "route" : "overview",
+    });
+    return () => {
+      buildPerfEvent("build.ui.line_inspector.close", {
+        lineId: props.lineDetail?.lineId ?? props.draftPreview?.lineId ?? null,
+      });
+    };
+  }, [isDraftOnly, props.draftPreview?.lineId, props.lineDetail?.lineId]);
+
+  useEffect(() => {
+    buildPerfEvent("build.ui.line_inspector.tab_selected", {
+      tab: activeTab,
+      lineId: props.lineDetail?.lineId ?? props.draftPreview?.lineId ?? null,
+      draftOnly: isDraftOnly,
+    });
+  }, [activeTab, isDraftOnly, props.draftPreview?.lineId, props.lineDetail?.lineId]);
 
   const commitHexColor = () => {
     const normalized = normalizeHexColor(hexInput);
@@ -165,31 +325,28 @@ export default function LineInspectorSheet(props: {
   };
 
   return (
-    <aside className="line-inspector-sheet">
-      <div className="inspector-head">
-        <div>
-          <p>{isDraftOnly ? "Line Builder" : "Line Inspector"}</p>
-          <h4>{lineNameDisplay}</h4>
-        </div>
-        <button onClick={props.onClose}>Close</button>
-      </div>
-
+    <InspectorPanel
+      variant="line"
+      eyebrow={isDraftOnly || canEdit ? "Line Builder" : "Line Inspector"}
+      title={lineNameDisplay}
+      status={inspectorStateLabel}
+      className={isDraftOnly ? "is-draft-mode" : ""}
+      onClose={props.onClose}
+    >
       <div className="inspector-tab-row" role="tablist" aria-label="Line inspector sections">
-        <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>
-          Overview
-        </button>
-        <button className={activeTab === "route" ? "active" : ""} onClick={() => setActiveTab("route")}>
-          Route
-        </button>
-        <button className={activeTab === "fleet" ? "active" : ""} onClick={() => setActiveTab("fleet")}>
-          Fleet
-        </button>
-        <button className={activeTab === "timetable" ? "active" : ""} onClick={() => setActiveTab("timetable")}>
-          Timetable
-        </button>
-        <button className={activeTab === "performance" ? "active" : ""} onClick={() => setActiveTab("performance")}>
-          Performance
-        </button>
+        {tabSpec.map((tab) => (
+          <button
+            key={tab.id}
+            className={`${activeTab === tab.id ? "active" : ""} ${tab.disabled ? "is-disabled" : ""}`.trim()}
+            onClick={() => {
+              if (tab.disabled) return;
+              setActiveTab(tab.id);
+            }}
+            disabled={tab.disabled}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {activeTab === "overview" ? (
@@ -228,23 +385,14 @@ export default function LineInspectorSheet(props: {
                     />
                   </div>
                 </label>
-                <label>
-                  Transport Mode
-                  <select value={props.selectedPresetId ?? ""} onChange={(event) => props.onPresetChange(event.target.value)}>
-                    <option value="" disabled>
-                      Select preset
-                    </option>
-                    {props.presets.map((preset) => (
-                      <option key={preset.id} value={preset.id}>
-                        {preset.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Current Band
-                  <input value={activeBand.replace("_", " ")} readOnly />
-                </label>
+                <div className="inspector-read-field static-meta-field">
+                  <small>Transport Mode</small>
+                  <strong>Metro</strong>
+                </div>
+                <div className="inspector-read-field static-meta-field">
+                  <small>Current Band</small>
+                  <strong>{activeBandLabel}</strong>
+                </div>
               </div>
             ) : (
               <div className="inspector-read-grid">
@@ -261,11 +409,11 @@ export default function LineInspectorSheet(props: {
                 </div>
                 <div className="inspector-read-field">
                   <small>Transport Mode</small>
-                  <strong>{modeVariant ? `${mode} / ${modeVariant}` : mode}</strong>
+                  <strong>Metro</strong>
                 </div>
-                <div className="inspector-read-field">
+                <div className="inspector-read-field static-meta-field">
                   <small>Current Service Band</small>
-                  <strong>{activeBand.replace("_", " ")}</strong>
+                  <strong>{activeBandLabel}</strong>
                 </div>
               </div>
             )
@@ -275,7 +423,7 @@ export default function LineInspectorSheet(props: {
           <div className="inspector-stat-row">
             <div className="inspector-stat">
               <small>Service</small>
-              <strong>{activeTph > 0 ? `${activeTph.toFixed(1)} TPH` : "Not Running"}</strong>
+              <strong>{serviceStatusText}</strong>
             </div>
             <div className="inspector-stat">
               <small>Route</small>
@@ -296,6 +444,10 @@ export default function LineInspectorSheet(props: {
               </strong>
             </div>
           </div>
+          <p className="hint-line">
+            Activation: {activeBandLabel} | Target {targetTphNow.toFixed(1)} TPH | Fleet {activationAssignedUnits}/
+            {activationOwnedUnits} assigned/owned | Required {activationRequiredUnits} | Effective {activeTph.toFixed(1)} TPH
+          </p>
           {selectedPreset ? (
             <p className="hint-line">
               {selectedPreset.label} lines need vehicles before they run. Configure fleet and timetable to start service.
@@ -307,15 +459,63 @@ export default function LineInspectorSheet(props: {
       {activeTab === "route" ? (
         <section className="inspector-section">
           <div className="inspector-section-head">
-            <h5>Route</h5>
+            <h5>Route Schematic</h5>
             <span>
               {stationCount} stops | {formatDistance(lengthM)}
             </span>
           </div>
+          {!isDraftOnly ? (
+            <p className="inspector-route-intro">
+              Continue plotting on the map. This route list mirrors stop order for quick review and edits.
+            </p>
+          ) : null}
+          {isDraftOnly ? (
+            <div className="draft-route-control-card">
+              <div className="draft-route-status-row">
+                <strong>Draft Status</strong>
+                <span>{props.draftToolMode === "add_station_to_line" ? "Extension" : "New Route"}</span>
+              </div>
+              <p>{draftStatusText}</p>
+              <div className="draft-route-metrics">
+                <span>
+                  <small>Stations</small>
+                  <strong>{stationCount}</strong>
+                </span>
+                <span>
+                  <small>Added Track</small>
+                  <strong>{addedTrackKm.toFixed(2)} km</strong>
+                </span>
+              </div>
+              <div className="draft-route-actions">
+                <div className="draft-route-mode-indicator">{draftModeStateLabel}</div>
+                <button
+                  onClick={() => {
+                    buildPerfEvent("build.ui.finish_route_click", { stationCount });
+                    props.onFinishDraftRoute?.();
+                  }}
+                  disabled={stationCount < 2}
+                >
+                  Finish Route
+                </button>
+                <button
+                  onClick={() => {
+                    buildPerfEvent("build.ui.undo_last_click", { stationCount });
+                    props.onUndoDraftPlacement?.();
+                  }}
+                  disabled={!props.canUndoDraftPlacement}
+                >
+                  Undo Last
+                </button>
+              </div>
+            </div>
+          ) : null}
           {diagramStops.length === 0 ? (
             <p className="hint-line">Click the map to place the first stop.</p>
           ) : (
-            <div className="tube-diagram">
+            <div
+              className="tube-diagram"
+              style={{ "--tube-color": tubeColor } as CSSProperties}
+            >
               {diagramStops.map((station, index) => (
                 <div key={station.key} className={`tube-stop ${station.interchange ? "is-interchange" : ""}`}>
                   <div className="tube-track-col">
@@ -334,41 +534,42 @@ export default function LineInspectorSheet(props: {
                     />
                   </div>
                   <div className="tube-label">
-                    {station.stopId && props.onStationClick ? (
-                      <button
-                        className="tube-label-button"
-                        onClick={() => props.onStationClick?.(station.stopId!)}
-                        title="Open station details"
-                      >
+                    <div className="tube-stop-head">
+                      {station.stopId && props.onStationClick ? (
+                        <button
+                          className="tube-label-button"
+                          onClick={() => {
+                            buildPerfEvent("build.ui.route_station_click", {
+                              stopId: station.stopId,
+                            });
+                            props.onStationClick?.(station.stopId!);
+                          }}
+                          title="Open station details"
+                        >
+                          <strong>{station.name}</strong>
+                        </button>
+                      ) : (
                         <strong>{station.name}</strong>
-                        <p>
-                          {index === 0
-                            ? "Origin"
-                            : index === diagramStops.length - 1
-                            ? "Terminus"
-                            : `Stop ${index + 1}`}
-                        </p>
-                      </button>
-                    ) : (
-                      <>
-                        <strong>{station.name}</strong>
-                        <p>
-                          {index === 0
-                            ? "Origin"
-                            : index === diagramStops.length - 1
-                            ? "Terminus"
-                            : `Stop ${index + 1}`}
-                        </p>
-                      </>
-                    )}
-                    {isDraftOnly && station.stopId && props.onRemoveDraftStation && diagramStops.length > 1 ? (
-                      <button
-                        className="tube-remove-stop"
-                        onClick={() => props.onRemoveDraftStation?.(station.stopId!)}
-                      >
-                        Remove stop
-                      </button>
-                    ) : null}
+                      )}
+                      <span className="tube-stop-role">
+                        {index === 0 ? "Origin" : index === diagramStops.length - 1 ? "Terminus" : `Stop ${index + 1}`}
+                      </span>
+                      {isDraftOnly && station.stopId && props.onRemoveDraftStation ? (
+                        <button
+                          className="tube-stop-remove-inline"
+                          disabled={diagramStops.length <= 1}
+                          onClick={() => {
+                            buildPerfEvent("build.ui.remove_draft_station_click", {
+                              stopId: station.stopId,
+                              stationCount: diagramStops.length,
+                            });
+                            props.onRemoveDraftStation?.(station.stopId!);
+                          }}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
                     {station.interchange && station.connectedLines.length > 0 ? (
                       <div className="tube-connection-list">
                         {station.connectedLines.map((connected) => (
@@ -387,19 +588,39 @@ export default function LineInspectorSheet(props: {
               ))}
             </div>
           )}
-          <div className="inspector-actions">
-            {canEdit ? (
-              <button onClick={props.onAddStationToLine}>
-                {props.addingStationMode ? "Adding Stations..." : "Extend Line On Map"}
-              </button>
-            ) : null}
-            {canEdit && !isDraftOnly ? (
-              <button className="danger-button" onClick={props.onDelete}>
-                Delete Line
-              </button>
-            ) : null}
-          </div>
-          <p className="hint-line">Route editing is map-first. Use this tab to guide and review your route structure.</p>
+          {isDraftOnly ? null : (
+            <div className="inspector-actions">
+              {canEdit ? (
+                <button
+                  className="primary"
+                  onClick={() => {
+                    buildPerfEvent("build.ui.edit_route_click", {
+                      lineId: props.lineDetail?.lineId ?? null,
+                    });
+                    props.onAddStationToLine();
+                  }}
+                >
+                  Edit Route
+                </button>
+              ) : null}
+              {canEdit ? (
+                <button
+                  className="danger-button"
+                  onClick={() => {
+                    buildPerfEvent("build.ui.delete_line_click", {
+                      lineId: props.lineDetail?.lineId ?? null,
+                    });
+                    props.onDelete();
+                  }}
+                >
+                  Delete Line
+                </button>
+              ) : null}
+            </div>
+          )}
+          {!isDraftOnly ? (
+            <p className="hint-line">Route editing is map-first. Use this tab to guide and review your route structure.</p>
+          ) : null}
         </section>
       ) : null}
 
@@ -494,12 +715,12 @@ export default function LineInspectorSheet(props: {
         <section className="inspector-section">
           <div className="inspector-section-head">
             <h5>Performance</h5>
-            <span>{activeBand.replace("_", " ")}</span>
+            <span>{activeBandLabel}</span>
           </div>
           <div className="inspector-stat-row">
             <div className="inspector-stat">
               <small>Service</small>
-              <strong>{activeTph > 0 ? `${activeTph.toFixed(1)} TPH` : "Not Running"}</strong>
+              <strong>{serviceStatusText}</strong>
             </div>
             <div className="inspector-stat">
               <small>Capacity / Hour</small>
@@ -510,23 +731,23 @@ export default function LineInspectorSheet(props: {
               <strong>{formatSeconds(activeWaitS)}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Boarding Attempts</small>
+              <small>Boarding Attempts - {passengerProvenanceLabel}</small>
               <strong>{live ? Math.round(live.boardings_attempted).toLocaleString() : "-"}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Boarded</small>
+              <small>Boarded - {passengerProvenanceLabel}</small>
               <strong>{live ? Math.round(live.boardings_served).toLocaleString() : "-"}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Denied</small>
+              <small>Denied - {passengerProvenanceLabel}</small>
               <strong>{live ? Math.round(live.denied_boardings).toLocaleString() : "-"}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Alighted</small>
+              <small>Alighted - {passengerProvenanceLabel}</small>
               <strong>{live ? Math.round(live.alightings_served).toLocaleString() : "-"}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Queue End</small>
+              <small>Queue End - {passengerProvenanceLabel}</small>
               <strong>{live ? Math.round(live.queue_end).toLocaleString() : "-"}</strong>
             </div>
           </div>
@@ -538,6 +759,6 @@ export default function LineInspectorSheet(props: {
           ) : null}
         </section>
       ) : null}
-    </aside>
+    </InspectorPanel>
   );
 }

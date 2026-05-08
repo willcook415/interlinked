@@ -36,6 +36,13 @@ pub struct RunConfig {
     /// Number of fast steps between forced strategic refreshes.
     #[serde(default = "default_strategic_refresh_interval_steps")]
     pub strategic_refresh_interval_steps: u32,
+    /// Simple deterministic fare context owned by engine runtime config.
+    ///
+    /// This is not a full fare policy engine. Desktop/scenario code materializes
+    /// the current fare-per-completed-trip assumptions into this context, and the
+    /// fast kernel uses it only when a simulation-owned onboard cohort completes.
+    #[serde(default)]
+    pub fare_policy_context: EngineFarePolicyContext,
 }
 
 impl Default for RunConfig {
@@ -55,6 +62,7 @@ impl Default for RunConfig {
             lightweight_outputs: false,
             enable_kernel_partitioning: default_enable_kernel_partitioning(),
             strategic_refresh_interval_steps: default_strategic_refresh_interval_steps(),
+            fare_policy_context: EngineFarePolicyContext::default(),
         }
     }
 }
@@ -67,12 +75,68 @@ fn default_strategic_refresh_interval_steps() -> u32 {
     8
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct EngineFarePolicyContext {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub source_label: String,
+    #[serde(default)]
+    pub fare_by_service_id: HashMap<String, f64>,
+}
+
+impl EngineFarePolicyContext {
+    pub fn from_service_fares(
+        enabled: bool,
+        source_label: impl Into<String>,
+        fare_by_service_id: HashMap<String, f64>,
+    ) -> Self {
+        let fare_by_service_id = if enabled {
+            fare_by_service_id
+                .into_iter()
+                .filter_map(|(service_id, fare)| {
+                    if service_id.is_empty() || !fare.is_finite() || fare <= 0.0 {
+                        None
+                    } else {
+                        Some((service_id, fare))
+                    }
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
+        Self {
+            enabled,
+            source_label: source_label.into(),
+            fare_by_service_id,
+        }
+    }
+
+    pub fn fare_for_service(&self, service_id: &str) -> Option<f64> {
+        if !self.enabled {
+            return None;
+        }
+        self.fare_by_service_id
+            .get(service_id)
+            .copied()
+            .filter(|fare| fare.is_finite() && *fare > 0.0)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimState {
     pub t_s: f64,
     pub queue: HashMap<(String, String), f64>,
     #[serde(default)]
     pub queue_cohorts: HashMap<(String, String, String), f64>,
+    /// Aggregate onboard lifecycle state owned by the simulation kernel.
+    ///
+    /// Keys are (service_id, origin_stop_id, destination_stop_id). This is not
+    /// an individual passenger model; it preserves enough destination-aware
+    /// mass to conserve queue -> board -> onboard -> alight in fast stepping.
+    #[serde(default)]
+    pub onboard_cohorts: HashMap<(String, String, String), f64>,
     pub time_to_next_departure_s: HashMap<(String, String), f64>,
 
     /// Additional OD demand (trips) to inject for the *next* simulation period.
@@ -91,6 +155,7 @@ impl SimState {
             t_s: 0.0,
             queue: HashMap::new(),
             queue_cohorts: HashMap::new(),
+            onboard_cohorts: HashMap::new(),
             time_to_next_departure_s: HashMap::new(),
             pending_od_trips: HashMap::new(),
         }
@@ -226,6 +291,7 @@ pub fn run_planning_stateful(
         );
     }
     st.queue_cohorts.clear();
+    st.onboard_cohorts.clear();
     for cohort in &out.passenger_cohorts {
         let queue_end = cohort.queue_end_pax.max(0.0);
         if queue_end <= 0.0 {
@@ -361,6 +427,7 @@ pub fn step_simulation(
         );
     }
     next.queue_cohorts.clear();
+    next.onboard_cohorts.clear();
     for cohort in &out.passenger_cohorts {
         let queue_end = cohort.queue_end_pax.max(0.0);
         if queue_end <= 0.0 {
@@ -440,4 +507,44 @@ fn stateful_time_slice_for_clock(clock_s: f64) -> DemandTimeSliceLabel {
         return DemandTimeSliceLabel::Evening;
     }
     DemandTimeSliceLabel::LateNight
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_config_carries_engine_fare_policy_context() {
+        let mut fare_by_service_id = HashMap::new();
+        fare_by_service_id.insert("svc:a".to_string(), 2.75);
+        let context = EngineFarePolicyContext::from_service_fares(
+            true,
+            "test_engine_fares",
+            fare_by_service_id,
+        );
+        let cfg = RunConfig {
+            fare_policy_context: context,
+            ..RunConfig::default()
+        };
+
+        assert_eq!(
+            cfg.fare_policy_context.fare_for_service("svc:a"),
+            Some(2.75)
+        );
+        assert_eq!(
+            cfg.fare_policy_context.fare_for_service("svc:missing"),
+            None
+        );
+    }
+
+    #[test]
+    fn disabled_engine_fare_policy_context_has_no_fares() {
+        let context = EngineFarePolicyContext::from_service_fares(
+            false,
+            "test_engine_fares",
+            HashMap::from([("svc:a".to_string(), 2.75)]),
+        );
+
+        assert_eq!(context.fare_for_service("svc:a"), None);
+    }
 }

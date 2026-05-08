@@ -1495,7 +1495,12 @@ fn build_gb_map_artifacts(
     country_boundaries_geojson: &str,
     out_dir: &Path,
 ) -> Result<(), String> {
-    build_country_map_artifacts(CANONICAL_UK_ISO2, pbf_path, country_boundaries_geojson, out_dir)
+    build_country_map_artifacts(
+        CANONICAL_UK_ISO2,
+        pbf_path,
+        country_boundaries_geojson,
+        out_dir,
+    )
 }
 
 fn run_build_country_map_assets(
@@ -1690,7 +1695,12 @@ fn main() -> Result<(), String> {
             pbf,
             country_boundaries_geojson,
             out_dir,
-        } => run_build_country_map_assets(CANONICAL_UK_ISO2, &pbf, &country_boundaries_geojson, &out_dir),
+        } => run_build_country_map_assets(
+            CANONICAL_UK_ISO2,
+            &pbf,
+            &country_boundaries_geojson,
+            &out_dir,
+        ),
         Commands::ValidateCountryPack { pack_dir } => run_validate_country_pack(&pack_dir),
     }
 }
@@ -2789,11 +2799,11 @@ fn run_validate_country_pack(pack_dir: &str) -> Result<(), String> {
         return Err("manifest.country_iso2 must be two-letter ISO code".to_string());
     };
     if manifest.region_provider_model.trim().is_empty()
-        || !manifest.region_provider_model.starts_with("planning_surface_")
+        || !manifest
+            .region_provider_model
+            .starts_with("planning_surface_")
     {
-        return Err(
-            "manifest.region_provider_model must start with planning_surface_".to_string(),
-        );
+        return Err("manifest.region_provider_model must start with planning_surface_".to_string());
     }
     let surface_path = root.join(&manifest.surface_file);
     if !surface_path.exists() {
@@ -2903,6 +2913,7 @@ fn run_apply_demand_fabric(
             centrality_score: c.centrality_score.max(0.0),
             data_quality_score: c.data_quality_score.clamp(0.0, 1.0),
             country_iso2: c.country_iso2.clone(),
+            allocation_diagnostics: None,
         })
         .collect();
     let zones: Vec<Zone> = demand_cells

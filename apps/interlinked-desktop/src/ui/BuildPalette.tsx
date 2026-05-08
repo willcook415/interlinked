@@ -1,6 +1,9 @@
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import type { CurrencyCode, ModeBuildPreset, NetworkMutationSummary } from "../types";
 import type { BuildAction } from "../build/types";
+import type { DraftImpact } from "../build/types";
+import { canonicalModeClass, type ModeClass } from "../modes";
+import { buildPerfEvent, buildPerfMeasure } from "../perf/buildPerf";
 
 type LineRow = {
   lineId: string;
@@ -10,30 +13,20 @@ type LineRow = {
   displayColor?: string | null;
 };
 
-function formatMoney(value: number | null | undefined, currency: CurrencyCode): string {
-  if (value === null || value === undefined) return "-";
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
+type TransportOption = {
+  modeClass: Exclude<ModeClass, "rail" | "unknown">;
+  label: string;
+  icon: "train" | "bus" | "ferry";
+};
 
-function modeMatchesPreset(line: LineRow, preset: ModeBuildPreset | null): boolean {
-  if (!preset) return false;
-  const sameMode = line.mode === preset.engine_mode;
-  const lineVariant = line.modeVariant ?? null;
-  const presetVariant = preset.mode_variant ?? null;
-  if (!sameMode) return false;
-  if (presetVariant === null) return true;
-  return lineVariant === presetVariant;
-}
-
-function modeIconKind(presetId: string): "train" | "bus" | "ferry" {
-  if (presetId === "bus") return "bus";
-  if (presetId === "ferry") return "ferry";
-  return "train";
-}
+const TRANSPORT_OPTIONS: TransportOption[] = [
+  { modeClass: "metro", label: "Metro", icon: "train" },
+  { modeClass: "tram", label: "Tram", icon: "train" },
+  { modeClass: "bus", label: "Bus", icon: "bus" },
+  { modeClass: "ferry", label: "Ferry", icon: "ferry" },
+  { modeClass: "commuter_rail", label: "Commuter Rail", icon: "train" },
+  { modeClass: "high_speed_rail", label: "High Speed Rail", icon: "train" },
+];
 
 function ModeIcon(props: { kind: "train" | "bus" | "ferry" }) {
   if (props.kind === "bus") {
@@ -72,335 +65,296 @@ export default function BuildPalette(props: {
   lines: LineRow[];
   transportPresetId: string;
   buildAction: BuildAction;
-  hasSelectedLine?: boolean;
-  hasSelectedStop?: boolean;
   selectedLineId?: string | null;
-  selectedLineName?: string | null;
-  selectedStopName?: string | null;
-  selectedLineConstructionCostBase?: number | null;
-  mutationPreview: NetworkMutationSummary | null;
+  budgetCurrency: CurrencyCode;
+  mutationPreview?: NetworkMutationSummary | null;
+  estimatedCapexBase?: number | null;
+  draftImpact?: DraftImpact | null;
+  stationCapexBase?: number | null;
   isDirty: boolean;
   builderBusy: boolean;
   builderError?: string | null;
-  budgetCurrency: CurrencyCode;
-  stationCostBase?: number | null;
-  lineCostPerKmBase?: number | null;
-  extensionAddedStations?: number;
-  extensionAddedLengthM?: number;
-  extensionConstructionCostBase?: number | null;
   activeLineStopCount?: number;
-  canUndoDraftPlacement?: boolean;
   onExitBuildMode: () => void;
   onSelectBuildAction: (action: BuildAction) => void;
-  onArmLineExtension?: () => void;
   onTransportPresetChange: (presetId: string) => void;
   onSelectLine: (lineId: string) => void;
   onApplyDraft: () => void;
-  onFinishLine: () => void;
-  onUndoLinePlacement?: () => void;
 }) {
-  const selectedPreset =
-    props.presets.find((preset) => preset.id === props.transportPresetId) ?? props.presets[0] ?? null;
-  const accent = selectedPreset?.default_color ?? "#104894";
-  const summary = props.mutationPreview;
+  const formatMoney = (value: number | null | undefined): string => {
+    if (value === null || value === undefined) return "-";
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: props.budgetCurrency,
+      maximumFractionDigits: 0,
+    }).format(value);
+  };
+
+  const presetByModeClass = useMemo(() => {
+    return buildPerfMeasure(
+      "build.ui.derive.transport_mode_map",
+      () => {
+        const map = new Map<TransportOption["modeClass"], ModeBuildPreset>();
+        for (const preset of props.presets) {
+          const modeClass = canonicalModeClass(preset.engine_mode, preset.mode_variant ?? null);
+          if (
+            modeClass === "metro" ||
+            modeClass === "tram" ||
+            modeClass === "bus" ||
+            modeClass === "ferry" ||
+            modeClass === "commuter_rail" ||
+            modeClass === "high_speed_rail"
+          ) {
+            if (!map.has(modeClass)) map.set(modeClass, preset);
+          }
+        }
+        return map;
+      },
+      { presetCount: props.presets.length },
+      { minDurationMs: 1, throttleMs: 200 }
+    );
+  }, [props.presets]);
+
+  const metroPreset = presetByModeClass.get("metro") ?? props.presets[0] ?? null;
+  const accent = metroPreset?.default_color ?? "#104894";
   const lineActive = (props.activeLineStopCount ?? 0) > 0;
-  const stationCostBase = Math.max(props.stationCostBase ?? 0, 0);
-  const perKmLineCostBase = Math.max(props.lineCostPerKmBase ?? selectedPreset?.capex_per_km_base ?? 0, 0);
-  const extensionAddedStations = Math.max(props.extensionAddedStations ?? 0, 0);
-  const activeLineLengthKm = Math.max(props.extensionAddedLengthM ?? 0, 0) / 1000;
-  const stationComponentCostBase = stationCostBase * extensionAddedStations;
-  const trackComponentCostBase = activeLineLengthKm * perKmLineCostBase;
-  const extensionEstimateBase = props.extensionConstructionCostBase ?? stationComponentCostBase + trackComponentCostBase;
-  const filteredLines = useMemo(
-    () => props.lines.filter((line) => modeMatchesPreset(line, selectedPreset)),
-    [props.lines, selectedPreset]
+  const draftToolActive =
+    props.buildAction === "start_line" || props.buildAction === "add_station_to_line";
+  const draftInProgress = draftToolActive || lineActive;
+  const showCostSummary = draftInProgress || props.isDirty;
+  const draftStateLabel =
+    props.buildAction === "start_line" ? "New Metro Line" : "Editing Metro Line";
+  const pendingStateLabel = draftInProgress ? draftStateLabel : "Pending Build Changes";
+  const summary = props.mutationPreview ?? null;
+  const addedStations = Math.max(props.draftImpact?.addedStations ?? 0, 0);
+  const stationUnitCostBase =
+    typeof props.stationCapexBase === "number" && Number.isFinite(props.stationCapexBase)
+      ? Math.max(props.stationCapexBase, 0)
+      : null;
+  const stationSubtotalBase =
+    stationUnitCostBase !== null ? Math.max(addedStations, 0) * stationUnitCostBase : null;
+  const constructionCostBase =
+    summary?.construction_cost_delta_base ?? props.estimatedCapexBase ?? null;
+  const infrastructureResidualBase =
+    constructionCostBase !== null && stationSubtotalBase !== null
+      ? Math.max(constructionCostBase - stationSubtotalBase, 0)
+      : null;
+  const fleetPurchaseBase = summary?.fleet_purchase_delta_base ?? null;
+  const fleetConfigurationBase = summary?.fleet_configuration_delta_base ?? null;
+  const capitalCostBase =
+    summary
+      ? (summary.construction_cost_delta_base ?? 0) +
+        (summary.fleet_purchase_delta_base ?? 0) +
+        (summary.fleet_configuration_delta_base ?? 0)
+      : props.estimatedCapexBase ?? null;
+  const operatingCostPerHourBase = summary?.projected_opex_per_hour_base ?? null;
+  const commitTotalBase = summary?.apply_total_delta_base ?? capitalCostBase;
+
+  useEffect(() => {
+    if (!metroPreset) return;
+    if (props.transportPresetId !== metroPreset.id) {
+      props.onTransportPresetChange(metroPreset.id);
+    }
+  }, [metroPreset, props.onTransportPresetChange, props.transportPresetId]);
+
+  const metroLines = useMemo(
+    () =>
+      buildPerfMeasure(
+        "build.ui.derive.metro_lines",
+        () =>
+          props.lines.filter(
+            (line) => canonicalModeClass(line.mode, line.modeVariant ?? null) === "metro"
+          ),
+        { lineCount: props.lines.length },
+        { minDurationMs: 1, throttleMs: 200 }
+      ),
+    [props.lines]
   );
-  const selectedLineLabel = props.selectedLineName?.trim()
-    ? props.selectedLineName
-    : props.hasSelectedLine
-      ? "Selected Line"
-      : "New Line";
-  const selectedLineCostBase =
-    props.selectedLineConstructionCostBase ?? summary?.construction_cost_delta_base ?? null;
-  const showExtensionCost = props.buildAction === "add_station_to_line";
-  const oneTimeConstruction = summary?.construction_cost_delta_base ?? 0;
-  const oneTimeFleetPurchase = summary?.fleet_purchase_delta_base ?? 0;
-  const oneTimeFleetConfig = summary?.fleet_configuration_delta_base ?? 0;
-  const oneTimeTotal = summary?.apply_total_delta_base ?? 0;
-  const recurringOpex = summary?.projected_opex_per_hour_base ?? 0;
-  const recurringStaff = summary?.projected_staff_opex_per_hour_base ?? 0;
-  const showFleetPurchaseCard = Number.isFinite(oneTimeFleetPurchase) && Math.abs(oneTimeFleetPurchase) > 1;
-  const showFleetConfigCard = Number.isFinite(oneTimeFleetConfig) && Math.abs(oneTimeFleetConfig) > 1;
-  const showRecurringStaffCard = Number.isFinite(recurringStaff) && Math.abs(recurringStaff) > 1;
-  const activeToolLabel = useMemo(() => {
-    if (props.buildAction === "start_line") return `New ${selectedPreset?.label ?? "Line"}`;
-    if (props.buildAction === "add_station_to_line") return "Extend Selected Line";
-    if (props.buildAction === "place_station") return `New ${selectedPreset?.label ?? "Station"}`;
-    if (props.buildAction === "delete") return "Remove Draft Stops";
-    return "Inspect Existing Objects";
-  }, [props.buildAction, selectedPreset?.label]);
-  const selectedObjectLabel = useMemo(() => {
-    if (props.hasSelectedLine) {
-      if (props.selectedLineName?.trim()) return `Line: ${props.selectedLineName}`;
-      return "Line: Untitled Line";
+
+  const ensureMetroPresetSelected = () => {
+    if (!metroPreset) return;
+    if (props.transportPresetId !== metroPreset.id) {
+      props.onTransportPresetChange(metroPreset.id);
     }
-    if (props.hasSelectedStop) {
-      if (props.selectedStopName?.trim()) return `Station: ${props.selectedStopName}`;
-      return "Station selected";
-    }
-    return "No object selected";
-  }, [props.hasSelectedLine, props.hasSelectedStop, props.selectedLineName, props.selectedStopName]);
-  const toolHint = useMemo(() => {
-    if (props.buildAction === "start_line") {
-      if (lineActive) return "Click map or stations to add stops. Finish when the route is complete.";
-      return "Click the map to place the first stop and begin a new line.";
-    }
-    if (props.buildAction === "add_station_to_line") {
-      if (lineActive) return "Select a terminus then click map or stations to continue the extension.";
-      if (!props.hasSelectedLine) return "Select a line on the map first, then extend from a terminus.";
-      return "Click a terminus station to lock extension, then keep adding stops.";
-    }
-    if (props.buildAction === "place_station") {
-      return "Click the map to place a standalone station.";
-    }
-    if (props.buildAction === "delete") {
-      if (!lineActive) return "Start or extend a line to remove draft stations.";
-      return "Click a station in the current draft route to remove it.";
-    }
-    return "Click any line or station on the map to inspect and edit it.";
-  }, [lineActive, props.buildAction, props.hasSelectedLine]);
-  const canExtendSelected = props.hasSelectedLine || lineActive;
-  const canUseDeleteTool = lineActive;
+  };
 
   return (
-    <section className="build-workspace" style={{ "--build-accent": accent } as CSSProperties}>
+    <section
+      className={`build-workspace ${draftInProgress ? "is-draft-active" : "is-idle"}`}
+      style={{ "--build-accent": accent } as CSSProperties}
+    >
       <div className="build-workspace-head">
         <p>Build Workspace</p>
-        <strong>{selectedPreset ? `${selectedPreset.label} Tools` : "Build Tools"}</strong>
-        <span>{activeToolLabel}</span>
+        <strong>Metro Tools</strong>
+        <span>{showCostSummary ? pendingStateLabel : "Idle Build Workspace"}</span>
       </div>
 
       <div className="build-workspace-scroll">
         <div className="build-stage-card build-tool-section">
           <div className="build-stage-header">
-            <h4>Transport Mode</h4>
+            <h4>Transport Modes</h4>
           </div>
-          <div className="build-mode-grid">
-            {props.presets.map((preset) => (
+          <div className="build-mode-strip" role="list" aria-label="Transport modes">
+            {TRANSPORT_OPTIONS.map((option) => {
+              const preset = presetByModeClass.get(option.modeClass);
+              const enabled = option.modeClass === "metro" && Boolean(preset);
+              const isActive = option.modeClass === "metro";
+              return (
+                <button
+                  key={option.modeClass}
+                  className={`build-mode-tile build-mode-strip-tile ${isActive ? "active" : ""} ${
+                    enabled ? "" : "disabled"
+                  }`}
+                  disabled={!enabled}
+                  onClick={() => {
+                    if (!preset) return;
+                    buildPerfEvent("build.ui.transport_mode_click", {
+                      modeClass: option.modeClass,
+                      enabled,
+                    });
+                    props.onTransportPresetChange(preset.id);
+                    props.onSelectBuildAction("select");
+                  }}
+                >
+                  <span className="build-mode-icon">
+                    <ModeIcon kind={option.icon} />
+                  </span>
+                  <span className="build-mode-copy">
+                    <strong>{option.label}</strong>
+                    {!enabled ? <small>Later</small> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {!showCostSummary ? (
+          <div className="build-stage-card build-tool-section">
+            <div className="build-stage-header">
+              <h4>Metro Actions</h4>
+            </div>
+            <div className="build-action-stack build-action-stack-idle">
               <button
-                key={preset.id}
-                className={`build-mode-tile ${preset.id === props.transportPresetId ? "active" : ""}`}
+                className={props.buildAction === "start_line" ? "active" : ""}
                 onClick={() => {
-                  props.onTransportPresetChange(preset.id);
-                  props.onSelectBuildAction("select");
+                  buildPerfEvent("build.ui.new_metro_line_click");
+                  ensureMetroPresetSelected();
+                  props.onSelectBuildAction("start_line");
                 }}
               >
-                <span className="build-mode-icon">
-                  <ModeIcon kind={modeIconKind(preset.id)} />
+                New Metro Line
+              </button>
+              <button
+                className={props.buildAction === "place_station" ? "active" : ""}
+                onClick={() => {
+                  buildPerfEvent("build.ui.new_station_click");
+                  ensureMetroPresetSelected();
+                  props.onSelectBuildAction("place_station");
+                }}
+              >
+                New Station
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="build-stage-card build-tool-section">
+            <div className="build-stage-header">
+              <h4>Cost Summary</h4>
+              <span className="build-status-pill">{pendingStateLabel}</span>
+            </div>
+            <div className="build-cost-receipt">
+              <div className="build-cost-line">
+                <span>
+                  Stations
+                  {stationUnitCostBase !== null
+                    ? ` (${addedStations} × ${formatMoney(stationUnitCostBase)})`
+                    : ` (${addedStations})`}
                 </span>
-                <span>{preset.label}</span>
-              </button>
-            ))}
+                <strong>{formatMoney(stationSubtotalBase)}</strong>
+              </div>
+              <div className="build-cost-line">
+                <span>Infrastructure + Track</span>
+                <strong>{formatMoney(infrastructureResidualBase)}</strong>
+              </div>
+              <div className="build-cost-line">
+                <span>Fleet Purchase</span>
+                <strong>{formatMoney(fleetPurchaseBase)}</strong>
+              </div>
+              <div className="build-cost-line">
+                <span>Fleet Configuration</span>
+                <strong>{formatMoney(fleetConfigurationBase)}</strong>
+              </div>
+              <div className="build-cost-divider" />
+              <div className="build-cost-line is-total">
+                <span>Capital Cost</span>
+                <strong>{formatMoney(capitalCostBase)}</strong>
+              </div>
+              <div className="build-cost-line is-recurring">
+                <span>Operating Cost / hr</span>
+                <strong>{formatMoney(operatingCostPerHourBase)}</strong>
+              </div>
+              <div className="build-cost-line is-commit">
+                <span>Commit Total</span>
+                <strong>{formatMoney(commitTotalBase)}</strong>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="build-stage-card build-tool-section">
           <div className="build-stage-header">
-            <h4>Tools</h4>
-          </div>
-          <div className="build-action-stack">
-            <button
-              className={props.buildAction === "select" ? "active" : ""}
-              onClick={() => props.onSelectBuildAction("select")}
-            >
-              Edit Existing
-            </button>
-            <button
-              className={props.buildAction === "start_line" ? "active" : ""}
-              onClick={() => props.onSelectBuildAction("start_line")}
-            >
-              New Line
-            </button>
-            <button
-              className={props.buildAction === "place_station" ? "active" : ""}
-              onClick={() => props.onSelectBuildAction("place_station")}
-            >
-              New Station
-            </button>
-            <button
-              className={props.buildAction === "add_station_to_line" ? "active" : ""}
-              disabled={!canExtendSelected}
-              onClick={() => {
-                if (props.onArmLineExtension && props.hasSelectedLine && !lineActive) {
-                  props.onArmLineExtension();
-                  return;
-                }
-                props.onSelectBuildAction("add_station_to_line");
-              }}
-            >
-              Extend Selected
-            </button>
-            <button
-              className={props.buildAction === "delete" ? "active" : ""}
-              disabled={!canUseDeleteTool}
-              onClick={() =>
-                props.onSelectBuildAction(
-                  props.buildAction === "delete"
-                    ? props.hasSelectedLine
-                      ? "add_station_to_line"
-                      : "start_line"
-                    : "delete"
-                )
-              }
-            >
-              {props.buildAction === "delete" ? "Done Removing" : "Remove Draft Stop"}
-            </button>
-          </div>
-        </div>
-
-        <div className="build-stage-card build-tool-section">
-          <div className="build-stage-header">
-            <h4>Context</h4>
-          </div>
-          <div className="build-line-focus">
-            <strong>{selectedObjectLabel}</strong>
-            <span>{toolHint}</span>
-          </div>
-          {(props.buildAction === "add_station_to_line" || props.buildAction === "start_line") ? (
-            <div className={`line-draw-status ${lineActive ? "is-active" : ""}`}>
-              <span className="line-draw-dot" />
-              {lineActive
-                ? `Draft route has ${props.activeLineStopCount} station${props.activeLineStopCount === 1 ? "" : "s"}`
-                : "No draft route yet"}
-            </div>
-          ) : null}
-          {lineActive ? (
-            <div className="build-line-actions">
-              <button className="build-finish-button" onClick={props.onFinishLine}>
-                Finish Route ({props.activeLineStopCount} stops)
-              </button>
-              <button onClick={() => props.onUndoLinePlacement?.()} disabled={!props.canUndoDraftPlacement}>
-                Undo Last
-              </button>
-              <button onClick={() => props.onSelectBuildAction("select")}>Cancel Tool</button>
-            </div>
-          ) : (
-            <div className="build-line-actions build-line-actions-single">
-              <button onClick={() => props.onSelectBuildAction("select")}>Cancel Tool</button>
-            </div>
-          )}
-        </div>
-
-        <div className="build-stage-card build-tool-section">
-          <div className="build-stage-header">
-            <h4>{selectedPreset?.label ?? "Selected"} Lines</h4>
+            <h4>Metro Lines</h4>
           </div>
           <div className="build-line-list">
-            {filteredLines.length === 0 ? (
-              <p className="hint-line">No {selectedPreset?.label ?? "selected"} lines yet.</p>
+            {metroLines.length === 0 ? (
+              <p className="hint-line">No metro lines yet.</p>
             ) : (
-              filteredLines.map((line) => (
+              metroLines.map((line) => (
                 <button
                   key={line.lineId}
-                  className={`build-line-row ${props.selectedLineId === line.lineId ? "active" : ""}`}
+                  className={`build-line-row ${
+                    props.selectedLineId === line.lineId ? "active" : ""
+                  }`}
                   onClick={() => {
+                    buildPerfEvent("build.ui.select_line_from_list_click", {
+                      lineId: line.lineId,
+                    });
                     props.onSelectLine(line.lineId);
                     props.onSelectBuildAction("select");
                   }}
                 >
-                  <span className="build-line-chip" style={{ backgroundColor: line.displayColor ?? accent }} />
+                  <span
+                    className="build-line-chip"
+                    style={{ backgroundColor: line.displayColor ?? accent }}
+                  />
                   <span>{line.name.trim() ? line.name : "Untitled Line"}</span>
                 </button>
               ))
             )}
           </div>
         </div>
-
-        <div className="build-stage-card build-tool-section">
-          <div className="build-stage-header">
-            <h4>Draft Impact</h4>
-          </div>
-          <div className="build-line-focus">
-            <strong>{selectedLineLabel}</strong>
-            <span>Construction value: {formatMoney(selectedLineCostBase, props.budgetCurrency)}</span>
-          </div>
-          {summary ? (
-            <div className="build-draft-grid">
-              <div>
-                <small>One-Time Construction</small>
-                <strong>{formatMoney(oneTimeConstruction, props.budgetCurrency)}</strong>
-              </div>
-              {showFleetPurchaseCard ? (
-                <div>
-                  <small>One-Time Fleet Purchase</small>
-                  <strong>{formatMoney(oneTimeFleetPurchase, props.budgetCurrency)}</strong>
-                </div>
-              ) : null}
-              {showFleetConfigCard ? (
-                <div>
-                  <small>One-Time Fleet Config</small>
-                  <strong>{formatMoney(oneTimeFleetConfig, props.budgetCurrency)}</strong>
-                </div>
-              ) : null}
-              <div>
-                <small>Apply Total</small>
-                <strong>{formatMoney(oneTimeTotal, props.budgetCurrency)}</strong>
-              </div>
-              <div>
-                <small>Recurring Opex / hr</small>
-                <strong>{formatMoney(recurringOpex, props.budgetCurrency)}</strong>
-              </div>
-              {showRecurringStaffCard ? (
-                <div>
-                  <small>Staff Cost / hr</small>
-                  <strong>{formatMoney(recurringStaff, props.budgetCurrency)}</strong>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="hint-line">Start editing on the map to generate a live draft impact preview.</p>
-          )}
-          {selectedPreset?.id === "bus" ? (
-            <p className="hint-line">
-              Bus routes use road network infrastructure, so per-km construction is set to zero. Costs come from stops,
-              fleet, and operations.
-            </p>
-          ) : null}
-          {showExtensionCost ? (
-            <>
-              <div className="build-draft-grid">
-                <div>
-                  <small>New Stations</small>
-                  <strong>{extensionAddedStations}</strong>
-                </div>
-                <div>
-                  <small>Added Track</small>
-                  <strong>{activeLineLengthKm.toFixed(2)} km</strong>
-                </div>
-                <div>
-                  <small>Station Build Cost</small>
-                  <strong>{formatMoney(stationComponentCostBase, props.budgetCurrency)}</strong>
-                </div>
-                <div>
-                  <small>Track Build Cost</small>
-                  <strong>{formatMoney(trackComponentCostBase, props.budgetCurrency)}</strong>
-                </div>
-              </div>
-              <div className="build-line-focus">
-                <strong>Estimated Extension Cost: {formatMoney(extensionEstimateBase, props.budgetCurrency)}</strong>
-                <span>
-                  {formatMoney(stationCostBase, props.budgetCurrency)} x {extensionAddedStations} stations +{" "}
-                  {formatMoney(perKmLineCostBase, props.budgetCurrency)} x {activeLineLengthKm.toFixed(2)} km
-                </span>
-              </div>
-            </>
-          ) : null}
-        </div>
       </div>
 
       <div className="build-workspace-footer">
-        <button onClick={props.onExitBuildMode}>Exit Build Mode</button>
-        <button disabled={!props.isDirty || props.builderBusy} onClick={props.onApplyDraft}>
+        <button
+          onClick={() => {
+            buildPerfEvent("build.ui.exit_build_mode_click");
+            props.onExitBuildMode();
+          }}
+        >
+          Exit Build Mode
+        </button>
+        <button
+          disabled={!props.isDirty || props.builderBusy}
+          onClick={() => {
+            buildPerfEvent("build.ui.apply_changes_click", {
+              isDirty: props.isDirty,
+              builderBusy: props.builderBusy,
+            });
+            props.onApplyDraft();
+          }}
+        >
           {props.builderBusy ? "Applying..." : "Apply Changes"}
         </button>
       </div>

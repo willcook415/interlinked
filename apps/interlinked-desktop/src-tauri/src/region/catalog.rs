@@ -1,4 +1,16 @@
 use crate::*;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+const UK_LAND_BACKFILL_SOURCE_CODE: &str = "uk_land_backfill_res6";
+const UK_LAND_BACKFILL_NI_SOURCE_CODE: &str = "uk_land_backfill_res6_ni";
+
+fn perf_log(label: &str, started: Instant) {
+    eprintln!("[perf] {label}: {}ms", started.elapsed().as_millis());
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SurfaceRegionInfo {
@@ -31,6 +43,10 @@ pub(crate) struct SurfaceRegionInfo {
     pub(crate) activity_mix_health: f64,
     pub(crate) adjacent_region_ids: Vec<String>,
     pub(crate) geometry: Option<JsonValue>,
+    pub(crate) canonical_hex_number: Option<usize>,
+    /// Parallel array to `geometry` polygons. If `geometry` is a MultiPolygon,
+    /// this array contains the canonical hex number for each polygon in order.
+    pub(crate) constituent_hex_numbers: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +89,19 @@ fn build_substrate_region_catalog(
         .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
     let uk_backfill_ids = surface
         .source_provenance
-        .get("uk_land_backfill_res6")
+        .get(UK_LAND_BACKFILL_SOURCE_CODE)
+        .and_then(|value| value.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|value| value.as_str())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let uk_backfill_ids_ni = surface
+        .source_provenance
+        .get(UK_LAND_BACKFILL_NI_SOURCE_CODE)
         .and_then(|value| value.as_array())
         .map(|rows| {
             rows.iter()
@@ -88,7 +116,13 @@ fn build_substrate_region_catalog(
         .iter()
         .map(|c| {
             let cell_token = c.cell_id.to_ascii_lowercase();
-            let is_backfilled = uk_backfill_ids.contains(&cell_token);
+            let source_code = if uk_backfill_ids_ni.contains(&cell_token) {
+                Some(UK_LAND_BACKFILL_NI_SOURCE_CODE.to_string())
+            } else if uk_backfill_ids.contains(&cell_token) {
+                Some(UK_LAND_BACKFILL_SOURCE_CODE.to_string())
+            } else {
+                None
+            };
             SurfaceRegionInfo {
                 region_id: region_id_from_res6(&iso, &c.cell_id),
                 country_iso2: iso.clone(),
@@ -98,7 +132,7 @@ fn build_substrate_region_catalog(
                 name: format!("{} {}", iso, &c.cell_id),
                 admin_level: "planning_r6".to_string(),
                 nation: None,
-                source_code: is_backfilled.then(|| "uk_land_backfill_res6".to_string()),
+                source_code,
                 adjacency_source: "planning_res6_h3_disk_k1".to_string(),
                 geometry_source: "planning_surface_res6".to_string(),
                 cell_id: c.cell_id.clone(),
@@ -116,6 +150,8 @@ fn build_substrate_region_catalog(
                 activity_mix_health: c.activity_mix_health,
                 adjacent_region_ids: vec![],
                 geometry: None,
+                canonical_hex_number: None,
+                constituent_hex_numbers: vec![],
             }
         })
         .collect::<Vec<_>>();
@@ -200,6 +236,16 @@ fn build_substrate_region_catalog(
                 .entry(region_id)
                 .or_default()
                 .push(cell.clone());
+        }
+    }
+
+    // Stamp each substrate region with its canonical hex number so the
+    // numbering is authoritative and travels with the region through the
+    // entire pipeline (manual region construction, merge, frontend).
+    {
+        let lookup = build_substrate_hex_number_lookup_from_regions(&regions);
+        for region in &mut regions {
+            region.canonical_hex_number = lookup.get(&region.region_id).copied();
         }
     }
 
@@ -487,6 +533,17 @@ fn manual_region_definition_paths_for_iso(country_iso2: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+fn manual_region_candidate_paths_with_app(app: &AppHandle, iso: &str) -> Vec<PathBuf> {
+    let mut candidate_paths = Vec::<PathBuf>::new();
+    if let Some(pack_dir) = crate::commands::content_library::country_pack_dir(app, iso) {
+        candidate_paths.push(pack_dir.join("manual_regions.json"));
+        candidate_paths.push(pack_dir.join("regions").join("manual_regions.json"));
+    }
+    candidate_paths.extend(manual_region_definition_paths_for_iso(iso));
+    candidate_paths.dedup();
+    candidate_paths
+}
+
 fn load_manual_region_definitions_for_country(
     app: &AppHandle,
     country_iso2: &str,
@@ -497,13 +554,7 @@ fn load_manual_region_definitions_for_country(
     let Some(iso) = canonical_country_iso2(country_iso2) else {
         return Ok(Vec::new());
     };
-    let mut candidate_paths = Vec::<PathBuf>::new();
-    if let Some(pack_dir) = crate::commands::content_library::country_pack_dir(app, &iso) {
-        candidate_paths.push(pack_dir.join("manual_regions.json"));
-        candidate_paths.push(pack_dir.join("regions").join("manual_regions.json"));
-    }
-    candidate_paths.extend(manual_region_definition_paths_for_iso(&iso));
-    candidate_paths.dedup();
+    let candidate_paths = manual_region_candidate_paths_with_app(app, &iso);
     for path in candidate_paths {
         if !path.exists() {
             continue;
@@ -521,6 +572,59 @@ fn load_manual_region_definitions_for_country(
         return Ok(normalize_manual_region_definitions(&iso, file));
     }
     Ok(Vec::new())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RegionCatalogMemoKey {
+    iso: String,
+    surface_path: String,
+    surface_fingerprint: u64,
+    manual_definitions_fingerprint: u64,
+}
+
+fn file_mtime_fingerprint(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match std::fs::metadata(path).and_then(|meta| meta.modified()) {
+        Ok(modified) => {
+            1_u8.hash(&mut hasher);
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(&mut hasher);
+                duration.subsec_nanos().hash(&mut hasher);
+            } else {
+                0_u64.hash(&mut hasher);
+                0_u32.hash(&mut hasher);
+            }
+        }
+        Err(_) => {
+            0_u8.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+fn manual_definition_fingerprint(app: &AppHandle, iso: &str) -> u64 {
+    // Fingerprint every candidate path in precedence order so managed-vs-repo
+    // source changes invalidate safely without altering runtime semantics.
+    let mut hasher = DefaultHasher::new();
+    for path in manual_region_candidate_paths_with_app(app, iso) {
+        path.to_string_lossy().hash(&mut hasher);
+        match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+            Ok(modified) => {
+                1_u8.hash(&mut hasher);
+                if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    duration.as_secs().hash(&mut hasher);
+                    duration.subsec_nanos().hash(&mut hasher);
+                } else {
+                    0_u64.hash(&mut hasher);
+                    0_u32.hash(&mut hasher);
+                }
+            }
+            Err(_) => {
+                0_u8.hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
 }
 
 fn substrate_group_key_for_region(region: &SurfaceRegionInfo) -> String {
@@ -688,15 +792,26 @@ fn h3_hex_ring_lonlat(cell: CellIndex) -> Option<Vec<Vec<f64>>> {
     Some(ring)
 }
 
-fn planning_region_geometry_from_cells(cells: &[CellIndex]) -> Option<JsonValue> {
-    let polygons = cells
-        .iter()
-        .filter_map(|cell| h3_hex_ring_lonlat(*cell).map(|ring| vec![ring]))
-        .collect::<Vec<_>>();
-    if polygons.is_empty() {
-        return None;
+fn planning_region_geometry_from_cells(
+    cells: &[(CellIndex, usize)],
+) -> (Option<JsonValue>, Vec<usize>) {
+    let mut polygons = Vec::new();
+    let mut canonical_numbers = Vec::new();
+
+    for (cell, canonical_number) in cells {
+        if let Some(ring) = h3_hex_ring_lonlat(*cell) {
+            polygons.push(vec![ring]);
+            canonical_numbers.push(*canonical_number);
+        }
     }
-    serde_json::to_value(GeoJsonGeometry::new(GeoJsonValue::MultiPolygon(polygons))).ok()
+
+    if polygons.is_empty() {
+        return (None, Vec::new());
+    }
+    (
+        serde_json::to_value(GeoJsonGeometry::new(GeoJsonValue::MultiPolygon(polygons))).ok(),
+        canonical_numbers,
+    )
 }
 
 fn compass_suffix(
@@ -859,7 +974,7 @@ fn synthesize_planning_region_catalog(
         let mut total_jobs = 0.0_f64;
         let mut total_area = 0.0_f64;
         let mut mix_sums = [0.0_f64; 7];
-        let mut member_cells = Vec::<CellIndex>::new();
+        let mut member_cells = Vec::<(CellIndex, usize)>::new();
 
         for member_id in member_ids {
             let Some(region) = substrate.by_id.get(member_id) else {
@@ -867,7 +982,8 @@ fn synthesize_planning_region_catalog(
             };
             if let Ok(cell) = region.cell_id.parse::<CellIndex>() {
                 if cell.resolution() == Resolution::Six {
-                    member_cells.push(cell);
+                    let canonical = region.canonical_hex_number.unwrap_or(0);
+                    member_cells.push((cell, canonical));
                 }
             }
             let weight = (region.residents_smooth + region.jobs_smooth).max(1.0);
@@ -895,6 +1011,9 @@ fn synthesize_planning_region_catalog(
             mix_sums[6] / weighted_total.max(1e-9),
         ]);
 
+        let (geometry, constituent_hex_numbers) =
+            planning_region_geometry_from_cells(&member_cells);
+
         regions.push(SurfaceRegionInfo {
             region_id,
             country_iso2: iso.clone(),
@@ -921,7 +1040,9 @@ fn synthesize_planning_region_catalog(
             activity_mix_education: normalized_mix[5],
             activity_mix_health: normalized_mix[6],
             adjacent_region_ids: Vec::new(),
-            geometry: planning_region_geometry_from_cells(&member_cells),
+            geometry,
+            canonical_hex_number: None,
+            constituent_hex_numbers,
         });
     }
 
@@ -1013,37 +1134,59 @@ fn synthesize_planning_region_catalog(
     }
 }
 
-fn build_substrate_hex_number_lookup(
-    substrate: &SurfaceRegionCatalog,
-) -> (HashMap<usize, String>, HashMap<String, usize>) {
+/// Core hex numbering logic factored into a helper that works on a slice of
+/// `SurfaceRegionInfo` directly.  This is used both for the public
+/// `build_substrate_hex_number_lookup` (catalog-level) and for stamping
+/// canonical numbers onto substrate regions at construction time.
+fn build_substrate_hex_number_lookup_from_regions(
+    regions: &[SurfaceRegionInfo],
+) -> HashMap<String, usize> {
     let mut primary_cells = Vec::<(String, String)>::new();
-    let mut backfill_cells = Vec::<(String, String)>::new();
-    for region in &substrate.regions {
-        let row = (region.cell_id.to_ascii_lowercase(), region.region_id.clone());
-        let is_backfill = region
+    let mut backfill_cells_legacy = Vec::<(String, String)>::new();
+    let mut backfill_cells_extension = Vec::<(String, String)>::new();
+    for region in regions {
+        let row = (
+            region.cell_id.to_ascii_lowercase(),
+            region.region_id.clone(),
+        );
+        let source_code = region
             .source_code
             .as_deref()
-            .map(|value| value.eq_ignore_ascii_case("uk_land_backfill_res6"))
-            .unwrap_or(false);
-        if is_backfill {
-            backfill_cells.push(row);
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if source_code == UK_LAND_BACKFILL_SOURCE_CODE {
+            backfill_cells_legacy.push(row);
+        } else if source_code == UK_LAND_BACKFILL_NI_SOURCE_CODE
+            || source_code.starts_with("uk_land_backfill_res6")
+        {
+            backfill_cells_extension.push(row);
         } else {
             primary_cells.push(row);
         }
     }
     primary_cells.sort_by(|a, b| a.0.cmp(&b.0));
-    backfill_cells.sort_by(|a, b| a.0.cmp(&b.0));
+    backfill_cells_legacy.sort_by(|a, b| a.0.cmp(&b.0));
+    backfill_cells_extension.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut by_number = HashMap::<usize, String>::new();
     let mut by_region_id = HashMap::<String, usize>::new();
     for (idx, (_cell_id, region_id)) in primary_cells
         .into_iter()
-        .chain(backfill_cells.into_iter())
+        .chain(backfill_cells_legacy.into_iter())
+        .chain(backfill_cells_extension.into_iter())
         .enumerate()
     {
-        let number = idx + 1;
-        by_number.insert(number, region_id.clone());
-        by_region_id.insert(region_id, number);
+        by_region_id.insert(region_id, idx + 1);
+    }
+    by_region_id
+}
+
+fn build_substrate_hex_number_lookup(
+    substrate: &SurfaceRegionCatalog,
+) -> (HashMap<usize, String>, HashMap<String, usize>) {
+    let by_region_id = build_substrate_hex_number_lookup_from_regions(&substrate.regions);
+    let mut by_number = HashMap::<usize, String>::new();
+    for (region_id, number) in &by_region_id {
+        by_number.insert(*number, region_id.clone());
     }
     (by_number, by_region_id)
 }
@@ -1070,9 +1213,19 @@ fn build_manual_planning_region_catalog(
         for hex_number in &definition.hex_numbers {
             let Some(substrate_region_id) = hex_number_to_substrate_region.get(hex_number).cloned()
             else {
+                eprintln!(
+                    "[manual-region-validation] WARNING: hex_number {} in region '{}' ({}) does not resolve to any substrate region — skipped",
+                    hex_number, definition.name, definition.region_id
+                );
                 continue;
             };
             if final_region_id_by_substrate.contains_key(&substrate_region_id) {
+                eprintln!(
+                    "[manual-region-validation] WARNING: hex_number {} (substrate {}) is already assigned to region '{}' — duplicate in region '{}' skipped",
+                    hex_number, substrate_region_id,
+                    final_region_id_by_substrate.get(&substrate_region_id).unwrap_or(&String::new()),
+                    definition.name
+                );
                 continue;
             }
             final_region_id_by_substrate.insert(substrate_region_id, definition.region_id.clone());
@@ -1117,7 +1270,7 @@ fn build_manual_planning_region_catalog(
             let mut total_jobs = 0.0_f64;
             let mut total_area = 0.0_f64;
             let mut mix_sums = [0.0_f64; 7];
-            let mut member_cells = Vec::<CellIndex>::new();
+            let mut member_cells = Vec::<(CellIndex, usize)>::new();
 
             for member_id in members {
                 let Some(region) = substrate.by_id.get(member_id) else {
@@ -1125,7 +1278,11 @@ fn build_manual_planning_region_catalog(
                 };
                 if let Ok(cell) = region.cell_id.parse::<CellIndex>() {
                     if cell.resolution() == Resolution::Six {
-                        member_cells.push(cell);
+                        let canonical = substrate_region_to_hex_number
+                            .get(member_id)
+                            .copied()
+                            .unwrap_or(0);
+                        member_cells.push((cell, canonical));
                     }
                 }
                 let weight = (region.residents_smooth + region.jobs_smooth).max(1.0);
@@ -1152,6 +1309,9 @@ fn build_manual_planning_region_catalog(
                 mix_sums[5] / weighted_total.max(1e-9),
                 mix_sums[6] / weighted_total.max(1e-9),
             ]);
+            let (geometry, constituent_hex_numbers) =
+                planning_region_geometry_from_cells(&member_cells);
+
             regions.push(SurfaceRegionInfo {
                 region_id: definition.region_id.clone(),
                 country_iso2: iso.clone(),
@@ -1178,7 +1338,9 @@ fn build_manual_planning_region_catalog(
                 activity_mix_education: normalized_mix[5],
                 activity_mix_health: normalized_mix[6],
                 adjacent_region_ids: Vec::new(),
-                geometry: planning_region_geometry_from_cells(&member_cells),
+                geometry,
+                canonical_hex_number: None,
+                constituent_hex_numbers,
             });
             continue;
         }
@@ -1196,6 +1358,14 @@ fn build_manual_planning_region_catalog(
         region.geometry_source = "planning_surface_res6".to_string();
         region.adjacent_region_ids.clear();
         region.geometry = None;
+        // Preserve the backend-authoritative hex number on unassigned hex regions
+        // so the frontend can display the same number the backend uses.
+        region.canonical_hex_number = Some(hex_number);
+        region.constituent_hex_numbers = if hex_number > 0 {
+            vec![hex_number]
+        } else {
+            vec![]
+        };
         regions.push(region);
     }
 
@@ -1516,15 +1686,36 @@ pub(crate) fn build_region_catalog_for_surface_with_app(
     country_iso2: &str,
     surface: &DemandSurfaceCountryWire,
 ) -> Result<SurfaceRegionCatalog, String> {
+    let build_started = Instant::now();
     let iso = canonical_country_iso2(country_iso2)
         .unwrap_or_else(|| country_iso2.trim().to_ascii_uppercase());
+    let manual_defs_started = Instant::now();
     let manual_definitions = load_manual_region_definitions_for_country(app, &iso)?;
+    perf_log(
+        "build_region_catalog_for_surface_with_app.load_manual_definitions",
+        manual_defs_started,
+    );
+    let synth_started = Instant::now();
     let catalog = if manual_definitions.is_empty() {
         build_surface_region_catalog(&iso, surface)
     } else {
         build_surface_region_catalog_with_manual(&iso, surface, &manual_definitions)
     };
-    Ok(merge_surface_region_catalog_aliases(catalog))
+    perf_log(
+        "build_region_catalog_for_surface_with_app.build_surface_catalog",
+        synth_started,
+    );
+    let merge_started = Instant::now();
+    let merged = merge_surface_region_catalog_aliases(catalog);
+    perf_log(
+        "build_region_catalog_for_surface_with_app.merge_aliases",
+        merge_started,
+    );
+    perf_log(
+        "build_region_catalog_for_surface_with_app.total",
+        build_started,
+    );
+    Ok(merged)
 }
 
 pub(crate) fn build_gb_county_region_catalog(
@@ -1566,6 +1757,8 @@ pub(crate) fn build_gb_county_region_catalog(
             activity_mix_health: 0.0,
             adjacent_region_ids: vec![],
             geometry: Some(county.geometry_json.clone()),
+            canonical_hex_number: None,
+            constituent_hex_numbers: vec![],
         })
         .collect::<Vec<_>>();
     let county_index = counties
@@ -1739,6 +1932,10 @@ pub(crate) fn load_region_catalog_for_country(
     app: &AppHandle,
     country_iso2: &str,
 ) -> Result<Option<SurfaceRegionCatalog>, String> {
+    let load_started = Instant::now();
+    static REGION_CATALOG_MEMO: OnceLock<
+        Mutex<HashMap<RegionCatalogMemoKey, SurfaceRegionCatalog>>,
+    > = OnceLock::new();
     let Some(iso) = canonical_country_iso2(country_iso2) else {
         return Ok(None);
     };
@@ -1747,10 +1944,47 @@ pub(crate) fn load_region_catalog_for_country(
     else {
         return Ok(None);
     };
+    let memo_key = RegionCatalogMemoKey {
+        iso: iso.clone(),
+        surface_path: resolved_surface.path.to_string_lossy().to_string(),
+        surface_fingerprint: file_mtime_fingerprint(&resolved_surface.path),
+        manual_definitions_fingerprint: manual_definition_fingerprint(app, &iso),
+    };
+    let cache = REGION_CATALOG_MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.get(&memo_key) {
+            eprintln!(
+                "[perf] load_region_catalog_for_country.cache_hit iso={} source={}",
+                iso,
+                resolved_surface.source.as_str()
+            );
+            perf_log("load_region_catalog_for_country.cache_hit", load_started);
+            return Ok(Some(cached.clone()));
+        }
+    }
+    eprintln!(
+        "[perf] load_region_catalog_for_country.cache_miss_rebuild iso={} source={}",
+        iso,
+        resolved_surface.source.as_str()
+    );
+    let load_surface_started = Instant::now();
     let surface = load_surface_wire(&resolved_surface.path)?;
-    Ok(Some(build_region_catalog_for_surface_with_app(
-        app, &iso, &surface,
-    )?))
+    perf_log(
+        "load_region_catalog_for_country.load_surface_wire",
+        load_surface_started,
+    );
+    let build_catalog_started = Instant::now();
+    let catalog = build_region_catalog_for_surface_with_app(app, &iso, &surface)?;
+    perf_log(
+        "load_region_catalog_for_country.build_region_catalog",
+        build_catalog_started,
+    );
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(memo_key, catalog.clone());
+    }
+    perf_log("load_region_catalog_for_country.cache_store", load_started);
+    perf_log("load_region_catalog_for_country.total", load_started);
+    Ok(Some(catalog))
 }
 
 #[cfg(test)]

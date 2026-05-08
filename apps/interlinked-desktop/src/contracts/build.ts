@@ -1,9 +1,9 @@
 import type {
-  GameProgressMetrics,
   ProjectManifest,
   PurchaseOrderLite,
   ScenarioDocumentLite,
 } from "./session";
+import type { CounterProvenance } from "./runtime";
 
 export type FleetDeliveryExpediteResult = {
   line_id: string;
@@ -215,6 +215,65 @@ export type StationLineSummary = {
   journey_times: StationJourneyTime[];
 };
 
+export type StationRuntimeServiceDiagnostics = {
+  counter_provenance?: CounterProvenance | string;
+  service_id: string;
+  line_id: string;
+  planner_attempted_pax: number;
+  planner_assigned_pax: number;
+  planner_mode_transit_captured_pax: number;
+  planner_candidate_paths_raw: number;
+  planner_candidate_paths_boardable: number;
+  planner_rejected_no_board_or_alight_paths: number;
+  planner_rejected_unpaired_board_alight_paths: number;
+  runtime_attempted_pax: number;
+  planner_board_load_arrivals_pax: number;
+  runtime_ingested_pax: number;
+  runtime_dropped_not_dispatchable_pax: number;
+  runtime_dropped_invalid_stop_pax: number;
+  runtime_queue_pax: number;
+  runtime_boarding_attempted_pax: number;
+  runtime_boarded_pax: number;
+  runtime_left_behind_pax: number;
+  dispatchable: boolean;
+  diagnostic_note?: string | null;
+  planner_reason_code?: string | null;
+};
+
+export type StationRuntimeDiagnostics = {
+  counter_provenance?: CounterProvenance | string;
+  tick_index: number;
+  planner_attempted_total_pax: number;
+  runtime_attempted_total_pax: number;
+  planner_cohort_rows: number;
+  runtime_queue_total_pax: number;
+  snapshot_current_inside_pax: number;
+  planner_demand_cells_total: number;
+  planner_demand_cells_nonzero_activity: number;
+  planner_zones_total: number;
+  planner_zones_nonzero_activity: number;
+  planner_latent_rows_total: number;
+  planner_latent_total_pax: number;
+  planner_mode_choice_rows_total: number;
+  planner_mode_choice_rows_with_transit_capture: number;
+  planner_mode_choice_transit_captured_pax: number;
+  planner_mode_choice_candidate_paths_raw_total: number;
+  planner_mode_choice_candidate_paths_boardable_total: number;
+  planner_mode_choice_rejected_no_board_or_alight_total: number;
+  planner_mode_choice_rejected_unpaired_board_alight_total: number;
+  planner_assignment_od_rows_with_transit_latent: number;
+  planner_assignment_od_rows_with_attempted: number;
+  planner_assignment_attempted_total_pax: number;
+  planner_assignment_candidate_paths_raw_total: number;
+  planner_assignment_candidate_paths_boardable_total: number;
+  planner_assignment_rejected_no_board_or_alight_total: number;
+  planner_assignment_rejected_unpaired_board_alight_total: number;
+  planner_first_zero_stage?: string | null;
+  planner_first_zero_reason?: string | null;
+  first_zero_or_mismatch?: string | null;
+  services: StationRuntimeServiceDiagnostics[];
+};
+
 export type StationInspection = {
   stop_id: string;
   name: string;
@@ -228,6 +287,7 @@ export type StationInspection = {
   denied_boardings: number;
   queue_end: number;
   station_load_current_pax: number;
+  passenger_counter_provenance?: CounterProvenance | string;
   station_capacity_boarding_pph: number;
   station_capacity_alighting_pph: number;
   station_queue_capacity_pax: number;
@@ -248,6 +308,7 @@ export type StationInspection = {
   catchment_mix_education: number;
   catchment_mix_health: number;
   served_lines: StationLineSummary[];
+  runtime_diagnostics?: StationRuntimeDiagnostics | null;
 };
 
 export type LineStationSummary = {
@@ -269,6 +330,27 @@ export type LineDirectionSummary = {
   vehicle_capacity: number;
 };
 
+export type LineActivationReason =
+  | "running"
+  | "no_target_tph_in_active_band"
+  | "no_assigned_units"
+  | "no_owned_units"
+  | "fleet_insufficient_for_round_trip"
+  | "invalid_headway_or_disabled"
+  | "no_required_units";
+
+export type LineActivationDiagnostics = {
+  minute_of_day: number;
+  active_band: string;
+  target_tph: number;
+  units_owned: number;
+  units_assigned: number;
+  required_units: number;
+  effective_tph: number;
+  enabled: boolean;
+  reason: LineActivationReason;
+};
+
 export type LineInspection = {
   line_id: string;
   name: string;
@@ -286,6 +368,7 @@ export type LineInspection = {
   alightings_served: number;
   denied_boardings: number;
   queue_end: number;
+  passenger_counter_provenance?: CounterProvenance | string;
   service_enabled: boolean;
   target_tph: number;
   effective_tph: number;
@@ -298,6 +381,7 @@ export type LineInspection = {
   spare_units: number;
   stock_tier_id?: string | null;
   stock_tier_label?: string | null;
+  activation: LineActivationDiagnostics;
   operations_now?: {
     active_band: string;
     live_tph: number;

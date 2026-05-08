@@ -54,10 +54,10 @@ export function ensureStopSelectionLayers(map: MapLibreMap): void {
       filter: EMPTY_STOP_FILTER as never,
       paint: {
         "circle-color": "rgba(0,0,0,0)",
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 8.6, 13, 14.2, 15, 17.4],
-        "circle-stroke-width": 3.0,
-        "circle-stroke-color": ["coalesce", ["get", "display_color"], "#6ddcff"],
-        "circle-opacity": 0.98,
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 5.8, 13, 8.8, 15, 10.2],
+        "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 6, 1.2, 13, 1.7, 15, 2.0],
+        "circle-stroke-color": "#ffffff",
+        "circle-opacity": 0.94,
       },
     } as never);
   }

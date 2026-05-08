@@ -1,5 +1,7 @@
 use crate::*;
 
+use interlinked_engine::sim::EngineFarePolicyContext;
+
 pub(crate) struct RuntimeLoopHandle {
     pub(crate) project_path: String,
     pub(crate) tx: Sender<RuntimeAction>,
@@ -19,7 +21,28 @@ pub(crate) struct RuntimeMaterializationState {
     pub(crate) minute_of_day: u32,
     pub(crate) last_materialized_tick: u64,
     pub(crate) adaptive_max_active_zones: usize,
+    pub(crate) candidate_adaptive_max_active_zones: usize,
     pub(crate) last_tick_ms: f64,
+    pub(crate) fare_policy_context: EngineFarePolicyContext,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuntimeQueueIngestDebug {
+    pub(crate) attempted_pax: f64,
+    pub(crate) ingested_pax: f64,
+    pub(crate) dropped_not_dispatchable_pax: f64,
+    pub(crate) dropped_invalid_stop_pax: f64,
+    pub(crate) remapped_to_reverse_service_pax: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuntimeBoardingDebug {
+    pub(crate) attempts: u32,
+    pub(crate) attempted_pax: f64,
+    pub(crate) boarded_pax: f64,
+    pub(crate) left_behind_pax: f64,
+    pub(crate) queue_total_before_pax: f64,
+    pub(crate) queue_total_after_pax: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +57,9 @@ pub(crate) struct RuntimeOpsState {
     pub(crate) dispatch_service_ids: HashSet<String>,
     pub(crate) trains: BTreeMap<String, RuntimeTrainState>,
     pub(crate) queue_cohorts: HashMap<(String, String, String), f64>,
+    pub(crate) last_queue_ingest_by_service_stop:
+        HashMap<(String, String), RuntimeQueueIngestDebug>,
+    pub(crate) last_boarding_by_service_stop: HashMap<(String, String), RuntimeBoardingDebug>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

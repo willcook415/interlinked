@@ -1,9 +1,23 @@
+use crate::build::LineActivationReason;
 use crate::*;
 
 use super::models::RuntimeServiceProfile;
 
-pub(crate) fn runtime_service_units_assigned(service: &Service) -> usize {
+fn runtime_service_units_owned(service: &Service) -> usize {
     service
+        .stock_units_owned
+        .or_else(|| {
+            service
+                .rolling_stock_profile
+                .as_ref()
+                .and_then(|profile| profile.units_owned)
+        })
+        .unwrap_or(0) as usize
+}
+
+pub(crate) fn runtime_service_units_assigned(service: &Service) -> usize {
+    let units_owned = runtime_service_units_owned(service);
+    let raw_assigned = service
         .stock_units_assigned
         .or_else(|| {
             service
@@ -12,22 +26,34 @@ pub(crate) fn runtime_service_units_assigned(service: &Service) -> usize {
                 .and_then(|profile| profile.units_owned)
         })
         .or(service.stock_units_owned)
-        .unwrap_or(0) as usize
+        .unwrap_or(0) as usize;
+    crate::build::resolve_assigned_units_for_line_mode(&service.mode, units_owned, raw_assigned)
 }
 
-pub(crate) fn runtime_service_enabled(service: &Service) -> bool {
+pub(crate) fn runtime_service_activation_reason(service: &Service) -> LineActivationReason {
     if matches!(service.service_enabled, Some(false)) {
-        return false;
+        return LineActivationReason::InvalidHeadwayOrDisabled;
+    }
+    let units_owned = runtime_service_units_owned(service);
+    if units_owned == 0 {
+        return LineActivationReason::NoOwnedUnits;
+    }
+    if runtime_service_units_assigned(service) == 0 {
+        return LineActivationReason::NoAssignedUnits;
     }
     if !service.headway_s.is_finite() || service.headway_s <= 0.0 || service.headway_s >= 86_399.0 {
-        return false;
+        return LineActivationReason::InvalidHeadwayOrDisabled;
     }
     if let Some(tph) = service.operating_tph {
         if !tph.is_finite() || tph <= 0.0 {
-            return false;
+            return LineActivationReason::NoTargetTphInActiveBand;
         }
     }
-    runtime_service_units_assigned(service) > 0
+    LineActivationReason::Running
+}
+
+pub(crate) fn runtime_service_enabled(service: &Service) -> bool {
+    runtime_service_activation_reason(service) == LineActivationReason::Running
 }
 
 pub(crate) fn runtime_stop_display_name(stop: &interlinked_engine::model::Stop) -> String {
@@ -263,9 +289,6 @@ pub(crate) fn build_runtime_service_profiles(
             .copied()
             .unwrap_or(0)
             .clamp(0, 64);
-        if vehicles_on_service == 0 {
-            continue;
-        }
         out.insert(
             draft.service_id.clone(),
             RuntimeServiceProfile {

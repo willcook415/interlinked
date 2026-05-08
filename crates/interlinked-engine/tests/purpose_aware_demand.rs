@@ -250,6 +250,7 @@ fn two_destination_scenario() -> Scenario {
                     centrality_score: 0.5,
                     data_quality_score: 1.0,
                     country_iso2: Some("GB".to_string()),
+                    allocation_diagnostics: None,
                 },
                 DemandCell {
                     cell_id: "CR".to_string(),
@@ -268,6 +269,7 @@ fn two_destination_scenario() -> Scenario {
                     centrality_score: 0.5,
                     data_quality_score: 1.0,
                     country_iso2: Some("GB".to_string()),
+                    allocation_diagnostics: None,
                 },
                 DemandCell {
                     cell_id: "CO".to_string(),
@@ -286,6 +288,7 @@ fn two_destination_scenario() -> Scenario {
                     centrality_score: 0.5,
                     data_quality_score: 1.0,
                     country_iso2: Some("GB".to_string()),
+                    allocation_diagnostics: None,
                 },
             ],
             demand_meta: None,

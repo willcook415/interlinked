@@ -6,6 +6,7 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tauri::{command, AppHandle};
 
 use super::super::{
@@ -34,6 +35,10 @@ use super::content_library::{
     country_pack_status_for, resolve_demand_surface_path, rollout_supported_countries,
 };
 
+fn perf_log(label: &str, started: Instant) {
+    eprintln!("[perf] {label}: {}ms", started.elapsed().as_millis());
+}
+
 fn seed_start_region_for_new_game(app: &AppHandle, manifest: &mut ProjectManifest) {
     let Some(start) = manifest.start_location.as_ref() else {
         return;
@@ -50,15 +55,76 @@ fn seed_start_region_for_new_game(app: &AppHandle, manifest: &mut ProjectManifes
     let Ok(catalog) = build_region_catalog_for_surface_with_app(app, &iso, &surface) else {
         return;
     };
-    let Some(seed_region_id) =
-        nearest_region_for_start(&catalog, manifest.start_location.as_ref(), &iso)
-    else {
+    let seed_region_id = deterministic_uk_start_region_id(&catalog, start)
+        .or_else(|| nearest_region_for_start(&catalog, manifest.start_location.as_ref(), &iso));
+    let Some(seed_region_id) = seed_region_id else {
         return;
     };
     // New games should start with a meaningful planning-region foothold around the chosen city.
     manifest.region_state.unlocked_region_ids = vec![seed_region_id.clone()];
     manifest.region_state.primary_focus_region_id = Some(seed_region_id.clone());
     manifest.region_state.active_region_ids = vec![seed_region_id];
+}
+
+fn deterministic_uk_start_region_token(start: &StartLocation) -> Option<&'static str> {
+    match start.city_id {
+        2_643_743 => return Some("central_london"),
+        2_643_123 => return Some("central_manchester"),
+        2_644_688 => return Some("central_leeds"),
+        _ => {}
+    }
+    let city = start.city_name.trim().to_ascii_lowercase();
+    match city.as_str() {
+        "london" => Some("central_london"),
+        "manchester" => Some("central_manchester"),
+        "leeds" => Some("central_leeds"),
+        _ => None,
+    }
+}
+
+fn deterministic_uk_start_region_id(
+    catalog: &crate::region::catalog::SurfaceRegionCatalog,
+    start: &StartLocation,
+) -> Option<String> {
+    if !start.country_iso2.eq_ignore_ascii_case("UK")
+        && !start.country_iso2.eq_ignore_ascii_case("GB")
+    {
+        return None;
+    }
+    let token = deterministic_uk_start_region_token(start)?;
+    let mut token_aliases = vec![token.to_string()];
+    let dashed = token.replace('_', "-");
+    if dashed != token {
+        token_aliases.push(dashed);
+    }
+
+    for alias in &token_aliases {
+        if catalog.by_id.contains_key(alias) {
+            return Some(alias.clone());
+        }
+        let id_uk = format!("r6:UK:{alias}");
+        if catalog.by_id.contains_key(&id_uk) {
+            return Some(id_uk);
+        }
+        let id_gb = format!("r6:GB:{alias}");
+        if catalog.by_id.contains_key(&id_gb) {
+            return Some(id_gb);
+        }
+    }
+    catalog.regions.iter().find_map(|region| {
+        token_aliases
+            .iter()
+            .find(|alias| {
+                region.region_token.eq_ignore_ascii_case(alias)
+                    || region
+                        .region_id
+                        .rsplit(':')
+                        .next()
+                        .map(|value| value.eq_ignore_ascii_case(alias))
+                        .unwrap_or(false)
+            })
+            .map(|_| region.region_id.clone())
+    })
 }
 
 #[command]
@@ -398,36 +464,19 @@ pub fn list_game_saves(app: AppHandle) -> Result<Vec<GameSaveMeta>, String> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        let scenario_doc =
-            ScenarioService::load_from_path(scenario_path(&root).to_string_lossy().as_ref())
-                .map_err(|e| e.to_string())
-                .ok();
-        let stats = scenario_doc
-            .as_ref()
-            .map(|d| scenario_network_stats(&d.scenario));
         let mut metrics = manifest
             .progress_metrics
             .unwrap_or_else(default_progress_metrics);
         metrics.currency = normalize_currency(Some(&metrics.currency));
-        let peak_ridership_pph = load_persisted_sandbox_state(&root)
-            .and_then(|sandbox| sandbox.runtime)
-            .and_then(|runtime| runtime.latest_snapshot)
-            .map(|snapshot| {
-                snapshot
-                    .line_ops
-                    .iter()
-                    .map(|line| line.boarded_per_hour.max(0.0))
-                    .sum::<f64>()
-            })
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .or_else(|| {
-                let fallback = metrics.ridership.max(0.0);
-                if fallback.is_finite() {
-                    Some(fallback)
-                } else {
-                    None
-                }
-            });
+
+        let peak_ridership_pph = {
+            let fallback = metrics.ridership.max(0.0);
+            if fallback.is_finite() {
+                Some(fallback)
+            } else {
+                None
+            }
+        };
         out.push(GameSaveMeta {
             project_id: manifest.project_id.clone(),
             project_path: ent.project_path,
@@ -444,10 +493,10 @@ pub fn list_game_saves(app: AppHandle) -> Result<Vec<GameSaveMeta>, String> {
                 .as_ref()
                 .map(|x| x.city_name.clone()),
             unlocked_countries: manifest.economy.unlocked_countries.len(),
-            network_stops: stats.as_ref().map(|x| x.stops).unwrap_or(0),
-            network_links: stats.as_ref().map(|x| x.links).unwrap_or(0),
-            network_services: stats.as_ref().map(|x| x.services).unwrap_or(0),
-            total_link_km: stats.as_ref().map(|x| x.total_link_km).unwrap_or(0.0),
+            network_stops: 0,
+            network_links: 0,
+            network_services: 0,
+            total_link_km: 0.0,
             peak_ridership_pph,
             progress_metrics: metrics,
         });
@@ -461,11 +510,14 @@ pub fn continue_latest_game(
     app: AppHandle,
     state: tauri::State<AppState>,
 ) -> Result<OpenSessionResult, String> {
+    let started = Instant::now();
     let saves = list_game_saves(app.clone())?;
     let latest = saves
         .first()
         .ok_or_else(|| "no game saves available".to_string())?;
-    open_session_internal(&app, &state, Path::new(&latest.project_path))
+    let result = open_session_internal(&app, &state, Path::new(&latest.project_path));
+    perf_log("command.continue_latest_game", started);
+    result
 }
 
 #[command]
@@ -474,13 +526,16 @@ pub fn load_game_save(
     state: tauri::State<AppState>,
     save_id: String,
 ) -> Result<OpenSessionResult, String> {
+    let started = Instant::now();
     let idx = read_index(&app)?;
     let entry = idx
         .projects
         .iter()
         .find(|x| x.project_id == save_id)
         .ok_or_else(|| format!("save id not found: {save_id}"))?;
-    open_session_internal(&app, &state, Path::new(&entry.project_path))
+    let result = open_session_internal(&app, &state, Path::new(&entry.project_path));
+    perf_log("command.load_game_save", started);
+    result
 }
 
 #[command]
@@ -489,7 +544,10 @@ pub fn open_project(
     state: tauri::State<AppState>,
     project_path: String,
 ) -> Result<OpenSessionResult, String> {
-    open_session_internal(&app, &state, Path::new(&project_path))
+    let started = Instant::now();
+    let result = open_session_internal(&app, &state, Path::new(&project_path));
+    perf_log("command.open_project", started);
+    result
 }
 
 #[command]
@@ -716,5 +774,26 @@ pub fn save_and_quit(
         .lock()
         .map_err(|_| "current_project mutex poisoned".to_string())?;
     *current = None;
+    {
+        let mut snapshots = state
+            .runtime_snapshots
+            .lock()
+            .map_err(|_| "runtime_snapshots mutex poisoned".to_string())?;
+        snapshots.clear();
+    }
+    {
+        let mut snapshots = state
+            .runtime_fast_snapshots
+            .lock()
+            .map_err(|_| "runtime_fast_snapshots mutex poisoned".to_string())?;
+        snapshots.clear();
+    }
+    {
+        let mut snapshots = state
+            .runtime_strategic_snapshots
+            .lock()
+            .map_err(|_| "runtime_strategic_snapshots mutex poisoned".to_string())?;
+        snapshots.clear();
+    }
     Ok(result)
 }

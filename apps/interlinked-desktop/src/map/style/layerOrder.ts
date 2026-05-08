@@ -15,12 +15,12 @@ import {
   ensureStopShapeLayer,
 } from "./layers/network";
 import {
-  ensureRegionSelectedOutlineLayer,
   ensurePlanningHexAuthoringLayers,
   ensureRegionBasemapLayers,
   ensureRegionBoundaryLayers,
   ensureZoneCentroidLayer,
 } from "./layers/regions";
+import { ensureDemandOverlayLayers } from "./layers/demand";
 import { ensureRuntimeLayers } from "./layers/runtime";
 
 export function ensureMapLayerOrder(map: MapLibreMap): void {
@@ -28,6 +28,7 @@ export function ensureMapLayerOrder(map: MapLibreMap): void {
   ensureWorldLabelLayers(map);
   ensureRegionBasemapLayers(map);
   ensureRegionBoundaryLayers(map);
+  ensureDemandOverlayLayers(map);
   ensurePlanningHexAuthoringLayers(map);
   ensureNetworkCoreLayers(map);
   ensureTransferFocusLabelLayer(map);
@@ -40,5 +41,4 @@ export function ensureMapLayerOrder(map: MapLibreMap): void {
   ensureRuntimeLayers(map);
   ensureZoneCentroidLayer(map);
   ensureBuildPreviewLayers(map);
-  ensureRegionSelectedOutlineLayer(map);
 }

@@ -70,9 +70,9 @@ use commands::project_session_lifecycle::{
 };
 use commands::region_economy::{
     ensure_country_demand_surface, expedite_fleet_delivery, get_demand_layer_stats,
-    get_demand_tile_source, get_fare_policy, get_financial_dashboard, list_demand_coverage,
-    list_regions, rebuild_demand_for_unlocked, set_fare_policy, set_primary_focus_region,
-    set_simulation_scope, unlock_and_focus_region, unlock_region,
+    get_demand_overlay_payload, get_demand_tile_source, get_fare_policy, get_financial_dashboard,
+    list_demand_coverage, list_regions, rebuild_demand_for_unlocked, set_fare_policy,
+    set_primary_focus_region, set_simulation_scope, unlock_and_focus_region, unlock_region,
 };
 pub(crate) use commands::runtime_sandbox::SandboxSnapshotFile;
 use commands::runtime_sandbox::{
@@ -170,14 +170,20 @@ fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", now_epoch_ns())
 }
 
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use interlinked_engine::model::{Link, Service, Stop};
     use interlinked_engine::platform::PlanningRunOptions;
     use interlinked_engine::sim::SimulationSettings;
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_tmp_path(name: &str) -> PathBuf {
@@ -294,6 +300,29 @@ mod tests {
                 demand_cells: vec![],
                 demand_meta: None,
             },
+        }
+    }
+
+    fn test_empty_world_scenario() -> Scenario {
+        let mut scenario = test_scenario();
+        scenario.world.stops.clear();
+        scenario.world.links.clear();
+        scenario.world.services.clear();
+        scenario
+    }
+
+    fn test_app_state_with_game(game: interlinked_engine::platform::GameState) -> AppState {
+        AppState {
+            game: Mutex::new(Some(game)),
+            current_project: Mutex::new(None),
+            runtime_tick: Mutex::new(None),
+            runtime_loop: Mutex::new(None),
+            runtime_snapshots: Mutex::new(VecDeque::new()),
+            runtime_fast_snapshots: Mutex::new(VecDeque::new()),
+            runtime_strategic_snapshots: Mutex::new(VecDeque::new()),
+            runtime_strategic_demand_cache: Mutex::new(HashMap::new()),
+            runtime_materialization: Mutex::new(None),
+            runtime_ops: Mutex::new(None),
         }
     }
 
@@ -545,6 +574,7 @@ mod tests {
                 centrality_score: 0.5,
                 data_quality_score: 0.5,
                 country_iso2: Some("GB".to_string()),
+                allocation_diagnostics: None,
             },
             DemandCell {
                 cell_id: "b".to_string(),
@@ -563,6 +593,7 @@ mod tests {
                 centrality_score: 0.5,
                 data_quality_score: 0.5,
                 country_iso2: Some("GB".to_string()),
+                allocation_diagnostics: None,
             },
         ];
         let scale = estimate_legacy_demand_scale(&scenario);
@@ -820,6 +851,130 @@ mod tests {
     }
 
     #[test]
+    fn run_simulation_tick_advances_clock_when_world_has_no_stops() {
+        let project_root = unique_tmp_path("empty_world_clock_tick");
+        fs::create_dir_all(&project_root).expect("tmp project root should be created");
+
+        let scenario = test_empty_world_scenario();
+        let doc = ScenarioDocument {
+            schema_version: ScenarioDocument::CURRENT_SCHEMA_VERSION,
+            scenario,
+        };
+        let gs = SimulationService::init_game_state(&doc);
+        let state = test_app_state_with_game(gs);
+        let mut manifest = test_manifest_for_surface("GB");
+        manifest.clock_state.running = true;
+        manifest.clock_state.tick_seconds = 0.0;
+        manifest.clock_state.speed = 1;
+
+        let snapshot = run_simulation_tick(
+            &state,
+            &project_root,
+            &mut manifest,
+            0.5,
+            0.5,
+            false,
+            1,
+            1,
+            0,
+            0,
+            true,
+            false,
+        )
+        .expect("empty world tick should not fail");
+
+        assert!(
+            (snapshot.clock.tick_seconds - 0.5).abs() < 1e-9,
+            "clock should advance by dt when world has no stops"
+        );
+        assert!(
+            (manifest.clock_state.tick_seconds - 0.5).abs() < 1e-9,
+            "manifest clock should stay authoritative for empty world ticks"
+        );
+        assert!(
+            snapshot.frame.is_none(),
+            "empty world fallback should not fabricate history frame output"
+        );
+        assert!(
+            snapshot.trains.is_empty()
+                && snapshot.stations.is_empty()
+                && snapshot.line_ops.is_empty(),
+            "empty world fallback should not fabricate runtime operational views"
+        );
+
+        let _ = fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn empty_world_clock_respects_runtime_speed_schedule_1x_2x_4x() {
+        let real_dt_s = 1.0 / 33.0;
+        let iterations = 660; // 20 real seconds
+        let fixed_step_s = 0.05;
+        let real_elapsed_s = real_dt_s * iterations as f64;
+
+        for speed in [1_u32, 2_u32, 4_u32] {
+            let project_root = unique_tmp_path(&format!("empty_world_speed_{speed}x"));
+            fs::create_dir_all(&project_root).expect("tmp project root should be created");
+            let scenario = test_empty_world_scenario();
+            let doc = ScenarioDocument {
+                schema_version: ScenarioDocument::CURRENT_SCHEMA_VERSION,
+                scenario,
+            };
+            let gs = SimulationService::init_game_state(&doc);
+            let state = test_app_state_with_game(gs);
+            let mut manifest = test_manifest_for_surface("GB");
+            manifest.clock_state.running = true;
+            manifest.clock_state.speed = speed;
+            manifest.clock_state.tick_seconds = 0.0;
+
+            let mut accumulator_s = 0.0_f64;
+            let mut tick_index = 0_u64;
+            for _ in 0..iterations {
+                accumulator_s += real_dt_s * speed as f64;
+                let effective_max_steps = crate::runtime::scheduling::effective_max_steps_per_cycle(
+                    manifest.runtime_scheduling.max_steps_per_cycle,
+                    speed,
+                );
+                let catchup = crate::runtime::scheduling::plan_runtime_catchup(
+                    accumulator_s,
+                    fixed_step_s,
+                    effective_max_steps,
+                );
+                for _ in 0..catchup.steps_to_run {
+                    tick_index = tick_index.saturating_add(1);
+                    let _snapshot = run_simulation_tick(
+                        &state,
+                        &project_root,
+                        &mut manifest,
+                        fixed_step_s,
+                        fixed_step_s,
+                        false,
+                        tick_index,
+                        tick_index,
+                        0,
+                        0,
+                        true,
+                        false,
+                    )
+                    .expect("empty world scheduled tick should not fail");
+                }
+                accumulator_s =
+                    (accumulator_s - catchup.steps_to_run as f64 * fixed_step_s).max(0.0_f64);
+            }
+
+            let expected_game_s = real_elapsed_s * speed as f64;
+            let actual_game_s = manifest.clock_state.tick_seconds;
+            let diff = (actual_game_s - expected_game_s).abs();
+            assert!(
+                diff <= fixed_step_s + 0.5,
+                "empty world {speed}x should track target closely: expected {expected_game_s:.3}, got {actual_game_s:.3}"
+            );
+
+            let _ = fs::remove_dir_all(&project_root);
+        }
+    }
+
+    #[test]
     fn runtime_scheduler_keeps_backlog_truthful_when_catchup_is_bounded() {
         let fixed_step_s = 0.5;
         let iterations = 8;
@@ -1009,6 +1164,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             game: Mutex::new(None),
             current_project: Mutex::new(None),
@@ -1017,6 +1173,7 @@ fn main() {
             runtime_snapshots: Mutex::new(VecDeque::new()),
             runtime_fast_snapshots: Mutex::new(VecDeque::new()),
             runtime_strategic_snapshots: Mutex::new(VecDeque::new()),
+            runtime_strategic_demand_cache: Mutex::new(HashMap::new()),
             runtime_materialization: Mutex::new(None),
             runtime_ops: Mutex::new(None),
         })
@@ -1080,8 +1237,10 @@ fn main() {
             set_simulation_scope,
             get_demand_tile_source,
             get_demand_layer_stats,
+            get_demand_overlay_payload,
             load_scenario,
-            run_planning_scenario
+            run_planning_scenario,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

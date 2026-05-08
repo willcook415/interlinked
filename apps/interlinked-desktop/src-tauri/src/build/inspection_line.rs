@@ -5,13 +5,16 @@ use interlinked_engine::platform::EconomyConfig;
 use interlinked_engine::sim::SimulationOutput;
 use serde::{Deserialize, Serialize};
 
+use crate::{default_counter_provenance_strategic_estimate, CounterProvenance};
+
 use super::defaults::{default_build_defaults, find_mode_preset, ModeBuildPreset};
 use super::fleet_state::{
-    active_schedule_band, canonical_service, effective_capacity_for_line, enabled_for_service,
-    line_roll_profile, line_schedule_from_service, normalize_tier_id, pending_units_for_orders,
-    required_units_for_tph, service_display_name, service_line_id, stop_display_name,
-    target_tph_for_service, tier_cost_base, tier_label, tph_for_band, window_duration_minutes,
-    FleetPurchaseOrderState, LineScheduleState,
+    canonical_service, effective_capacity_for_line, enabled_for_service,
+    line_activation_diagnostics, line_roll_profile, line_schedule_from_service, normalize_tier_id,
+    pending_units_for_orders, required_units_for_tph, resolve_assigned_units_for_line_mode,
+    service_display_name, service_line_id, stop_display_name, target_tph_for_service,
+    tier_cost_base, tier_label, window_duration_minutes, FleetPurchaseOrderState,
+    LineActivationDiagnostics, LineScheduleState,
 };
 
 const AUTO_REVERSE_SERVICE_PREFIX: &str = "auto_reverse::";
@@ -94,6 +97,8 @@ pub struct LineInspection {
     pub alightings_served: f64,
     pub denied_boardings: f64,
     pub queue_end: f64,
+    #[serde(default = "default_counter_provenance_strategic_estimate")]
+    pub passenger_counter_provenance: CounterProvenance,
     pub service_enabled: bool,
     pub target_tph: f64,
     pub effective_tph: f64,
@@ -106,6 +111,7 @@ pub struct LineInspection {
     pub spare_units: usize,
     pub stock_tier_id: Option<String>,
     pub stock_tier_label: Option<String>,
+    pub activation: LineActivationDiagnostics,
     pub operations_now: LineOperationsNow,
     pub fleet_state: LineFleetState,
     pub schedule_state: LineScheduleState,
@@ -342,10 +348,13 @@ pub fn compute_lines(scenario: &Scenario) -> Vec<LineComputed> {
                 )
             };
             let stock_units_pending = pending_units_for_orders(&pending_orders);
-            let stock_units_assigned = canonical
-                .stock_units_assigned
-                .unwrap_or(stock_units_owned as u32)
-                .min(stock_units_owned as u32) as usize;
+            let stock_units_assigned = resolve_assigned_units_for_line_mode(
+                &canonical.mode,
+                stock_units_owned,
+                canonical
+                    .stock_units_assigned
+                    .unwrap_or(stock_units_owned as u32) as usize,
+            );
             let schedule_state = line_schedule_from_service(canonical);
             let vehicle_capacity_effective = if let Some(preset) = preset {
                 effective_capacity_for_line(preset, Some(package_id.as_str()), cars_per_unit)
@@ -553,23 +562,24 @@ pub fn inspect_line_from_scenario(
     let preset = find_mode_preset(&defaults, &line.mode, line.mode_variant.as_deref());
     let round_trip_s = line_round_trip_seconds(&line);
     let schedule_state = line.schedule_state.clone();
-    let active_band = active_schedule_band(&schedule_state, minute_of_day.unwrap_or(540));
-    let target_tph = tph_for_band(&schedule_state, active_band.as_str()).max(0.0);
-    let required_units = required_units_for_tph(round_trip_s, target_tph);
+    let minute_of_day = minute_of_day.unwrap_or(540);
     let owned_units = line.stock_units_owned;
     let pending_units = line.stock_units_pending;
     let committed_units = owned_units.saturating_add(pending_units);
-    let assigned_units = line.stock_units_assigned.min(owned_units);
-    let max_tph_from_fleet = if round_trip_s > 0.0 {
-        (assigned_units as f64 * 3600.0) / round_trip_s
-    } else {
-        0.0
-    };
-    let effective_tph = if target_tph > 0.0 {
-        target_tph.min(max_tph_from_fleet.max(0.0))
-    } else {
-        0.0
-    };
+    let activation = line_activation_diagnostics(
+        &line.mode,
+        &schedule_state,
+        minute_of_day,
+        round_trip_s,
+        owned_units,
+        line.stock_units_assigned,
+        None,
+    );
+    let target_tph = activation.target_tph;
+    let required_units = activation.required_units;
+    let assigned_units = activation.units_assigned;
+    let effective_tph = activation.effective_tph;
+    let active_band = activation.active_band.clone();
     let avg_wait_s = if effective_tph > 0.0 {
         Some(1800.0 / effective_tph)
     } else {
@@ -608,7 +618,8 @@ pub fn inspect_line_from_scenario(
         alightings_served,
         denied_boardings,
         queue_end,
-        service_enabled: line.service_enabled,
+        passenger_counter_provenance: CounterProvenance::StrategicEstimate,
+        service_enabled: activation.enabled,
         target_tph,
         effective_tph,
         avg_wait_s,
@@ -620,6 +631,7 @@ pub fn inspect_line_from_scenario(
         spare_units,
         stock_tier_id,
         stock_tier_label,
+        activation,
         operations_now: LineOperationsNow {
             active_band,
             live_tph: effective_tph,

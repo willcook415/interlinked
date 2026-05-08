@@ -1,5 +1,7 @@
 use super::super::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{command, AppHandle};
@@ -54,6 +56,33 @@ fn compute_smooth_dt_s(
     // Keep dt large enough for visible passenger movement while still bounding catch-up spikes.
     let clamped = elapsed.clamp(0.05, 2.0);
     Ok(clamped * normalize_speed(speed) as f64)
+}
+
+fn should_log_fast_snapshot_served(
+    project_path: &str,
+    tick_seconds: f64,
+    running: bool,
+    speed: u32,
+) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, (u64, bool, u32)>>> = OnceLock::new();
+    let bucket = if tick_seconds.is_finite() && tick_seconds >= 0.0 {
+        tick_seconds.floor() as u64
+    } else {
+        0
+    };
+    let next = (bucket, running, speed);
+    let cache = LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = cache.lock() else {
+        return true;
+    };
+    let changed = guard
+        .get(project_path)
+        .map(|previous| *previous != next)
+        .unwrap_or(true);
+    if changed {
+        guard.insert(project_path.to_string(), next);
+    }
+    changed
 }
 
 #[command]
@@ -162,6 +191,27 @@ pub fn get_runtime_fast_snapshot(
         } else if let Ok(status) = runtime_loop_status_for_project(state.inner(), &project_path) {
             snapshot.telemetry.queue_depth = status.queue_depth;
         }
+        if should_log_fast_snapshot_served(
+            &project_path,
+            snapshot.clock.tick_seconds,
+            snapshot.clock.running,
+            snapshot.clock.speed,
+        ) {
+            eprintln!(
+                "[rt-snap] served project={} tick_seconds={:.3} tick_index={} clock_revision={} running={} speed={} snapshot_age_ms={} queue_depth={} backlog_steps={} executed_steps_this_cycle={} publish_ms={:.2}",
+                project_path,
+                snapshot.clock.tick_seconds,
+                snapshot.telemetry.tick_index,
+                snapshot.clock_revision,
+                snapshot.clock.running,
+                snapshot.clock.speed,
+                snapshot.telemetry.snapshot_age_ms,
+                snapshot.telemetry.queue_depth,
+                snapshot.telemetry.backlog_steps,
+                snapshot.telemetry.executed_steps_this_cycle,
+                snapshot.telemetry.snapshot_publish_ms.max(0.0),
+            );
+        }
         return Ok(Some(snapshot));
     }
 
@@ -180,6 +230,23 @@ pub fn get_runtime_fast_snapshot(
         fallback.clock.speed = speed;
         fallback.clock_revision = clock_revision;
         fallback.telemetry.queue_depth = queue_depth;
+    }
+    if should_log_fast_snapshot_served(
+        &project_path,
+        fallback.clock.tick_seconds,
+        fallback.clock.running,
+        fallback.clock.speed,
+    ) {
+        eprintln!(
+            "[rt-snap] served_fallback project={} tick_seconds={:.3} tick_index={} clock_revision={} running={} speed={} queue_depth={}",
+            project_path,
+            fallback.clock.tick_seconds,
+            fallback.telemetry.tick_index,
+            fallback.clock_revision,
+            fallback.clock.running,
+            fallback.clock.speed,
+            fallback.telemetry.queue_depth,
+        );
     }
     Ok(Some(fallback))
 }
@@ -297,12 +364,21 @@ pub fn set_simulation_speed(
     }
     let project_root = PathBuf::from(&project_path);
     let project_path_string = project_root.to_string_lossy().to_string();
-    if runtime_loop_matches_project(state.inner(), &project_path_string)? {
-        let _ = enqueue_runtime_action_with_retry(
+    let loop_matches = runtime_loop_matches_project(state.inner(), &project_path_string)?;
+    eprintln!(
+        "[rt-loop] set_speed_request project={} requested_speed={} loop_matches={}",
+        project_path_string, speed, loop_matches
+    );
+    if loop_matches {
+        let enqueued = enqueue_runtime_action_with_retry(
             state.inner(),
             &project_path_string,
             RuntimeAction::SetSpeed(speed),
         )?;
+        eprintln!(
+            "[rt-loop] set_speed_enqueue project={} requested_speed={} enqueue_ok={}",
+            project_path_string, speed, enqueued
+        );
         let mut status = runtime_loop_status_for_project(state.inner(), &project_path_string)?;
         for _ in 0..12 {
             if status.speed == speed {
@@ -311,19 +387,39 @@ pub fn set_simulation_speed(
             thread::sleep(Duration::from_millis(10));
             status = runtime_loop_status_for_project(state.inner(), &project_path_string)?;
         }
+        eprintln!(
+            "[rt-loop] set_speed_status project={} running={} speed={} clock_revision={} queue_depth={}",
+            project_path_string,
+            status.running,
+            status.speed,
+            status.clock_revision,
+            status.queue_depth
+        );
         let mut manifest = read_manifest(&project_root)?;
         manifest.clock_state.running = status.running;
         manifest.clock_state.speed = status.speed;
-        return latest_authoritative_clock_for_project(
+        let clock = latest_authoritative_clock_for_project(
             &state,
             &project_path_string,
             &manifest.clock_state,
+        )?;
+        eprintln!(
+            "[rt-loop] set_speed_authoritative_clock project={} tick_seconds={:.3} running={} speed={}",
+            project_path_string, clock.tick_seconds, clock.running, clock.speed
         );
+        return Ok(clock);
     }
     let mut manifest = read_manifest(&project_root)?;
     manifest.clock_state.speed = speed;
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
+    eprintln!(
+        "[rt-loop] set_speed_manifest_only project={} tick_seconds={:.3} running={} speed={}",
+        project_path_string,
+        manifest.clock_state.tick_seconds,
+        manifest.clock_state.running,
+        manifest.clock_state.speed
+    );
     Ok(manifest.clock_state)
 }
 
@@ -333,24 +429,35 @@ pub fn set_simulation_running(
     project_path: String,
     running: bool,
 ) -> Result<SimulationClock, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
     let project_path_string = project_root.to_string_lossy().to_string();
     if running {
         reset_runtime_tick(&state, &project_path_string)?;
     }
-    if runtime_loop_matches_project(state.inner(), &project_path_string)? {
-        let _ = enqueue_runtime_action_with_retry(
+    let loop_matches = runtime_loop_matches_project(state.inner(), &project_path_string)?;
+    eprintln!(
+        "[rt-loop] set_running_request project={} requested_running={} loop_matches={}",
+        project_path_string, running, loop_matches
+    );
+    if loop_matches {
+        let enqueue_running = enqueue_runtime_action_with_retry(
             state.inner(),
             &project_path_string,
             RuntimeAction::SetRunning(running),
         )?;
+        let mut enqueue_checkpoint = false;
         if !running {
-            let _ = enqueue_runtime_action_with_retry(
+            enqueue_checkpoint = enqueue_runtime_action_with_retry(
                 state.inner(),
                 &project_path_string,
                 RuntimeAction::ForceCheckpoint,
             )?;
         }
+        eprintln!(
+            "[rt-loop] set_running_enqueue project={} requested_running={} enqueue_ok={} checkpoint_enqueued={}",
+            project_path_string, running, enqueue_running, enqueue_checkpoint
+        );
         let mut status = runtime_loop_status_for_project(state.inner(), &project_path_string)?;
         for _ in 0..12 {
             if status.running == running {
@@ -359,19 +466,51 @@ pub fn set_simulation_running(
             thread::sleep(Duration::from_millis(10));
             status = runtime_loop_status_for_project(state.inner(), &project_path_string)?;
         }
+        eprintln!(
+            "[rt-loop] set_running_status project={} running={} speed={} clock_revision={} queue_depth={}",
+            project_path_string,
+            status.running,
+            status.speed,
+            status.clock_revision,
+            status.queue_depth
+        );
         let mut manifest = read_manifest(&project_root)?;
         manifest.clock_state.running = status.running;
         manifest.clock_state.speed = status.speed;
-        return latest_authoritative_clock_for_project(
+        let clock = latest_authoritative_clock_for_project(
             &state,
             &project_path_string,
             &manifest.clock_state,
+        )?;
+        eprintln!(
+            "[build-perf] command.set_simulation_running.total: {}ms project={} running={}",
+            started.elapsed().as_millis(),
+            project_path_string,
+            running
         );
+        eprintln!(
+            "[rt-loop] set_running_authoritative_clock project={} tick_seconds={:.3} running={} speed={}",
+            project_path_string, clock.tick_seconds, clock.running, clock.speed
+        );
+        return Ok(clock);
     }
     let mut manifest = read_manifest(&project_root)?;
     manifest.clock_state.running = running;
     manifest.updated_at = now_string();
     write_manifest(&project_root, &manifest)?;
+    eprintln!(
+        "[build-perf] command.set_simulation_running.total: {}ms project={} running={}",
+        started.elapsed().as_millis(),
+        project_path_string,
+        running
+    );
+    eprintln!(
+        "[rt-loop] set_running_manifest_only project={} tick_seconds={:.3} running={} speed={}",
+        project_path_string,
+        manifest.clock_state.tick_seconds,
+        manifest.clock_state.running,
+        manifest.clock_state.speed
+    );
     Ok(manifest.clock_state)
 }
 
@@ -405,9 +544,12 @@ pub fn advance_simulation(
         }
     }
     let dt_s = compute_smooth_dt_s(&state, &project_path, manifest.clock_state.speed)?;
-    let tick_index = latest_runtime_snapshot_for_project(state.inner(), &project_path)?
-        .map(|s| s.telemetry.tick_index.saturating_add(1))
-        .unwrap_or(1);
+    let tick_index = crate::runtime::snapshots::latest_runtime_tick_index_for_project(
+        state.inner(),
+        &project_path,
+    )?
+    .map(|tick_index| tick_index.saturating_add(1))
+    .unwrap_or(1);
     let clock_revision = runtime_control_state_for_project(state.inner(), &project_path)?
         .map(|(_, _, revision, _)| revision)
         .unwrap_or(0);
@@ -430,15 +572,16 @@ pub fn advance_simulation(
         true,
         strategic_refresh_due,
     )?;
+    let advance = runtime_snapshot_to_advance(&snapshot)
+        .ok_or_else(|| "missing frame in simulation snapshot".to_string())?;
     let publish_strategic = publish_strategic_snapshot_for_tick(&snapshot);
     publish_runtime_snapshots(
         state.inner(),
-        snapshot.clone(),
+        snapshot,
         manifest.runtime_scheduling.snapshot_ring,
         publish_strategic,
     )?;
-    runtime_snapshot_to_advance(&snapshot)
-        .ok_or_else(|| "missing frame in simulation snapshot".to_string())
+    Ok(advance)
 }
 
 #[command]

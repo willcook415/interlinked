@@ -2,7 +2,10 @@ import { memo } from "react";
 import MapView from "../MapView";
 import type { LinkModeFilter } from "./MapFiltersPanel";
 import type { MapLineAction, MapStopAction, MapWorldPoint } from "../MapView";
+import type { VehicleInspection } from "../app/vehicleInspection";
 import type {
+  DemandOverlayPayload,
+  DemandOverlayType,
   MapRuntimeConfig,
   RegionStatus,
   ScenarioLite,
@@ -21,6 +24,9 @@ function MapCanvas(props: {
   showStations: boolean;
   showLinks: boolean;
   linkMode: LinkModeFilter;
+  showDemandOverlay: boolean;
+  demandOverlayType: DemandOverlayType;
+  demandOverlayPayload: DemandOverlayPayload | null;
   startCenter: [number, number] | null;
   serviceLoadByServiceId?: Record<string, number>;
   runtimeTrains?: TrainRuntimeView[];
@@ -36,6 +42,7 @@ function MapCanvas(props: {
   buildConstraintMode?: string | null;
   selectedStopId?: string | null;
   selectedLineId?: string | null;
+  selectedVehicleId?: string | null;
   activeLineId?: string | null;
   focusStopId?: string | null;
   focusStopToken?: number;
@@ -53,9 +60,10 @@ function MapCanvas(props: {
   onSelectCounty: (regionId: string) => void;
   onStopAction?: (payload: MapStopAction) => void;
   onLineAction?: (payload: MapLineAction) => void;
+  onVehicleAction?: (payload: VehicleInspection) => void;
+  onClearVehicleSelection?: () => void;
   onMapPointAction?: (payload: MapWorldPoint) => void;
   onClearSelection?: () => void;
-  onScrapVehicle?: (vehicleId: string) => void;
 }) {
   return (
     <div className="map-canvas">
@@ -70,6 +78,9 @@ function MapCanvas(props: {
         showStations={props.showStations}
         showLinks={props.showLinks}
         linkMode={props.linkMode}
+        demandOverlayEnabled={props.showDemandOverlay}
+        demandOverlayType={props.demandOverlayType}
+        demandOverlayPayload={props.demandOverlayPayload}
         startCenter={props.startCenter}
         serviceLoadByServiceId={props.serviceLoadByServiceId}
         runtimeTrains={props.runtimeTrains}
@@ -85,6 +96,7 @@ function MapCanvas(props: {
         buildConstraintMode={props.buildConstraintMode}
         selectedStopId={props.selectedStopId}
         selectedLineId={props.selectedLineId}
+        selectedVehicleId={props.selectedVehicleId}
         activeLineId={props.activeLineId}
         focusStopId={props.focusStopId}
         focusStopToken={props.focusStopToken}
@@ -96,9 +108,10 @@ function MapCanvas(props: {
         onSelectCounty={props.onSelectCounty}
         onStopAction={props.onStopAction}
         onLineAction={props.onLineAction}
+        onVehicleAction={props.onVehicleAction}
+        onClearVehicleSelection={props.onClearVehicleSelection}
         onMapPointAction={props.onMapPointAction}
         onClearSelection={props.onClearSelection}
-        onScrapVehicle={props.onScrapVehicle}
       />
     </div>
   );

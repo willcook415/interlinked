@@ -1,4 +1,5 @@
 import { invokeTyped } from "./tauriClient";
+import { buildPerfMeasureAsync } from "../perf/buildPerf";
 import type {
   BuildDefaults,
   CityOption,
@@ -9,6 +10,7 @@ import type {
   DeleteSaveResult,
   DeletedSaveMeta,
   DemandCoverageMeta,
+  DemandOverlayPayload,
   DemandRebuildResult,
   FarePolicyManifest,
   FinancialDashboardRequest,
@@ -138,6 +140,22 @@ export function listDemandCoverage(projectPath: string): Promise<DemandCoverageM
   return invokeTyped<DemandCoverageMeta[]>("list_demand_coverage", { projectPath });
 }
 
+export function getDemandOverlayPayload(
+  projectPath: string,
+  overlayType?:
+    | "residential_allocation"
+    | "employment_allocation"
+    | "total_allocation"
+    | "raw_residential_weight"
+    | "raw_employment_weight"
+    | "fallback_cells"
+): Promise<DemandOverlayPayload> {
+  return invokeTyped<DemandOverlayPayload>("get_demand_overlay_payload", {
+    projectPath,
+    overlayType: overlayType ?? null,
+  });
+}
+
 export function listRegions(projectPath: string): Promise<RegionStatus[]> {
   return invokeTyped<RegionStatus[]>("list_regions", { projectPath });
 }
@@ -190,7 +208,12 @@ export function setSimulationRunning(
   projectPath: string,
   running: boolean
 ): Promise<SimulationClock> {
-  return invokeTyped<SimulationClock>("set_simulation_running", { projectPath, running });
+  return buildPerfMeasureAsync(
+    "frontend.command.set_simulation_running.roundtrip",
+    () => invokeTyped<SimulationClock>("set_simulation_running", { projectPath, running }),
+    { projectPath, running },
+    { minDurationMs: 0 }
+  );
 }
 
 export function setSimulationSpeed(
@@ -278,25 +301,46 @@ export function expediteFleetDelivery(
 }
 
 export function loadBuildDefaults(): Promise<BuildDefaults> {
-  return invokeTyped<BuildDefaults>("load_build_defaults");
+  return buildPerfMeasureAsync(
+    "frontend.command.load_build_defaults.roundtrip",
+    () => invokeTyped<BuildDefaults>("load_build_defaults"),
+    undefined,
+    { minDurationMs: 0, throttleMs: 1000 }
+  );
 }
 
 export function inspectStation(projectPath: string, stopId: string): Promise<StationInspection> {
-  return invokeTyped<StationInspection>("inspect_station", { projectPath, stopId });
+  return buildPerfMeasureAsync(
+    "frontend.command.inspect_station.roundtrip",
+    () => invokeTyped<StationInspection>("inspect_station", { projectPath, stopId }),
+    { projectPath, stopId },
+    { minDurationMs: 0 }
+  );
 }
 
 export function inspectLine(projectPath: string, lineId: string): Promise<LineInspection> {
-  return invokeTyped<LineInspection>("inspect_line", { projectPath, lineId });
+  return buildPerfMeasureAsync(
+    "frontend.command.inspect_line.roundtrip",
+    () => invokeTyped<LineInspection>("inspect_line", { projectPath, lineId }),
+    { projectPath, lineId },
+    { minDurationMs: 0 }
+  );
 }
 
 export function previewNetworkMutation(
   projectPath: string,
   scenarioDocument: ScenarioDocumentLite
 ): Promise<NetworkMutationPreviewResult> {
-  return invokeTyped<NetworkMutationPreviewResult>("preview_network_mutation", {
-    projectPath,
-    scenarioDocument,
-  });
+  return buildPerfMeasureAsync(
+    "frontend.command.preview_network_mutation.roundtrip",
+    () =>
+      invokeTyped<NetworkMutationPreviewResult>("preview_network_mutation", {
+        projectPath,
+        scenarioDocument,
+      }),
+    { projectPath },
+    { minDurationMs: 0, throttleMs: 250 }
+  );
 }
 
 export function applyNetworkMutation(args: {
@@ -304,5 +348,10 @@ export function applyNetworkMutation(args: {
   scenarioDocument: ScenarioDocumentLite;
   capexOverrideBase: number | null;
 }): Promise<NetworkMutationResult> {
-  return invokeTyped<NetworkMutationResult>("apply_network_mutation", args);
+  return buildPerfMeasureAsync(
+    "frontend.command.apply_network_mutation.roundtrip",
+    () => invokeTyped<NetworkMutationResult>("apply_network_mutation", args),
+    { projectPath: args.projectPath, capexOverrideBase: args.capexOverrideBase },
+    { minDurationMs: 0 }
+  );
 }

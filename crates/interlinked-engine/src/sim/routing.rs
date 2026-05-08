@@ -1,12 +1,20 @@
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use super::graph::{BuiltPath, DState, DistEntry, Edge, EdgeKind, Graph, PathStats, SvcLayerIndex};
 use crate::model::{Scenario, Service, Stop};
 
 fn service_is_active_for_graph(svc: &Service) -> bool {
     if matches!(svc.service_enabled, Some(false)) {
+        return false;
+    }
+    let units_owned = service_units_owned_for_graph(svc);
+    if units_owned == 0 {
+        return false;
+    }
+    let units_assigned = service_units_assigned_for_graph(svc, units_owned);
+    if units_assigned == 0 {
         return false;
     }
     if let Some(tph) = svc.operating_tph {
@@ -17,12 +25,43 @@ fn service_is_active_for_graph(svc: &Service) -> bool {
     if !svc.headway_s.is_finite() || svc.headway_s <= 0.0 || svc.headway_s >= 86_399.0 {
         return false;
     }
-    if let Some(units) = svc.stock_units_assigned {
-        if units == 0 {
-            return false;
-        }
-    }
     true
+}
+
+fn service_units_owned_for_graph(svc: &Service) -> usize {
+    svc.stock_units_owned
+        .or_else(|| {
+            svc.rolling_stock_profile
+                .as_ref()
+                .and_then(|profile| profile.units_owned)
+        })
+        .unwrap_or(0) as usize
+}
+
+fn service_units_assigned_for_graph(svc: &Service, units_owned: usize) -> usize {
+    let raw_assigned = svc
+        .stock_units_assigned
+        .or_else(|| {
+            svc.rolling_stock_profile
+                .as_ref()
+                .and_then(|profile| profile.units_owned)
+        })
+        .or(svc.stock_units_owned)
+        .unwrap_or(0) as usize;
+    let clamped = raw_assigned.min(units_owned);
+    if service_mode_is_metro_for_graph(svc) && units_owned > 0 && clamped == 0 {
+        units_owned
+    } else {
+        clamped
+    }
+}
+
+fn service_mode_is_metro_for_graph(svc: &Service) -> bool {
+    let mode = svc.mode.trim().to_ascii_lowercase();
+    matches!(
+        mode.as_str(),
+        "metro" | "subway" | "underground" | "rapid_transit"
+    ) || mode.contains("metro")
 }
 
 pub(crate) fn build_graph(
@@ -83,6 +122,27 @@ pub(crate) fn build_graph(
 
     let zone_access = |zi: usize| zone_nodes_start + zi;
     let zone_egress = |zi: usize| zone_nodes_start + zone_count + zi;
+
+    // Demand access/egress should attach to stops that can actually board active services.
+    // Linking zones to non-boardable geometry/helper stops can produce walk-only OD paths with
+    // empty board/alight events even when transit service is active.
+    let mut boardable_stop_indices = HashSet::<usize>::new();
+    for svc in &s.world.services {
+        if !service_is_active_for_graph(svc) {
+            continue;
+        }
+        for stop_id in &svc.stop_sequence {
+            if let Some(&si) = stop_index.get(stop_id) {
+                boardable_stop_indices.insert(si);
+            }
+        }
+    }
+    let mut zone_access_stop_indices = if boardable_stop_indices.is_empty() {
+        (0..stop_count).collect::<Vec<_>>()
+    } else {
+        boardable_stop_indices.into_iter().collect::<Vec<_>>()
+    };
+    zone_access_stop_indices.sort_unstable();
 
     // 0) Neutral within-stop edges stop_in <-> stop_out (0)
     for si in 0..stop_count {
@@ -244,7 +304,8 @@ pub(crate) fn build_graph(
         let mut in_radius = 0usize;
         let mut nearest: Option<(usize, f64)> = None;
 
-        for (si, stop) in s.world.stops.iter().enumerate() {
+        for &si in &zone_access_stop_indices {
+            let stop = &s.world.stops[si];
             let d = hypot(zone.x - stop.x, zone.y - stop.y);
             match nearest {
                 Some((_, best)) if d >= best => {}

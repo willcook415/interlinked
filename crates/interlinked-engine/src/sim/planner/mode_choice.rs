@@ -21,12 +21,36 @@ pub(super) fn apply_mode_choice_capture(
     if active_latent.is_empty() || s.world.zones.is_empty() {
         return Ok(out);
     }
+    #[derive(Debug, Clone)]
+    struct ModeChoiceTransitPathCacheEntry {
+        raw_transit_paths: Vec<BuiltPath>,
+        transit_paths: Vec<BuiltPath>,
+        transit_shares: Vec<f64>,
+        rejected_no_board_or_alight: usize,
+        rejected_unpaired_board_alight: usize,
+    }
 
     let zone_count = s.world.zones.len();
+    let mut zero_boardable_debug_emitted = 0usize;
+    let mut transit_path_cache = HashMap::<(usize, usize), ModeChoiceTransitPathCacheEntry>::new();
+    let mut transit_path_cache_hits = 0usize;
+    let mut transit_path_cache_misses = 0usize;
+    let mut active_service_stop_ids = std::collections::HashSet::<String>::new();
+    for svc in &s.world.services {
+        if !service_is_active_for_sim(svc) {
+            continue;
+        }
+        for stop_id in &svc.stop_sequence {
+            active_service_stop_ids.insert(stop_id.clone());
+        }
+    }
     let mut nearest_stop_by_zone_idx = vec![None::<String>; zone_count];
     for (zi, zone) in s.world.zones.iter().enumerate() {
         let mut best: Option<(String, f64)> = None;
         for stop in &s.world.stops {
+            if !active_service_stop_ids.is_empty() && !active_service_stop_ids.contains(&stop.id) {
+                continue;
+            }
             let d = euclid_m((zone.x, zone.y), (stop.x, stop.y));
             match &best {
                 Some((_, bd)) if d >= *bd => {}
@@ -216,21 +240,91 @@ pub(super) fn apply_mode_choice_capture(
 
         let origin_node = base_graph.svc_index.zone_nodes_start + od.origin_idx;
         let dest_node = base_graph.svc_index.zone_nodes_start + zone_count + od.destination_idx;
-        let mut transit_paths = apply_fare_to_paths(
-            dedupe_paths(k_shortest_paths(
-                base_graph,
-                origin_node,
-                dest_node,
-                settings.k_paths,
-            )),
-            &s.params,
-        );
-        let transit_available = !transit_paths.is_empty();
-        let transit_shares = if transit_available {
-            logit_shares(&transit_paths, settings.route_choice_theta)
+        let od_key = (od.origin_idx, od.destination_idx);
+        let cache_entry = if let Some(entry) = transit_path_cache.get(&od_key) {
+            transit_path_cache_hits = transit_path_cache_hits.saturating_add(1);
+            entry
         } else {
-            Vec::new()
+            transit_path_cache_misses = transit_path_cache_misses.saturating_add(1);
+            let (raw_transit_paths, boardable_transit_paths) =
+                super::collect_transit_path_candidates(
+                    base_graph,
+                    origin_node,
+                    dest_node,
+                    settings.k_paths,
+                );
+            let mut rejected_no_board_or_alight = 0usize;
+            let mut rejected_unpaired_board_alight = 0usize;
+            for path in &raw_transit_paths {
+                match super::classify_boardable_transit(path) {
+                    super::BoardableTransitClassification::MissingBoardOrAlight => {
+                        rejected_no_board_or_alight = rejected_no_board_or_alight.saturating_add(1);
+                    }
+                    super::BoardableTransitClassification::UnpairedBoardAlight => {
+                        rejected_unpaired_board_alight =
+                            rejected_unpaired_board_alight.saturating_add(1);
+                    }
+                    super::BoardableTransitClassification::Boardable => {}
+                }
+            }
+            // Transit mode-choice must be based on boardable paths only.
+            // Walk-only zone->stop->zone paths are represented by walk/car/no-trip candidates.
+            let transit_paths = apply_fare_to_paths(boardable_transit_paths, &s.params);
+            let transit_shares = if transit_paths.is_empty() {
+                Vec::new()
+            } else {
+                logit_shares(&transit_paths, settings.route_choice_theta)
+            };
+            transit_path_cache
+                .entry(od_key)
+                .or_insert(ModeChoiceTransitPathCacheEntry {
+                    raw_transit_paths,
+                    transit_paths,
+                    transit_shares,
+                    rejected_no_board_or_alight,
+                    rejected_unpaired_board_alight,
+                })
         };
+        let candidate_paths_raw = cache_entry.raw_transit_paths.len();
+        let rejected_no_board_or_alight = cache_entry.rejected_no_board_or_alight;
+        let rejected_unpaired_board_alight = cache_entry.rejected_unpaired_board_alight;
+        let transit_paths = &cache_entry.transit_paths;
+        let candidate_paths_boardable = transit_paths.len();
+        if candidate_paths_raw > 0
+            && candidate_paths_boardable == 0
+            && zero_boardable_debug_emitted < 6
+        {
+            if let Some(sample_raw) = cache_entry.raw_transit_paths.first() {
+                let sample_board = sample_raw
+                    .board_events
+                    .first()
+                    .map(|(service_id, stop_id)| format!("{service_id}:{stop_id}"))
+                    .unwrap_or_else(|| "none".to_string());
+                let sample_alight = sample_raw
+                    .alight_events
+                    .first()
+                    .map(|(service_id, stop_id)| format!("{service_id}:{stop_id}"))
+                    .unwrap_or_else(|| "none".to_string());
+                eprintln!(
+                    "[pax-mode-choice] zero_boardable od={}=>{} raw_paths={} boardable_paths={} sample_board={} sample_alight={} board_events={} alight_events={} links={} svc_nodes={} access_edges={} egress_edges={}",
+                    od.origin_zone_id,
+                    od.destination_zone_id,
+                    candidate_paths_raw,
+                    candidate_paths_boardable,
+                    sample_board,
+                    sample_alight,
+                    sample_raw.board_events.len(),
+                    sample_raw.alight_events.len(),
+                    sample_raw.link_indices.len(),
+                    base_graph.svc_index.svcstop_of_node.len(),
+                    base_graph.access_edges,
+                    base_graph.egress_edges,
+                );
+            }
+            zero_boardable_debug_emitted = zero_boardable_debug_emitted.saturating_add(1);
+        }
+        let transit_available = !transit_paths.is_empty();
+        let transit_shares = &cache_entry.transit_shares;
 
         let mut expected_walk_s = 0.0_f64;
         let mut expected_wait_s = 0.0_f64;
@@ -243,7 +337,7 @@ pub(super) fn apply_mode_choice_capture(
 
         if transit_available {
             let submode_pref = transit_submode_preference(od.purpose, economy_cfg);
-            for (path, share) in transit_paths.iter_mut().zip(transit_shares.iter()) {
+            for (path, share) in transit_paths.iter().zip(transit_shares.iter()) {
                 let w = share.max(0.0);
                 if w <= 0.0 {
                     continue;
@@ -598,6 +692,10 @@ pub(super) fn apply_mode_choice_capture(
             latent: od.clone(),
             transit_captured: transit_captured.max(0.0),
             suppressed_or_no_trip: suppressed_or_no_trip.max(0.0),
+            candidate_paths_raw,
+            candidate_paths_boardable,
+            rejected_no_board_or_alight,
+            rejected_unpaired_board_alight,
         });
 
         out.results.push(ModeChoiceResult {
@@ -689,6 +787,17 @@ pub(super) fn apply_mode_choice_capture(
             confidence,
             explanation,
         });
+    }
+
+    let unique_od_pairs = transit_path_cache.len();
+    if unique_od_pairs > 0 {
+        eprintln!(
+            "[rt-planner-cache] mode_choice active_latent_rows={} unique_od_pairs={} cache_hits={} cache_misses={}",
+            active_latent.len(),
+            unique_od_pairs,
+            transit_path_cache_hits,
+            transit_path_cache_misses,
+        );
     }
 
     Ok(out)

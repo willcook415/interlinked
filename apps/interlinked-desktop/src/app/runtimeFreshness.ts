@@ -96,6 +96,8 @@ export function sameRuntimeTrains(a: TrainRuntimeView[], b: TrainRuntimeView[]):
     if (left.line_id !== right.line_id) return false;
     if (left.destination_label !== right.destination_label) return false;
     if (left.vehicle_ordinal !== right.vehicle_ordinal) return false;
+    if ((left.passenger_counter_provenance ?? left.provenance) !== (right.passenger_counter_provenance ?? right.provenance))
+      return false;
     if (Math.abs((left.x ?? 0) - (right.x ?? 0)) > 1e-6) return false;
     if (Math.abs((left.y ?? 0) - (right.y ?? 0)) > 1e-6) return false;
     if (Math.abs((left.onboard_pax ?? 0) - (right.onboard_pax ?? 0)) > 1e-6) return false;
@@ -110,6 +112,8 @@ export function sameRuntimeStations(a: StationRuntimeView[], b: StationRuntimeVi
     const left = a[index];
     const right = b[index];
     if (left.stop_id !== right.stop_id) return false;
+    if ((left.passenger_counter_provenance ?? left.provenance) !== (right.passenger_counter_provenance ?? right.provenance))
+      return false;
     if (Math.abs((left.current_inside_pax ?? 0) - (right.current_inside_pax ?? 0)) > 1e-6)
       return false;
     if (Math.abs((left.declined_last_hour ?? 0) - (right.declined_last_hour ?? 0)) > 1e-6)
@@ -126,6 +130,8 @@ export function sameRuntimeLineOps(a: LineOpsRuntimeView[], b: LineOpsRuntimeVie
     const left = a[index];
     const right = b[index];
     if (left.line_id !== right.line_id) return false;
+    if ((left.passenger_counter_provenance ?? left.provenance) !== (right.passenger_counter_provenance ?? right.provenance))
+      return false;
     if ((left.active_trains ?? 0) !== (right.active_trains ?? 0)) return false;
     if (Math.abs((left.boarded_per_hour ?? 0) - (right.boarded_per_hour ?? 0)) > 1e-6)
       return false;

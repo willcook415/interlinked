@@ -1,8 +1,15 @@
 use crate::commands::build_mutation::world_xy_to_lonlat_safe;
 use crate::commands::content_library::{primary_project_country_iso2, resolve_demand_surface_path};
 use crate::*;
-use interlinked_engine::model::Scenario;
+use h3o::CellIndex;
+use interlinked_engine::model::{DemandCell, Scenario};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 use tauri::AppHandle;
+
+fn perf_log(label: &str, started: Instant) {
+    eprintln!("[perf] {label}: {}ms", started.elapsed().as_millis());
+}
 
 pub(crate) fn get_fare_policy(project_path: String) -> Result<FarePolicyManifest, String> {
     let project_root = PathBuf::from(project_path);
@@ -223,6 +230,7 @@ pub(crate) fn list_demand_coverage(
             .filter(|c| {
                 c.country_iso2
                     .as_deref()
+                    .and_then(canonical_country_iso2)
                     .map(|v| v.eq_ignore_ascii_case(&iso))
                     .unwrap_or(false)
             })
@@ -592,9 +600,12 @@ pub(crate) fn list_regions(
     app: AppHandle,
     project_path: String,
 ) -> Result<Vec<RegionStatus>, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(project_path);
     let manifest = read_manifest(&project_root)?;
-    region_status_rows_for_manifest(&app, &manifest)
+    let rows = region_status_rows_for_manifest(&app, &manifest)?;
+    perf_log("list_regions", started);
+    Ok(rows)
 }
 
 fn apply_region_scope_runtime_mutation(
@@ -630,13 +641,52 @@ fn commit_region_scope_change(
     manifest: &mut ProjectManifest,
     doc: &mut ScenarioDocument,
 ) -> Result<usize, String> {
+    let started = Instant::now();
+    let rematerialize_started = Instant::now();
     rematerialize_unlocked_country_surfaces(app, manifest, &mut doc.scenario)?;
+    perf_log(
+        "commit_region_scope_change.rematerialize_unlocked_country_surfaces",
+        rematerialize_started,
+    );
     let materialized_cells = doc.scenario.world.demand_cells.len();
+    if let Err(error) = ScenarioService::validate(&doc.scenario) {
+        eprintln!(
+            "[demand-materialization] commit_region_scope_change validation_failed project={} unlocked_regions={} active_regions={} focus_region={} demand_cells={} zones={} error={}",
+            project_path,
+            manifest.region_state.unlocked_region_ids.len(),
+            manifest.region_state.active_region_ids.len(),
+            manifest
+                .region_state
+                .primary_focus_region_id
+                .as_deref()
+                .unwrap_or("none"),
+            doc.scenario.world.demand_cells.len(),
+            doc.scenario.world.zones.len(),
+            error
+        );
+        return Err(error.to_string());
+    }
+    let write_scenario_started = Instant::now();
     ScenarioService::save_to_path(scenario_path(project_root).to_string_lossy().as_ref(), doc)
         .map_err(|e| e.to_string())?;
+    perf_log(
+        "commit_region_scope_change.write_scenario",
+        write_scenario_started,
+    );
+    let write_manifest_started = Instant::now();
     manifest.updated_at = now_string();
     write_manifest(project_root, manifest)?;
+    perf_log(
+        "commit_region_scope_change.write_manifest",
+        write_manifest_started,
+    );
+    let runtime_mutation_started = Instant::now();
     apply_region_scope_runtime_mutation(state, project_path, &doc.scenario)?;
+    perf_log(
+        "commit_region_scope_change.apply_runtime_mutation",
+        runtime_mutation_started,
+    );
+    perf_log("commit_region_scope_change.total", started);
     Ok(materialized_cells)
 }
 
@@ -677,7 +727,14 @@ fn apply_region_unlock(
     let charge = if unlocked.contains(normalized_region) {
         0.0
     } else {
-        region_unlock_cost_base_for_manifest(manifest, region)
+        let population_by_region = calibrated_region_population_for_country(iso, &catalog.regions);
+        let jobs_by_region = calibrated_region_jobs_for_country(iso, &catalog.regions);
+        region_unlock_cost_base_for_manifest(
+            manifest,
+            region,
+            population_by_region.get(normalized_region).copied(),
+            jobs_by_region.get(normalized_region).copied(),
+        )
     };
     if charge > 0.0 && manifest.economy.current_balance_base < charge {
         return Err(format!(
@@ -685,14 +742,6 @@ fn apply_region_unlock(
             charge, manifest.economy.current_balance_base
         ));
     }
-    if charge > 0.0 {
-        manifest.economy.current_balance_base -= charge;
-        manifest.economy.cumulative_capex_base += charge;
-        update_region_ledger(&mut *manifest, 0.0, 0.0, 0.0, charge);
-        record_monthly_financial_delta(&mut *manifest, 0.0, 0.0, charge, 0.0);
-        bump_economy_revision(&mut *manifest);
-    }
-
     sync_country_region_state_with_overrides(
         manifest,
         catalog,
@@ -704,6 +753,14 @@ fn apply_region_unlock(
             force_active_region_ids: None,
         },
     )?;
+
+    if charge > 0.0 {
+        manifest.economy.current_balance_base -= charge;
+        manifest.economy.cumulative_capex_base += charge;
+        update_region_ledger(&mut *manifest, 0.0, 0.0, 0.0, charge);
+        record_monthly_financial_delta(&mut *manifest, 0.0, 0.0, charge, 0.0);
+        bump_economy_revision(&mut *manifest);
+    }
 
     let mut countries = unlocked_country_codes(manifest)
         .into_iter()
@@ -768,6 +825,7 @@ pub(crate) fn unlock_and_focus_region(
     project_path: String,
     region_id: String,
 ) -> Result<UnlockFocusResult, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
     let mut manifest = read_manifest(&project_root)?;
     let normalized_region = canonicalize_region_id(&region_id)
@@ -798,6 +856,7 @@ pub(crate) fn unlock_and_focus_region(
         &mut manifest,
         &mut doc,
     )?;
+    perf_log("unlock_and_focus_region.total", started);
 
     Ok(UnlockFocusResult {
         region_id: normalized_region.clone(),
@@ -822,6 +881,7 @@ pub(crate) fn set_primary_focus_region(
     project_path: String,
     region_id: String,
 ) -> Result<FocusResult, String> {
+    let started = Instant::now();
     let normalized_region = canonicalize_region_id(&region_id)
         .ok_or_else(|| "InvalidRegionId: invalid region_id format".to_string())?;
     let iso = region_country_iso2(&normalized_region)
@@ -870,6 +930,7 @@ pub(crate) fn set_primary_focus_region(
         &mut manifest,
         &mut doc,
     )?;
+    perf_log("set_primary_focus_region.total", started);
     Ok(FocusResult {
         primary_focus_region_id: normalized_region,
         active_region_ids: manifest.region_state.active_region_ids.clone(),
@@ -1053,4 +1114,958 @@ pub(crate) fn get_demand_layer_stats(project_path: String) -> Result<DemandLayer
         activity_p50: percentile(&activity, 0.5),
         activity_max: activity.last().copied().unwrap_or(0.0),
     })
+}
+
+fn resolve_latest_planning_output_path(
+    project_root: &PathBuf,
+    manifest: &ProjectManifest,
+) -> Option<(String, PathBuf)> {
+    let mut candidates = Vec::<String>::new();
+    if let Some(run_id) = manifest.last_opened_run_id.as_ref() {
+        let run_id = run_id.trim();
+        if !run_id.is_empty() {
+            candidates.push(run_id.to_string());
+        }
+    }
+    for run_id in &manifest.recent_runs {
+        let run_id = run_id.trim();
+        if run_id.is_empty() || candidates.iter().any(|existing| existing == run_id) {
+            continue;
+        }
+        candidates.push(run_id.to_string());
+    }
+    for run_id in candidates {
+        let output_path = runs_dir(project_root).join(&run_id).join("output.json");
+        if output_path.exists() {
+            return Some((run_id, output_path));
+        }
+    }
+    None
+}
+
+fn demand_cell_intensity_score(cell: &DemandCell) -> f64 {
+    let residents = cell.residents_night.max(0.0);
+    let jobs = cell.jobs_day.max(0.0);
+    let base = (residents + jobs).max(0.0);
+    if base <= 0.0 {
+        return 0.0;
+    }
+    let dominant_mix = cell
+        .activity_mix_residential
+        .max(cell.activity_mix_office)
+        .max(cell.activity_mix_retail)
+        .max(cell.activity_mix_recreation)
+        .max(cell.activity_mix_industrial)
+        .max(cell.activity_mix_education)
+        .max(cell.activity_mix_health)
+        .clamp(0.0, 1.0);
+    let mixed_use_bonus = (1.0 - dominant_mix).clamp(0.0, 1.0) * 0.18;
+    let civic_mix =
+        (cell.activity_mix_education.max(0.0) + cell.activity_mix_health.max(0.0)).clamp(0.0, 1.0);
+    base * (1.0 + mixed_use_bonus + civic_mix * 0.08)
+}
+
+#[derive(Debug, Clone, Default)]
+struct DemandRegionLookup {
+    unlocked_region_ids: HashSet<String>,
+    region_name_by_id: HashMap<String, String>,
+    region_lonlat_by_id: HashMap<String, (f64, f64)>,
+    region_centers_xy: Vec<(String, f64, f64)>,
+    region_id_by_zone_token: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct StrategicOverlayLayers {
+    source_kind: &'static str,
+    run_id: Option<String>,
+    service_gap_layer: Vec<interlinked_engine::sim::ZoneServiceGapLayerData>,
+    corridor_desire_lines: Vec<interlinked_engine::sim::CorridorDesireLineData>,
+}
+
+fn normalized_token(token: &str) -> Option<String> {
+    let value = token.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn zone_lookup_tokens(zone_id: &str) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    let normalized = zone_id.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return out;
+    }
+    let mut push_token = |token: String| {
+        if token.is_empty() || !seen.insert(token.clone()) {
+            return;
+        }
+        out.push(token);
+    };
+    push_token(normalized.clone());
+    if let Some(rest) = normalized.strip_prefix("z:") {
+        push_token(rest.to_string());
+    }
+    for token in normalized.split(':').rev() {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        push_token(trimmed.to_string());
+    }
+    out
+}
+
+fn resolve_region_id_for_zone_id(zone_id: &str, lookup: &DemandRegionLookup) -> Option<String> {
+    let normalized_zone = zone_id.trim().to_ascii_lowercase();
+    if normalized_zone.is_empty() {
+        return None;
+    }
+    if lookup.unlocked_region_ids.contains(&normalized_zone) {
+        return Some(normalized_zone);
+    }
+    if let Some(canonical) = canonicalize_region_id(zone_id) {
+        if lookup.unlocked_region_ids.contains(&canonical) {
+            return Some(canonical);
+        }
+    }
+    for token in zone_lookup_tokens(zone_id) {
+        if let Some(region_id) = lookup.region_id_by_zone_token.get(&token) {
+            return Some(region_id.clone());
+        }
+    }
+    None
+}
+
+fn nearest_unlocked_region_for_world_point(
+    scenario: &Scenario,
+    lookup: &DemandRegionLookup,
+    x: f64,
+    y: f64,
+) -> Option<String> {
+    let (lon, lat) = world_xy_to_lonlat_safe(&scenario.meta.crs, x, y)?;
+    let (mx, my) = lonlat_to_web_mercator_m(lon, lat);
+    lookup
+        .region_centers_xy
+        .iter()
+        .min_by(|left, right| {
+            let dl = (left.1 - mx).powi(2) + (left.2 - my).powi(2);
+            let dr = (right.1 - mx).powi(2) + (right.2 - my).powi(2);
+            dl.partial_cmp(&dr).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|row| row.0.clone())
+}
+
+fn zone_world_xy_index(scenario: &Scenario) -> HashMap<String, (f64, f64)> {
+    let mut out = HashMap::<String, (f64, f64)>::new();
+    for cell in &scenario.world.demand_cells {
+        let key = cell.cell_id.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        out.insert(key, (cell.x, cell.y));
+    }
+    for zone in &scenario.world.zones {
+        let key = zone.id.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        out.entry(key).or_insert((zone.x, zone.y));
+    }
+    out
+}
+
+fn resolve_region_id_for_zone_with_fallback(
+    zone_id: &str,
+    lookup: &DemandRegionLookup,
+    scenario: &Scenario,
+    zone_xy_by_id: &HashMap<String, (f64, f64)>,
+) -> Option<String> {
+    if let Some(region_id) = resolve_region_id_for_zone_id(zone_id, lookup) {
+        return Some(region_id);
+    }
+    let key = zone_id.trim().to_ascii_lowercase();
+    let (x, y) = zone_xy_by_id.get(&key).copied()?;
+    nearest_unlocked_region_for_world_point(scenario, lookup, x, y)
+}
+
+fn build_demand_region_lookup(
+    app: &AppHandle,
+    manifest: &ProjectManifest,
+) -> Result<DemandRegionLookup, String> {
+    let mut lookup = DemandRegionLookup::default();
+    for iso in unlocked_country_codes(manifest) {
+        let Some(catalog) = load_region_catalog_for_country(app, &iso)? else {
+            continue;
+        };
+        let mut unlocked_catalog_regions = HashSet::<String>::new();
+        for raw in &manifest.region_state.unlocked_region_ids {
+            if let Some(canonical) = canonical_region_for_catalog(&catalog, raw) {
+                unlocked_catalog_regions.insert(canonical);
+                continue;
+            }
+            if let Some(canonical) = canonicalize_region_id(raw)
+                .and_then(|value| canonical_region_for_catalog(&catalog, &value))
+            {
+                unlocked_catalog_regions.insert(canonical);
+            }
+        }
+        for region in &catalog.regions {
+            if !unlocked_catalog_regions.contains(&region.region_id) {
+                continue;
+            }
+            lookup.unlocked_region_ids.insert(region.region_id.clone());
+            lookup
+                .region_name_by_id
+                .entry(region.region_id.clone())
+                .or_insert_with(|| region.name.clone());
+            lookup
+                .region_id_by_zone_token
+                .entry(region.region_id.to_ascii_lowercase())
+                .or_insert_with(|| region.region_id.clone());
+            if let Some(token) = normalized_token(&region.cell_id) {
+                lookup
+                    .region_id_by_zone_token
+                    .entry(token)
+                    .or_insert_with(|| region.region_id.clone());
+            }
+            if let Some(token) = normalized_token(&region.region_token) {
+                lookup
+                    .region_id_by_zone_token
+                    .entry(token)
+                    .or_insert_with(|| region.region_id.clone());
+            }
+            if let Some(token) = region
+                .h3_cell_id
+                .as_ref()
+                .and_then(|value| normalized_token(value))
+            {
+                lookup
+                    .region_id_by_zone_token
+                    .entry(token)
+                    .or_insert_with(|| region.region_id.clone());
+            }
+            if !lookup.region_lonlat_by_id.contains_key(&region.region_id) {
+                let (lon, lat) = web_mercator_m_to_lonlat(region.x, region.y);
+                lookup
+                    .region_lonlat_by_id
+                    .insert(region.region_id.clone(), (lon, lat));
+                lookup
+                    .region_centers_xy
+                    .push((region.region_id.clone(), region.x, region.y));
+            }
+        }
+
+        for (region_id, cells) in &catalog.cells_res8_by_region {
+            let Some(canonical_region_id) = canonical_region_for_catalog(&catalog, region_id)
+                .or_else(|| {
+                    let normalized = canonicalize_region_id(region_id)?;
+                    if catalog.by_id.contains_key(&normalized) {
+                        Some(normalized)
+                    } else {
+                        None
+                    }
+                })
+            else {
+                continue;
+            };
+            if !unlocked_catalog_regions.contains(&canonical_region_id) {
+                continue;
+            }
+            for cell in cells {
+                if let Some(token) = normalized_token(&cell.cell_id) {
+                    lookup
+                        .region_id_by_zone_token
+                        .entry(token)
+                        .or_insert_with(|| canonical_region_id.clone());
+                }
+            }
+        }
+    }
+    Ok(lookup)
+}
+
+fn build_world_intensity_by_region(
+    scenario: &Scenario,
+    lookup: &DemandRegionLookup,
+) -> (HashMap<String, f64>, usize) {
+    let mut by_region = HashMap::<String, f64>::new();
+    let mut mapped_samples = 0usize;
+
+    if !scenario.world.demand_cells.is_empty() {
+        for cell in &scenario.world.demand_cells {
+            let Some(region_id) =
+                resolve_region_id_for_zone_id(&cell.cell_id, lookup).or_else(|| {
+                    nearest_unlocked_region_for_world_point(scenario, lookup, cell.x, cell.y)
+                })
+            else {
+                continue;
+            };
+            let score = demand_cell_intensity_score(cell);
+            *by_region.entry(region_id).or_insert(0.0) += score.max(0.0);
+            mapped_samples += 1;
+        }
+        return (by_region, mapped_samples);
+    }
+
+    for zone in &scenario.world.zones {
+        let Some(region_id) = resolve_region_id_for_zone_id(&zone.id, lookup)
+            .or_else(|| nearest_unlocked_region_for_world_point(scenario, lookup, zone.x, zone.y))
+        else {
+            continue;
+        };
+        let score = (zone.population.max(0.0) + zone.jobs.max(0.0)).max(0.0);
+        *by_region.entry(region_id).or_insert(0.0) += score;
+        mapped_samples += 1;
+    }
+    (by_region, mapped_samples)
+}
+
+fn resolve_strategic_overlay_layers(
+    state: &AppState,
+    project_root: &PathBuf,
+    manifest: &ProjectManifest,
+    project_key: &str,
+) -> Option<StrategicOverlayLayers> {
+    if let Ok(cache) = state.runtime_strategic_demand_cache.lock() {
+        if let Some(entry) = cache.get(project_key) {
+            if !entry.service_gap_layer.is_empty() || !entry.corridor_desire_lines.is_empty() {
+                return Some(StrategicOverlayLayers {
+                    source_kind: "runtime",
+                    run_id: None,
+                    service_gap_layer: entry.service_gap_layer.clone(),
+                    corridor_desire_lines: entry.corridor_desire_lines.clone(),
+                });
+            }
+        }
+    }
+
+    let planning = resolve_latest_planning_output_path(project_root, manifest).and_then(
+        |(run_id, output_path)| {
+            read_json_file::<SimulationOutput>(&output_path)
+                .ok()
+                .map(|output| (run_id, output))
+        },
+    )?;
+    Some(StrategicOverlayLayers {
+        source_kind: "planning_run",
+        run_id: Some(planning.0),
+        service_gap_layer: planning.1.service_gap_layer,
+        corridor_desire_lines: planning.1.corridor_desire_lines,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestedDemandOverlay {
+    All,
+    Intensity,
+    ServiceGap,
+    CorridorDesire,
+    ResidentialAllocation,
+    EmploymentAllocation,
+    TotalAllocation,
+    RawResidentialWeight,
+    RawEmploymentWeight,
+    FallbackCells,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemandCellOverlayMode {
+    ResidentialAllocation,
+    EmploymentAllocation,
+    TotalAllocation,
+    RawResidentialWeight,
+    RawEmploymentWeight,
+    FallbackCells,
+}
+
+fn parse_requested_demand_overlay(overlay_type: Option<String>) -> RequestedDemandOverlay {
+    let Some(raw) = overlay_type else {
+        return RequestedDemandOverlay::All;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "intensity" => RequestedDemandOverlay::Intensity,
+        "service_gap" => RequestedDemandOverlay::ServiceGap,
+        "corridor_desire" => RequestedDemandOverlay::CorridorDesire,
+        "residential_allocation" => RequestedDemandOverlay::ResidentialAllocation,
+        "employment_allocation" => RequestedDemandOverlay::EmploymentAllocation,
+        "total_allocation" => RequestedDemandOverlay::TotalAllocation,
+        "raw_residential_weight" => RequestedDemandOverlay::RawResidentialWeight,
+        "raw_employment_weight" => RequestedDemandOverlay::RawEmploymentWeight,
+        "fallback_cells" => RequestedDemandOverlay::FallbackCells,
+        _ => RequestedDemandOverlay::All,
+    }
+}
+
+fn requested_cell_overlay_mode(
+    requested_overlay: RequestedDemandOverlay,
+) -> Option<DemandCellOverlayMode> {
+    match requested_overlay {
+        RequestedDemandOverlay::ResidentialAllocation => {
+            Some(DemandCellOverlayMode::ResidentialAllocation)
+        }
+        RequestedDemandOverlay::EmploymentAllocation => {
+            Some(DemandCellOverlayMode::EmploymentAllocation)
+        }
+        RequestedDemandOverlay::TotalAllocation => Some(DemandCellOverlayMode::TotalAllocation),
+        RequestedDemandOverlay::RawResidentialWeight => {
+            Some(DemandCellOverlayMode::RawResidentialWeight)
+        }
+        RequestedDemandOverlay::RawEmploymentWeight => {
+            Some(DemandCellOverlayMode::RawEmploymentWeight)
+        }
+        RequestedDemandOverlay::FallbackCells => Some(DemandCellOverlayMode::FallbackCells),
+        _ => None,
+    }
+}
+
+fn demand_cell_overlay_mode_label(mode: DemandCellOverlayMode) -> &'static str {
+    match mode {
+        DemandCellOverlayMode::ResidentialAllocation => "residential allocation",
+        DemandCellOverlayMode::EmploymentAllocation => "employment allocation",
+        DemandCellOverlayMode::TotalAllocation => "total allocation",
+        DemandCellOverlayMode::RawResidentialWeight => "raw residential weight",
+        DemandCellOverlayMode::RawEmploymentWeight => "raw employment weight",
+        DemandCellOverlayMode::FallbackCells => "fallback cells",
+    }
+}
+
+fn normalized_h3_cell_id(cell_id: &str) -> Option<String> {
+    let trimmed = cell_id.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.parse::<CellIndex>().is_ok() {
+        return Some(trimmed);
+    }
+    let suffix = trimmed.rsplit(':').next()?.trim();
+    if suffix.parse::<CellIndex>().is_ok() {
+        Some(suffix.to_string())
+    } else {
+        None
+    }
+}
+
+fn demand_cell_lonlat(scenario: &Scenario, cell: &DemandCell) -> Option<(f64, f64)> {
+    if let Some((lon, lat)) = world_xy_to_lonlat_safe(&scenario.meta.crs, cell.x, cell.y) {
+        if lon.is_finite() && lat.is_finite() {
+            return Some((lon, lat));
+        }
+    }
+    let h3_cell_id = normalized_h3_cell_id(&cell.cell_id)?;
+    let index = h3_cell_id.parse::<CellIndex>().ok()?;
+    let center: h3o::LatLng = index.into();
+    Some((center.lng(), center.lat()))
+}
+
+fn normalize_planning_region_id(
+    raw_region_id: &str,
+    lookup: &DemandRegionLookup,
+) -> Option<String> {
+    let trimmed = raw_region_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if lookup.unlocked_region_ids.contains(trimmed) {
+        return Some(trimmed.to_string());
+    }
+    if let Some(canonical) = canonicalize_region_id(trimmed) {
+        if lookup.unlocked_region_ids.contains(&canonical) {
+            return Some(canonical);
+        }
+    }
+    lookup
+        .unlocked_region_ids
+        .iter()
+        .find(|value| value.eq_ignore_ascii_case(trimmed))
+        .cloned()
+}
+
+fn resolve_demand_cell_region_id(
+    cell: &DemandCell,
+    scenario: &Scenario,
+    lookup: &DemandRegionLookup,
+) -> Option<String> {
+    if let Some(diag_region_id) = cell
+        .allocation_diagnostics
+        .as_ref()
+        .and_then(|diag| diag.planning_region_id.as_deref())
+        .and_then(|raw| normalize_planning_region_id(raw, lookup))
+    {
+        return Some(diag_region_id);
+    }
+
+    if let Some(region_id) = resolve_region_id_for_zone_id(&cell.cell_id, lookup) {
+        if lookup.unlocked_region_ids.contains(&region_id) {
+            return Some(region_id);
+        }
+    }
+
+    nearest_unlocked_region_for_world_point(scenario, lookup, cell.x, cell.y)
+}
+
+fn build_demand_cell_overlay_payload(
+    scenario: &Scenario,
+    lookup: &DemandRegionLookup,
+    mode: DemandCellOverlayMode,
+) -> DemandOverlayPayload {
+    let total_cells = scenario.world.demand_cells.len();
+    let mut mappable_cells = 0usize;
+    let mut fallback_cells = 0usize;
+    let mut cell_rows = Vec::<DemandOverlayCellDatum>::new();
+
+    for cell in &scenario.world.demand_cells {
+        let Some(planning_region_id) = resolve_demand_cell_region_id(cell, scenario, lookup) else {
+            continue;
+        };
+        let Some((lon, lat)) = demand_cell_lonlat(scenario, cell) else {
+            continue;
+        };
+        if !lon.is_finite() || !lat.is_finite() {
+            continue;
+        }
+        mappable_cells += 1;
+
+        let diagnostics = cell.allocation_diagnostics.as_ref();
+        let raw_weight_residential = diagnostics
+            .and_then(|diag| diag.raw_weight_residential)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let raw_weight_employment = diagnostics
+            .and_then(|diag| diag.raw_weight_employment)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let allocated_residential_mass = diagnostics
+            .and_then(|diag| diag.allocated_residential_mass)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let allocated_employment_mass = diagnostics
+            .and_then(|diag| diag.allocated_employment_mass)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let fallback_reason = diagnostics
+            .and_then(|diag| diag.fallback_reason.as_ref())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        if fallback_reason.is_some() {
+            fallback_cells += 1;
+        }
+
+        cell_rows.push(DemandOverlayCellDatum {
+            cell_id: cell.cell_id.clone(),
+            planning_region_id: Some(planning_region_id),
+            lon,
+            lat,
+            area_m2: cell.area_m2.max(0.0),
+            residents_night: cell.residents_night.max(0.0),
+            jobs_day: cell.jobs_day.max(0.0),
+            centrality_score: cell.centrality_score.max(0.0),
+            data_quality_score: cell.data_quality_score.max(0.0),
+            activity_mix_residential: cell.activity_mix_residential.max(0.0),
+            activity_mix_office: cell.activity_mix_office.max(0.0),
+            activity_mix_retail: cell.activity_mix_retail.max(0.0),
+            activity_mix_recreation: cell.activity_mix_recreation.max(0.0),
+            activity_mix_industrial: cell.activity_mix_industrial.max(0.0),
+            activity_mix_education: cell.activity_mix_education.max(0.0),
+            activity_mix_health: cell.activity_mix_health.max(0.0),
+            raw_weight_residential,
+            raw_weight_employment,
+            allocated_residential_mass,
+            allocated_employment_mass,
+            fallback_reason,
+        });
+    }
+
+    cell_rows.sort_by(|left, right| left.cell_id.cmp(&right.cell_id));
+
+    let available = if matches!(mode, DemandCellOverlayMode::FallbackCells) {
+        fallback_cells > 0
+    } else {
+        !cell_rows.is_empty()
+    };
+
+    let reason = if available {
+        None
+    } else if total_cells == 0 {
+        Some("No demand cells are materialized in this scenario.".to_string())
+    } else if mappable_cells == 0 {
+        Some(
+            "Demand cells exist but none map to unlocked planning regions with renderable geometry."
+                .to_string(),
+        )
+    } else if matches!(mode, DemandCellOverlayMode::FallbackCells) {
+        Some("No demand cells currently use allocation fallback behavior.".to_string())
+    } else {
+        Some(format!(
+            "No mappable demand cells were available for {}.",
+            demand_cell_overlay_mode_label(mode)
+        ))
+    };
+
+    let mut by_region = HashMap::<String, usize>::new();
+    for row in &cell_rows {
+        if let Some(region_id) = row.planning_region_id.as_ref() {
+            *by_region.entry(region_id.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut by_region_rows = by_region
+        .into_iter()
+        .map(|(region_id, count)| format!("{region_id}:{count}"))
+        .collect::<Vec<_>>();
+    by_region_rows.sort();
+    let sample_cells = cell_rows
+        .iter()
+        .take(5)
+        .map(|row| row.cell_id.clone())
+        .collect::<Vec<_>>();
+    eprintln!(
+        "[demand-overlay-cell] mode={} total_cells={} mappable_cells={} payload_rows={} fallback_cells={} by_region={} sample_cells={}",
+        demand_cell_overlay_mode_label(mode),
+        total_cells,
+        mappable_cells,
+        cell_rows.len(),
+        fallback_cells,
+        by_region_rows.join(","),
+        sample_cells.join("|"),
+    );
+
+    DemandOverlayPayload {
+        available,
+        reason,
+        intensity_available: false,
+        intensity_reason: None,
+        service_gap_available: false,
+        service_gap_reason: None,
+        corridor_desire_available: false,
+        corridor_desire_reason: None,
+        run_id: None,
+        cell_data_total: total_cells,
+        cell_data_mappable: mappable_cells,
+        cell_fallback_count: fallback_cells,
+        cell_data: cell_rows,
+        region_data: Vec::new(),
+        corridor_data: Vec::new(),
+    }
+}
+
+pub(crate) fn get_demand_overlay_payload(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    project_path: String,
+    overlay_type: Option<String>,
+) -> Result<DemandOverlayPayload, String> {
+    let started = Instant::now();
+    let requested_overlay = parse_requested_demand_overlay(overlay_type);
+    let include_intensity = matches!(
+        requested_overlay,
+        RequestedDemandOverlay::All | RequestedDemandOverlay::Intensity
+    );
+    let include_service_gap = matches!(
+        requested_overlay,
+        RequestedDemandOverlay::All | RequestedDemandOverlay::ServiceGap
+    );
+    let include_corridor = matches!(
+        requested_overlay,
+        RequestedDemandOverlay::All | RequestedDemandOverlay::CorridorDesire
+    );
+
+    let project_root = PathBuf::from(project_path);
+    let manifest = read_manifest(&project_root)?;
+    let doc =
+        ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
+            .map_err(|e| e.to_string())?;
+    let project_key = project_root.to_string_lossy().to_string();
+    let runtime_loop_active =
+        runtime_loop_matches_project(state.inner(), &project_key).unwrap_or(false);
+    let lookup = build_demand_region_lookup(&app, &manifest)?;
+    if let Some(cell_overlay_mode) = requested_cell_overlay_mode(requested_overlay) {
+        let payload = build_demand_cell_overlay_payload(&doc.scenario, &lookup, cell_overlay_mode);
+        eprintln!(
+            "[rt-overlay] mode=cell project={} runtime_loop_active={} elapsed_ms={:.2} cell_data_total={} cell_data_mappable={} payload_rows={} fallback_cells={} region_rows={} corridor_rows={} available={} reason={}",
+            project_key,
+            runtime_loop_active,
+            started.elapsed().as_secs_f64() * 1000.0,
+            payload.cell_data_total,
+            payload.cell_data_mappable,
+            payload.cell_data.len(),
+            payload.cell_fallback_count,
+            payload.region_data.len(),
+            payload.corridor_data.len(),
+            payload.available,
+            payload.reason.as_deref().unwrap_or("none"),
+        );
+        return Ok(payload);
+    }
+    let (intensity_by_region, mapped_intensity_samples) = if include_intensity {
+        build_world_intensity_by_region(&doc.scenario, &lookup)
+    } else {
+        (HashMap::new(), 0usize)
+    };
+
+    let mut region_rows = Vec::<DemandOverlayRegionDatum>::new();
+    for region_id in &lookup.unlocked_region_ids {
+        let Some((lon, lat)) = lookup.region_lonlat_by_id.get(region_id).copied() else {
+            continue;
+        };
+        region_rows.push(DemandOverlayRegionDatum {
+            region_id: region_id.clone(),
+            region_name: lookup
+                .region_name_by_id
+                .get(region_id)
+                .cloned()
+                .unwrap_or_else(|| region_id.clone()),
+            lon,
+            lat,
+            intensity_score: if include_intensity {
+                intensity_by_region
+                    .get(region_id)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0)
+            } else {
+                0.0
+            },
+            service_gap_score: 0.0,
+            service_gap_ratio: 0.0,
+        });
+    }
+    region_rows.sort_by(|a, b| a.region_id.cmp(&b.region_id));
+
+    let intensity_available =
+        include_intensity && !region_rows.is_empty() && mapped_intensity_samples > 0;
+    let intensity_reason = if !include_intensity || intensity_available {
+        None
+    } else if region_rows.is_empty() {
+        Some("No unlocked planning regions are available for demand intensity.".to_string())
+    } else if !doc.scenario.world.demand_cells.is_empty() || !doc.scenario.world.zones.is_empty() {
+        Some(
+            "Demand substrate exists but could not be mapped to unlocked planning regions."
+                .to_string(),
+        )
+    } else {
+        Some("No demand substrate found in scenario world data.".to_string())
+    };
+
+    let zone_xy_by_id = if include_service_gap || include_corridor {
+        zone_world_xy_index(&doc.scenario)
+    } else {
+        HashMap::new()
+    };
+    let strategic_layers = if include_service_gap || include_corridor {
+        resolve_strategic_overlay_layers(state.inner(), &project_root, &manifest, &project_key)
+    } else {
+        None
+    };
+    let run_id = strategic_layers
+        .as_ref()
+        .and_then(|layers| layers.run_id.clone());
+
+    let region_index_by_id = region_rows
+        .iter()
+        .enumerate()
+        .map(|(idx, row)| (row.region_id.clone(), idx))
+        .collect::<HashMap<_, _>>();
+
+    let mut service_gap_available = !include_service_gap;
+    let mut service_gap_reason = None::<String>;
+    let mut service_gap_ratio_weight = HashMap::<String, f64>::new();
+    if include_service_gap {
+        if let Some(source) = strategic_layers.as_ref() {
+            let mut mapped_rows = 0usize;
+            for gap in &source.service_gap_layer {
+                let Some(region_id) = resolve_region_id_for_zone_with_fallback(
+                    &gap.zone_id,
+                    &lookup,
+                    &doc.scenario,
+                    &zone_xy_by_id,
+                ) else {
+                    continue;
+                };
+                let Some(idx) = region_index_by_id.get(&region_id).copied() else {
+                    continue;
+                };
+                let Some(row) = region_rows.get_mut(idx) else {
+                    continue;
+                };
+                let score = gap.total_unserved_demand.max(0.0);
+                let ratio = gap.latent_vs_realised_ratio.max(0.0);
+                row.service_gap_score += score;
+                row.service_gap_ratio += ratio * score.max(1.0);
+                *service_gap_ratio_weight.entry(region_id).or_insert(0.0) += score.max(1.0);
+                mapped_rows += 1;
+            }
+            for row in &mut region_rows {
+                let weight = service_gap_ratio_weight
+                    .get(&row.region_id)
+                    .copied()
+                    .unwrap_or(0.0);
+                row.service_gap_ratio = if weight > 0.0 {
+                    row.service_gap_ratio / weight
+                } else {
+                    0.0
+                };
+            }
+            service_gap_available = mapped_rows > 0;
+            if !service_gap_available {
+                service_gap_reason = Some(format!(
+                    "{} did not contain mappable service gap rows.",
+                    if source.source_kind == "runtime" {
+                        "Latest strategic runtime refresh"
+                    } else {
+                        "Latest planning run"
+                    }
+                ));
+            }
+        } else {
+            service_gap_reason = Some(if runtime_loop_active {
+                "Service gap will appear after the first strategic runtime refresh.".to_string()
+            } else {
+                "Run planning or start runtime simulation to compute service gap analysis."
+                    .to_string()
+            });
+        }
+    }
+
+    let mut corridor_data = Vec::<DemandOverlayCorridorDatum>::new();
+    if include_corridor {
+        let mut corridor_by_pair = HashMap::<(String, String), DemandOverlayCorridorDatum>::new();
+        if let Some(source) = strategic_layers.as_ref() {
+            for corridor in &source.corridor_desire_lines {
+                let Some(origin_region_id) = resolve_region_id_for_zone_with_fallback(
+                    &corridor.origin_zone_id,
+                    &lookup,
+                    &doc.scenario,
+                    &zone_xy_by_id,
+                ) else {
+                    continue;
+                };
+                let Some(destination_region_id) = resolve_region_id_for_zone_with_fallback(
+                    &corridor.destination_zone_id,
+                    &lookup,
+                    &doc.scenario,
+                    &zone_xy_by_id,
+                ) else {
+                    continue;
+                };
+                if origin_region_id == destination_region_id {
+                    continue;
+                }
+                let (origin_region_id, destination_region_id) =
+                    if origin_region_id <= destination_region_id {
+                        (origin_region_id, destination_region_id)
+                    } else {
+                        (destination_region_id, origin_region_id)
+                    };
+                let Some((origin_lon, origin_lat)) =
+                    lookup.region_lonlat_by_id.get(&origin_region_id).copied()
+                else {
+                    continue;
+                };
+                let Some((destination_lon, destination_lat)) = lookup
+                    .region_lonlat_by_id
+                    .get(&destination_region_id)
+                    .copied()
+                else {
+                    continue;
+                };
+                let key = (origin_region_id.clone(), destination_region_id.clone());
+                let row =
+                    corridor_by_pair
+                        .entry(key)
+                        .or_insert_with(|| DemandOverlayCorridorDatum {
+                            origin_region_id,
+                            destination_region_id,
+                            origin_lon,
+                            origin_lat,
+                            destination_lon,
+                            destination_lat,
+                            corridor_score: 0.0,
+                            latent_passengers: 0.0,
+                            realised_passengers: 0.0,
+                            unserved_passengers: 0.0,
+                            is_underserved: false,
+                        });
+                row.corridor_score += corridor.corridor_score.max(0.0);
+                row.latent_passengers += corridor.latent_passengers.max(0.0);
+                row.realised_passengers += corridor.realised_passengers.max(0.0);
+                row.unserved_passengers += corridor.unserved_passengers.max(0.0);
+                row.is_underserved = row.is_underserved || corridor.is_underserved;
+            }
+        }
+        corridor_data = corridor_by_pair.into_values().collect::<Vec<_>>();
+        corridor_data.sort_by(|a, b| {
+            b.corridor_score
+                .partial_cmp(&a.corridor_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.origin_region_id.cmp(&b.origin_region_id))
+                .then_with(|| a.destination_region_id.cmp(&b.destination_region_id))
+        });
+    }
+
+    let corridor_desire_available = include_corridor && !corridor_data.is_empty();
+    let corridor_desire_reason = if !include_corridor || corridor_desire_available {
+        None
+    } else if let Some(source) = strategic_layers.as_ref() {
+        Some(format!(
+            "{} did not contain mappable corridor desire rows.",
+            if source.source_kind == "runtime" {
+                "Latest strategic runtime refresh"
+            } else {
+                "Latest planning run"
+            }
+        ))
+    } else if runtime_loop_active {
+        Some("Corridor desire will appear after the first strategic runtime refresh.".to_string())
+    } else {
+        Some(
+            "Run planning or start runtime simulation to compute corridor desire analysis."
+                .to_string(),
+        )
+    };
+
+    if !include_corridor {
+        corridor_data.clear();
+    }
+
+    let available = intensity_available || service_gap_available || corridor_desire_available;
+
+    let payload = DemandOverlayPayload {
+        available,
+        reason: if available {
+            None
+        } else {
+            Some("No demand overlay data is currently mappable for this save.".to_string())
+        },
+        intensity_available,
+        intensity_reason,
+        service_gap_available,
+        service_gap_reason,
+        corridor_desire_available,
+        corridor_desire_reason,
+        run_id,
+        cell_data_total: 0,
+        cell_data_mappable: 0,
+        cell_fallback_count: 0,
+        cell_data: Vec::new(),
+        region_data: region_rows,
+        corridor_data,
+    };
+    eprintln!(
+        "[rt-overlay] mode=regional project={} runtime_loop_active={} elapsed_ms={:.2} intensity_available={} service_gap_available={} corridor_desire_available={} region_rows={} corridor_rows={} run_id={} available={} reason={}",
+        project_key,
+        runtime_loop_active,
+        started.elapsed().as_secs_f64() * 1000.0,
+        payload.intensity_available,
+        payload.service_gap_available,
+        payload.corridor_desire_available,
+        payload.region_data.len(),
+        payload.corridor_data.len(),
+        payload.run_id.as_deref().unwrap_or("none"),
+        payload.available,
+        payload.reason.as_deref().unwrap_or("none"),
+    );
+    Ok(payload)
 }

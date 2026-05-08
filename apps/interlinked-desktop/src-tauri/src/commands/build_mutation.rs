@@ -3,11 +3,21 @@ use super::content_library::{
     county_basemap_full_file, county_basemap_mid_file, county_roads_file,
     primary_project_country_iso2,
 };
+use crate::builder_support::{StationRuntimeDiagnostics, StationRuntimeServiceDiagnostics};
+use crate::contracts::CounterProvenance;
+use std::time::Instant;
 use tauri::{command, AppHandle};
+
+fn build_perf_log(label: &str, started: Instant) {
+    eprintln!("[build-perf] {label}: {}ms", started.elapsed().as_millis());
+}
 
 #[command]
 pub fn load_build_defaults() -> Result<BuildDefaults, String> {
-    Ok(default_build_defaults(&economy_config()))
+    let started = Instant::now();
+    let defaults = default_build_defaults(&economy_config());
+    build_perf_log("command.load_build_defaults", started);
+    Ok(defaults)
 }
 
 fn county_iso_and_id_from_region_id(region_id: &str) -> Option<(String, String)> {
@@ -737,36 +747,78 @@ pub fn preview_network_mutation(
     project_path: String,
     scenario_document: ScenarioDocumentLite,
 ) -> Result<NetworkMutationPreviewResult, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
     ensure_project_dirs(&project_root)?;
 
+    let load_current_started = Instant::now();
     let current_doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.preview_network_mutation.load_current_doc",
+        load_current_started,
+    );
+    let migrate_next_started = Instant::now();
     let next_doc = ScenarioService::migrate_to_current(ScenarioDocument {
         schema_version: scenario_document.schema_version,
         scenario: scenario_document.scenario,
     })
     .map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.preview_network_mutation.migrate_next_doc",
+        migrate_next_started,
+    );
+    let validate_started = Instant::now();
     ScenarioService::validate(&next_doc.scenario).map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.preview_network_mutation.validate_next_doc",
+        validate_started,
+    );
+    let read_manifest_started = Instant::now();
     let manifest = read_manifest(&project_root)?;
+    build_perf_log(
+        "command.preview_network_mutation.read_manifest",
+        read_manifest_started,
+    );
+    let path_validation_started = Instant::now();
     let path_validation = validate_mutation_respects_unlocked_uk_regions(
         &app,
         &current_doc.scenario,
         &next_doc.scenario,
         &manifest,
     )?;
+    build_perf_log(
+        "command.preview_network_mutation.validate_paths",
+        path_validation_started,
+    );
     let cfg = economy_config();
+    let summarize_started = Instant::now();
     let summary = summarize_network_mutation(
         &current_doc.scenario,
         &next_doc.scenario,
         &cfg,
         Some(manifest.economy.current_balance_base),
     );
+    build_perf_log(
+        "command.preview_network_mutation.summarize",
+        summarize_started,
+    );
     let mut summary = summary;
     let profile = resolved_difficulty_profile(&manifest);
+    let apply_difficulty_started = Instant::now();
     apply_difficulty_to_mutation_summary(&mut summary, &profile);
+    build_perf_log(
+        "command.preview_network_mutation.apply_difficulty",
+        apply_difficulty_started,
+    );
+    let breakdown_started = Instant::now();
     let cost_breakdown = mutation_cost_breakdown(&summary);
+    build_perf_log(
+        "command.preview_network_mutation.cost_breakdown",
+        breakdown_started,
+    );
+    build_perf_log("command.preview_network_mutation.total", started);
     Ok(NetworkMutationPreviewResult {
         summary,
         cost_breakdown,
@@ -782,41 +834,87 @@ pub fn apply_network_mutation(
     scenario_document: ScenarioDocumentLite,
     capex_override_base: Option<f64>,
 ) -> Result<NetworkMutationResult, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
     ensure_project_dirs(&project_root)?;
 
+    let load_current_started = Instant::now();
     let current_doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
-    let next_doc = ScenarioService::migrate_to_current(ScenarioDocument {
+    build_perf_log(
+        "command.apply_network_mutation.load_current_doc",
+        load_current_started,
+    );
+    let migrate_next_started = Instant::now();
+    let mut next_doc = ScenarioService::migrate_to_current(ScenarioDocument {
         schema_version: scenario_document.schema_version,
         scenario: scenario_document.scenario,
     })
     .map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.apply_network_mutation.migrate_next_doc",
+        migrate_next_started,
+    );
+    let validate_started = Instant::now();
     ScenarioService::validate(&next_doc.scenario).map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.apply_network_mutation.validate_next_doc",
+        validate_started,
+    );
 
+    let read_manifest_started = Instant::now();
     let mut manifest = read_manifest(&project_root)?;
+    build_perf_log(
+        "command.apply_network_mutation.read_manifest",
+        read_manifest_started,
+    );
+    let path_validation_started = Instant::now();
     let path_validation = validate_mutation_respects_unlocked_uk_regions(
         &app,
         &current_doc.scenario,
         &next_doc.scenario,
         &manifest,
     )?;
+    build_perf_log(
+        "command.apply_network_mutation.validate_paths",
+        path_validation_started,
+    );
     let cfg = economy_config();
+    let summarize_started = Instant::now();
     let summary = summarize_network_mutation(
         &current_doc.scenario,
         &next_doc.scenario,
         &cfg,
         Some(manifest.economy.current_balance_base),
     );
+    build_perf_log(
+        "command.apply_network_mutation.summarize",
+        summarize_started,
+    );
     let mut summary = summary;
     let profile = resolved_difficulty_profile(&manifest);
+    let apply_difficulty_started = Instant::now();
     apply_difficulty_to_mutation_summary(&mut summary, &profile);
+    build_perf_log(
+        "command.apply_network_mutation.apply_difficulty",
+        apply_difficulty_started,
+    );
+    let breakdown_started = Instant::now();
     let cost_breakdown = mutation_cost_breakdown(&summary);
+    build_perf_log(
+        "command.apply_network_mutation.cost_breakdown",
+        breakdown_started,
+    );
     let capex_override_scaled = capex_override_base
         .filter(|value| value.is_finite())
         .map(|value| value * profile.capex_mult.max(0.0));
+    let apply_budget_started = Instant::now();
     apply_build_budget(&mut manifest, &cfg, &summary, capex_override_scaled)?;
+    build_perf_log(
+        "command.apply_network_mutation.apply_budget",
+        apply_budget_started,
+    );
     let applied_total_delta_base = capex_override_scaled
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(summary.apply_total_delta_base);
@@ -835,14 +933,33 @@ pub fn apply_network_mutation(
     sync_progress_budget_from_economy(&mut manifest);
     manifest.updated_at = now_string();
 
+    let settle_orders_started = Instant::now();
+    let _ =
+        settle_pending_purchase_orders(&mut next_doc.scenario, manifest.clock_state.tick_seconds);
+    build_perf_log(
+        "command.apply_network_mutation.settle_purchase_orders",
+        settle_orders_started,
+    );
+
+    let write_scenario_started = Instant::now();
     ScenarioService::save_to_path(
         scenario_path(&project_root).to_string_lossy().as_ref(),
         &next_doc,
     )
     .map_err(|e| e.to_string())?;
+    build_perf_log(
+        "command.apply_network_mutation.write_scenario",
+        write_scenario_started,
+    );
+    let write_manifest_started = Instant::now();
     write_manifest(&project_root, &manifest)?;
+    build_perf_log(
+        "command.apply_network_mutation.write_manifest",
+        write_manifest_started,
+    );
 
     if project_is_current(&state, &project_path)? {
+        let rehydrate_started = Instant::now();
         let mut guard = state
             .game
             .lock()
@@ -850,12 +967,22 @@ pub fn apply_network_mutation(
         if let Some(game_state) = guard.as_mut() {
             rehydrate_game_state_scenario(game_state, &next_doc.scenario);
         }
+        build_perf_log(
+            "command.apply_network_mutation.rehydrate_game_state",
+            rehydrate_started,
+        );
+        let enqueue_runtime_action_started = Instant::now();
         let _ = enqueue_runtime_action_with_retry(
             state.inner(),
             &project_path,
             RuntimeAction::InvalidateMaterialization,
         )?;
+        build_perf_log(
+            "command.apply_network_mutation.enqueue_runtime_invalidate",
+            enqueue_runtime_action_started,
+        );
     }
+    build_perf_log("command.apply_network_mutation.total", started);
     Ok(NetworkMutationResult {
         scenario: ScenarioDocumentLite {
             schema_version: next_doc.schema_version,
@@ -875,13 +1002,30 @@ pub fn inspect_station(
     project_path: String,
     stop_id: String,
 ) -> Result<StationInspection, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
+    let load_scenario_started = Instant::now();
     let doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
+    let load_scenario_ms = load_scenario_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log(
+        "command.inspect_station.load_scenario",
+        load_scenario_started,
+    );
+    let output_started = Instant::now();
     let output = inspection_output_for_project(&state, &project_path, &doc.scenario).ok();
+    let resolve_output_ms = output_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_station.resolve_output", output_started);
+    let inspect_started = Instant::now();
     let mut inspection = inspect_station_from_scenario(&doc.scenario, output.as_ref(), &stop_id)?;
-    if let Ok(Some(snapshot)) = latest_runtime_snapshot_for_project(state.inner(), &project_path) {
+    let compute_ms = inspect_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_station.compute", inspect_started);
+    let runtime_overlay_started = Instant::now();
+    let latest_snapshot = latest_runtime_snapshot_for_project(state.inner(), &project_path)
+        .ok()
+        .flatten();
+    if let Some(snapshot) = latest_snapshot.as_ref() {
         if let Some(runtime_station) = snapshot.stations.iter().find(|s| s.stop_id == stop_id) {
             inspection.station_load_current_pax = runtime_station.current_inside_pax.max(0.0);
             inspection.station_queue_capacity_pax = runtime_station.capacity_pax.max(0.0);
@@ -892,7 +1036,400 @@ pub fn inspect_station(
             inspection.queue_end = runtime_station.current_inside_pax.max(0.0);
         }
     }
+    let runtime_overlay_ms = runtime_overlay_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log(
+        "command.inspect_station.merge_runtime_overlay",
+        runtime_overlay_started,
+    );
+    let diagnostics_started = Instant::now();
+    let mut line_id_by_service = HashMap::<String, String>::new();
+    for service in &doc.scenario.world.services {
+        line_id_by_service.insert(service.id.clone(), service_line_runtime_id(service));
+    }
+    let mut planner_trace = interlinked_engine::sim::PlannerPassengerTrace::default();
+    let mut planner_service_stop_trace_by_key =
+        HashMap::<(String, String), interlinked_engine::sim::PlannerServiceStopTrace>::new();
+    let mut planner_mode_capture_by_service = HashMap::<String, f64>::new();
+
+    let mut service_debug_rows = HashMap::<String, StationRuntimeServiceDiagnostics>::new();
+    let mut planner_attempted_total_pax = 0.0_f64;
+    let mut planner_cohort_rows = 0usize;
+    if let Some(sim_output) = output.as_ref() {
+        planner_trace = sim_output.diagnostics.planner_passenger_trace.clone();
+        for trace in &planner_trace.service_stop_traces {
+            planner_service_stop_trace_by_key.insert(
+                (trace.service_id.clone(), trace.stop_id.clone()),
+                trace.clone(),
+            );
+        }
+        for service_capture in &sim_output.service_transit_capture_context {
+            planner_mode_capture_by_service.insert(
+                service_capture.service_id.clone(),
+                service_capture.transit_captured_demand.max(0.0),
+            );
+        }
+        for cohort in &sim_output.passenger_cohorts {
+            if cohort.board_stop_id != stop_id {
+                continue;
+            }
+            let attempted = cohort.attempted_pax.max(0.0);
+            planner_attempted_total_pax += attempted;
+            planner_cohort_rows = planner_cohort_rows.saturating_add(1);
+            let row = service_debug_rows
+                .entry(cohort.service_id.clone())
+                .or_insert_with(|| StationRuntimeServiceDiagnostics {
+                    service_id: cohort.service_id.clone(),
+                    line_id: line_id_by_service
+                        .get(&cohort.service_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    ..StationRuntimeServiceDiagnostics::default()
+                });
+            row.planner_attempted_pax += attempted;
+        }
+        for load in &sim_output.board_loads {
+            if load.stop_id != stop_id {
+                continue;
+            }
+            let row = service_debug_rows
+                .entry(load.service_id.clone())
+                .or_insert_with(|| StationRuntimeServiceDiagnostics {
+                    service_id: load.service_id.clone(),
+                    line_id: line_id_by_service
+                        .get(&load.service_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    ..StationRuntimeServiceDiagnostics::default()
+                });
+            row.planner_board_load_arrivals_pax += load.arrivals.max(0.0);
+        }
+    }
+
+    let mut runtime_queue_total_pax = 0.0_f64;
+    let mut runtime_attempted_total_pax = 0.0_f64;
+    let mut has_live_runtime_ops = false;
+    if let Ok(guard) = state.runtime_ops.lock() {
+        if let Some(ops) = guard
+            .as_ref()
+            .filter(|runtime| runtime.project_path == project_path)
+        {
+            has_live_runtime_ops = true;
+            for ((service_id, board_stop_id, _destination_stop_id), queued) in &ops.queue_cohorts {
+                if board_stop_id != &stop_id {
+                    continue;
+                }
+                let queued = queued.max(0.0);
+                runtime_queue_total_pax += queued;
+                let row = service_debug_rows
+                    .entry(service_id.clone())
+                    .or_insert_with(|| StationRuntimeServiceDiagnostics {
+                        service_id: service_id.clone(),
+                        line_id: line_id_by_service
+                            .get(service_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ..StationRuntimeServiceDiagnostics::default()
+                    });
+                row.runtime_queue_pax += queued;
+            }
+            for ((service_id, board_stop_id), ingest) in &ops.last_queue_ingest_by_service_stop {
+                if board_stop_id != &stop_id {
+                    continue;
+                }
+                let row = service_debug_rows
+                    .entry(service_id.clone())
+                    .or_insert_with(|| StationRuntimeServiceDiagnostics {
+                        service_id: service_id.clone(),
+                        line_id: line_id_by_service
+                            .get(service_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ..StationRuntimeServiceDiagnostics::default()
+                    });
+                row.runtime_attempted_pax += ingest.attempted_pax.max(0.0);
+                row.runtime_ingested_pax += ingest.ingested_pax.max(0.0);
+                row.runtime_dropped_not_dispatchable_pax +=
+                    ingest.dropped_not_dispatchable_pax.max(0.0);
+                row.runtime_dropped_invalid_stop_pax += ingest.dropped_invalid_stop_pax.max(0.0);
+                row.dispatchable = ops.dispatch_service_ids.contains(service_id);
+                runtime_attempted_total_pax += ingest.attempted_pax.max(0.0);
+            }
+            for ((service_id, board_stop_id), boarding) in &ops.last_boarding_by_service_stop {
+                if board_stop_id != &stop_id {
+                    continue;
+                }
+                let row = service_debug_rows
+                    .entry(service_id.clone())
+                    .or_insert_with(|| StationRuntimeServiceDiagnostics {
+                        service_id: service_id.clone(),
+                        line_id: line_id_by_service
+                            .get(service_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ..StationRuntimeServiceDiagnostics::default()
+                    });
+                row.runtime_boarding_attempted_pax += boarding.attempted_pax.max(0.0);
+                row.runtime_boarded_pax += boarding.boarded_pax.max(0.0);
+                row.runtime_left_behind_pax += boarding.left_behind_pax.max(0.0);
+            }
+        }
+    }
+
+    for row in service_debug_rows.values_mut() {
+        if row.line_id.is_empty() {
+            row.line_id = line_id_by_service
+                .get(&row.service_id)
+                .cloned()
+                .unwrap_or_default();
+        }
+        if let Some(trace) =
+            planner_service_stop_trace_by_key.get(&(row.service_id.clone(), stop_id.clone()))
+        {
+            row.planner_candidate_paths_raw = trace.raw_candidate_paths;
+            row.planner_candidate_paths_boardable = trace.boardable_candidate_paths;
+            row.planner_rejected_no_board_or_alight_paths = trace.rejected_no_board_or_alight_paths;
+            row.planner_rejected_unpaired_board_alight_paths =
+                trace.rejected_unpaired_board_alight_paths;
+            row.planner_assigned_pax = trace.planner_assigned_pax.max(0.0);
+            row.planner_reason_code = trace.reason_code.clone();
+        }
+        row.planner_mode_transit_captured_pax = planner_mode_capture_by_service
+            .get(&row.service_id)
+            .copied()
+            .unwrap_or(0.0)
+            .max(0.0);
+        let attempted_basis = if has_live_runtime_ops {
+            row.runtime_attempted_pax.max(0.0)
+        } else {
+            row.planner_attempted_pax.max(0.0)
+        };
+        row.diagnostic_note = if attempted_basis > 0.0 && row.runtime_ingested_pax <= 0.0 {
+            if row.runtime_dropped_not_dispatchable_pax > 0.0 {
+                Some("runtime_ingest_drop:not_dispatchable".to_string())
+            } else if row.runtime_dropped_invalid_stop_pax > 0.0 {
+                Some("runtime_ingest_drop:invalid_stop_key".to_string())
+            } else {
+                Some("runtime_ingest_zero:unknown".to_string())
+            }
+        } else if row.runtime_queue_pax > 0.0 && row.runtime_boarding_attempted_pax <= 0.0 {
+            Some("runtime_boarding_zero:no_departure_or_key_mismatch".to_string())
+        } else if row.runtime_boarding_attempted_pax > 0.0
+            && row.runtime_boarded_pax <= 0.0
+            && row.runtime_left_behind_pax > 0.0
+        {
+            Some("runtime_boarding_zero:capacity_or_direction_block".to_string())
+        } else {
+            None
+        };
+    }
+
+    let snapshot_current_inside_pax = latest_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.stations.iter().find(|s| s.stop_id == stop_id))
+        .map(|station| station.current_inside_pax.max(0.0))
+        .unwrap_or(0.0);
+    let mut services = service_debug_rows.into_values().collect::<Vec<_>>();
+    services.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+    let attempted_total_for_trace = if has_live_runtime_ops {
+        runtime_attempted_total_pax.max(0.0)
+    } else {
+        planner_attempted_total_pax.max(0.0)
+    };
+    let planner_stage_hint = planner_trace
+        .first_zero_stage
+        .as_deref()
+        .unwrap_or("unknown_stage");
+    let planner_reason_hint = planner_trace
+        .first_zero_reason
+        .as_deref()
+        .unwrap_or("unknown_reason");
+    let first_zero_or_mismatch = if attempted_total_for_trace <= 0.0 {
+        if has_live_runtime_ops {
+            Some(format!(
+                "A:runtime_attempted_zero|planner_stage={planner_stage_hint}|reason={planner_reason_hint}"
+            ))
+        } else {
+            Some(format!(
+                "A:planner_attempted_zero|planner_stage={planner_stage_hint}|reason={planner_reason_hint}"
+            ))
+        }
+    } else if runtime_queue_total_pax <= 0.0 {
+        if services
+            .iter()
+            .any(|row| row.runtime_dropped_not_dispatchable_pax > 0.0)
+        {
+            Some("B:runtime_ingest_drop_not_dispatchable".to_string())
+        } else if services
+            .iter()
+            .any(|row| row.runtime_dropped_invalid_stop_pax > 0.0)
+        {
+            Some("B:runtime_ingest_drop_invalid_stop_key".to_string())
+        } else {
+            Some("B:runtime_queue_zero_after_ingest".to_string())
+        }
+    } else if snapshot_current_inside_pax <= 0.0 {
+        Some("C:snapshot_station_current_inside_zero".to_string())
+    } else if services.iter().any(|row| {
+        row.runtime_boarding_attempted_pax > 0.0
+            && row.runtime_boarded_pax <= 0.0
+            && row.runtime_left_behind_pax > 0.0
+    }) {
+        Some("E:boarding_attempted_but_zero_boarded".to_string())
+    } else {
+        None
+    };
+    eprintln!(
+        "[pax-inspect] stop={} planner_stage={} planner_reason={} planner_attempted={:.2} runtime_attempted={:.2} runtime_queue={:.2} snapshot_inside={:.2} mode_raw_paths={} mode_boardable_paths={} assignment_attempted={:.2}",
+        stop_id,
+        planner_trace
+            .first_zero_stage
+            .as_deref()
+            .unwrap_or("none"),
+        planner_trace
+            .first_zero_reason
+            .as_deref()
+            .unwrap_or("none"),
+        planner_attempted_total_pax.max(0.0),
+        runtime_attempted_total_pax.max(0.0),
+        runtime_queue_total_pax.max(0.0),
+        snapshot_current_inside_pax.max(0.0),
+        planner_trace.mode_choice_candidate_paths_raw_total,
+        planner_trace.mode_choice_candidate_paths_boardable_total,
+        planner_trace.assignment_attempted_pax_total.max(0.0),
+    );
+
+    inspection.runtime_diagnostics = Some(StationRuntimeDiagnostics {
+        counter_provenance: CounterProvenance::DebugLegacy,
+        tick_index: latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.telemetry.tick_index)
+            .unwrap_or(0),
+        planner_attempted_total_pax: planner_attempted_total_pax.max(0.0),
+        runtime_attempted_total_pax: runtime_attempted_total_pax.max(0.0),
+        planner_cohort_rows,
+        runtime_queue_total_pax: runtime_queue_total_pax.max(0.0),
+        snapshot_current_inside_pax: snapshot_current_inside_pax.max(0.0),
+        planner_demand_cells_total: planner_trace.demand_cells_total,
+        planner_demand_cells_nonzero_activity: planner_trace.demand_cells_nonzero_activity,
+        planner_zones_total: planner_trace.zones_total,
+        planner_zones_nonzero_activity: planner_trace.zones_nonzero_activity,
+        planner_latent_rows_total: planner_trace.latent_rows_total,
+        planner_latent_total_pax: planner_trace.latent_pax_total.max(0.0),
+        planner_mode_choice_rows_total: planner_trace.mode_choice_rows_total,
+        planner_mode_choice_rows_with_transit_capture: planner_trace
+            .mode_choice_rows_with_transit_capture,
+        planner_mode_choice_transit_captured_pax: planner_trace
+            .mode_choice_transit_captured_pax
+            .max(0.0),
+        planner_mode_choice_candidate_paths_raw_total: planner_trace
+            .mode_choice_candidate_paths_raw_total,
+        planner_mode_choice_candidate_paths_boardable_total: planner_trace
+            .mode_choice_candidate_paths_boardable_total,
+        planner_mode_choice_rejected_no_board_or_alight_total: planner_trace
+            .mode_choice_rejected_no_board_or_alight_total,
+        planner_mode_choice_rejected_unpaired_board_alight_total: planner_trace
+            .mode_choice_rejected_unpaired_board_alight_total,
+        planner_assignment_od_rows_with_transit_latent: planner_trace
+            .assignment_od_rows_with_transit_latent,
+        planner_assignment_od_rows_with_attempted: planner_trace.assignment_od_rows_with_attempted,
+        planner_assignment_attempted_total_pax: planner_trace
+            .assignment_attempted_pax_total
+            .max(0.0),
+        planner_assignment_candidate_paths_raw_total: planner_trace
+            .assignment_candidate_paths_raw_total,
+        planner_assignment_candidate_paths_boardable_total: planner_trace
+            .assignment_candidate_paths_boardable_total,
+        planner_assignment_rejected_no_board_or_alight_total: planner_trace
+            .assignment_rejected_no_board_or_alight_total,
+        planner_assignment_rejected_unpaired_board_alight_total: planner_trace
+            .assignment_rejected_unpaired_board_alight_total,
+        planner_first_zero_stage: planner_trace.first_zero_stage.clone(),
+        planner_first_zero_reason: planner_trace.first_zero_reason.clone(),
+        first_zero_or_mismatch,
+        services,
+    });
+    let diagnostics_ms = diagnostics_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log(
+        "command.inspect_station.runtime_diagnostics",
+        diagnostics_started,
+    );
+    let landuse_started = Instant::now();
     let _ = enrich_station_inspection_with_landuse(&app, &doc.scenario, &mut inspection);
+    let landuse_ms = landuse_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_station.enrich_landuse", landuse_started);
+    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_station.total", started);
+    let runtime_status = runtime_loop_status_for_project(state.inner(), &project_path).ok();
+    let snapshot_tick_index = latest_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.telemetry.tick_index)
+        .unwrap_or(0);
+    let output_board_load_rows = output
+        .as_ref()
+        .map(|value| value.board_loads.len())
+        .unwrap_or(0);
+    let output_cohort_rows = output
+        .as_ref()
+        .map(|value| value.passenger_cohorts.len())
+        .unwrap_or(0);
+    let output_mode_choice_rows = output
+        .as_ref()
+        .map(|value| value.mode_choice_results.len())
+        .unwrap_or(0);
+    eprintln!(
+        "[rt-inspect] kind=station project={} stop_id={} total_ms={:.2} load_scenario_ms={:.2} resolve_output_ms={:.2} compute_ms={:.2} runtime_overlay_ms={:.2} diagnostics_ms={:.2} enrich_landuse_ms={:.2} output_available={} board_load_rows={} cohort_rows={} mode_choice_rows={} service_rows={} planner_attempted_total={:.3} runtime_attempted_total={:.3} runtime_queue_total={:.3} snapshot_inside={:.3} snapshot_tick_index={} runtime_running={} runtime_speed={} runtime_queue_depth={}",
+        project_path,
+        stop_id,
+        total_ms.max(0.0),
+        load_scenario_ms.max(0.0),
+        resolve_output_ms.max(0.0),
+        compute_ms.max(0.0),
+        runtime_overlay_ms.max(0.0),
+        diagnostics_ms.max(0.0),
+        landuse_ms.max(0.0),
+        output.is_some(),
+        output_board_load_rows,
+        output_cohort_rows,
+        output_mode_choice_rows,
+        inspection
+            .runtime_diagnostics
+            .as_ref()
+            .map(|diag| diag.services.len())
+            .unwrap_or(0),
+        inspection
+            .runtime_diagnostics
+            .as_ref()
+            .map(|diag| diag.planner_attempted_total_pax.max(0.0))
+            .unwrap_or(0.0),
+        inspection
+            .runtime_diagnostics
+            .as_ref()
+            .map(|diag| diag.runtime_attempted_total_pax.max(0.0))
+            .unwrap_or(0.0),
+        inspection
+            .runtime_diagnostics
+            .as_ref()
+            .map(|diag| diag.runtime_queue_total_pax.max(0.0))
+            .unwrap_or(0.0),
+        inspection
+            .runtime_diagnostics
+            .as_ref()
+            .map(|diag| diag.snapshot_current_inside_pax.max(0.0))
+            .unwrap_or(0.0),
+        snapshot_tick_index,
+        runtime_status
+            .as_ref()
+            .map(|status| status.running)
+            .unwrap_or(false),
+        runtime_status
+            .as_ref()
+            .map(|status| status.speed)
+            .unwrap_or(0),
+        runtime_status
+            .as_ref()
+            .map(|status| status.queue_depth)
+            .unwrap_or(0),
+    );
     Ok(inspection)
 }
 
@@ -902,13 +1439,24 @@ pub fn inspect_line(
     project_path: String,
     line_id: String,
 ) -> Result<LineInspection, String> {
+    let started = Instant::now();
     let project_root = PathBuf::from(&project_path);
+    let load_scenario_started = Instant::now();
     let doc =
         ScenarioService::load_from_path(scenario_path(&project_root).to_string_lossy().as_ref())
             .map_err(|e| e.to_string())?;
+    let load_scenario_ms = load_scenario_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_line.load_scenario", load_scenario_started);
+    let output_started = Instant::now();
     let output = inspection_output_for_project(&state, &project_path, &doc.scenario).ok();
+    let resolve_output_ms = output_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_line.resolve_output", output_started);
+    let read_manifest_started = Instant::now();
     let manifest = read_manifest(&project_root)?;
+    let read_manifest_ms = read_manifest_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_line.read_manifest", read_manifest_started);
     let minute_of_day = clock_minute_of_day(&manifest.clock_state);
+    let inspect_started = Instant::now();
     let mut inspection = inspect_line_from_scenario(
         &doc.scenario,
         output.as_ref(),
@@ -916,7 +1464,13 @@ pub fn inspect_line(
         &economy_config(),
         Some(minute_of_day),
     )?;
-    if let Ok(Some(snapshot)) = latest_runtime_snapshot_for_project(state.inner(), &project_path) {
+    let compute_ms = inspect_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_line.compute", inspect_started);
+    let runtime_overlay_started = Instant::now();
+    let latest_snapshot = latest_runtime_snapshot_for_project(state.inner(), &project_path)
+        .ok()
+        .flatten();
+    if let Some(snapshot) = latest_snapshot.as_ref() {
         if let Some(runtime_line) = snapshot
             .line_ops
             .iter()
@@ -931,5 +1485,60 @@ pub fn inspect_line(
             inspection.operations_now.avg_wait_s = Some(runtime_line.mean_wait_s.max(0.0));
         }
     }
+    let runtime_overlay_ms = runtime_overlay_started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log(
+        "command.inspect_line.merge_runtime_overlay",
+        runtime_overlay_started,
+    );
+    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    build_perf_log("command.inspect_line.total", started);
+    let runtime_status = runtime_loop_status_for_project(state.inner(), &project_path).ok();
+    let snapshot_tick_index = latest_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.telemetry.tick_index)
+        .unwrap_or(0);
+    let output_board_load_rows = output
+        .as_ref()
+        .map(|value| value.board_loads.len())
+        .unwrap_or(0);
+    let output_cohort_rows = output
+        .as_ref()
+        .map(|value| value.passenger_cohorts.len())
+        .unwrap_or(0);
+    let output_mode_choice_rows = output
+        .as_ref()
+        .map(|value| value.mode_choice_results.len())
+        .unwrap_or(0);
+    eprintln!(
+        "[rt-inspect] kind=line project={} line_id={} total_ms={:.2} load_scenario_ms={:.2} resolve_output_ms={:.2} read_manifest_ms={:.2} compute_ms={:.2} runtime_overlay_ms={:.2} output_available={} board_load_rows={} cohort_rows={} mode_choice_rows={} service_enabled={} effective_tph={:.3} queue_end={:.3} runtime_running={} runtime_speed={} runtime_queue_depth={} snapshot_tick_index={}",
+        project_path,
+        line_id,
+        total_ms.max(0.0),
+        load_scenario_ms.max(0.0),
+        resolve_output_ms.max(0.0),
+        read_manifest_ms.max(0.0),
+        compute_ms.max(0.0),
+        runtime_overlay_ms.max(0.0),
+        output.is_some(),
+        output_board_load_rows,
+        output_cohort_rows,
+        output_mode_choice_rows,
+        inspection.service_enabled,
+        inspection.effective_tph.max(0.0),
+        inspection.queue_end.max(0.0),
+        runtime_status
+            .as_ref()
+            .map(|status| status.running)
+            .unwrap_or(false),
+        runtime_status
+            .as_ref()
+            .map(|status| status.speed)
+            .unwrap_or(0),
+        runtime_status
+            .as_ref()
+            .map(|status| status.queue_depth)
+            .unwrap_or(0),
+        snapshot_tick_index,
+    );
     Ok(inspection)
 }

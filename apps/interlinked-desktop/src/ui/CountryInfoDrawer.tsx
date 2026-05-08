@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import type { RegionStatus } from "../types";
 import { buildRegionDisplayNames } from "../map/data/regionPresentation";
 
@@ -10,12 +11,18 @@ function fmtMoney(value: number | null): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
 
-type Group = {
-  title: string;
-  rows: RegionStatus[];
-};
+function fmtPopulation(value: number | null | undefined): string {
+  if (!Number.isFinite(value) || (value ?? 0) <= 0) return "-";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value ?? 0);
+}
 
-const MAX_ROWS_PER_GROUP = 36;
+function fmtJobs(value: number | null | undefined): string {
+  if (!Number.isFinite(value) || (value ?? 0) <= 0) return "-";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value ?? 0);
+}
+
+const MAX_UNLOCKED_ROWS = 18;
+const MAX_CANDIDATE_ROWS = 24;
 
 function countryNameFromIso2(iso2: string | null): string {
   if (!iso2) return "Country";
@@ -43,107 +50,122 @@ function parseHexNumberFromName(name: string): number | null {
   return Number.isFinite(value) ? Math.trunc(value) : null;
 }
 
-export default function CountryInfoDrawer(props: {
-  open: boolean;
+export type CountryInfoContentProps = {
   busy: boolean;
   regions: RegionStatus[];
   selectedRegionId: string | null;
-  focusRegionId: string | null;
   currentBalanceBase: number | null;
-  onClose: () => void;
+  onClose?: () => void;
   onSelectRegion: (regionId: string) => void;
-  onFocusRegion: () => void;
   onUnlockRegion: () => void;
-}) {
-  if (!props.open) return null;
+  compact?: boolean;
+};
 
-  const selected = props.regions.find((r) => r.region_id === props.selectedRegionId) ?? null;
-  const focused = props.regions.find((r) => r.region_id === props.focusRegionId) ?? null;
-  const countryIso2 =
-    selected?.country_iso2 ?? focused?.country_iso2 ?? props.regions[0]?.country_iso2 ?? null;
-  const unlockedSet = new Set(props.regions.filter((r) => r.unlocked).map((r) => r.region_id));
-  const displayNames = buildRegionDisplayNames(props.regions);
-  const regionCountText =
-    props.regions.length > 999 ? "999+" : fmtCompact(props.regions.length);
+export function CountryInfoContent(props: CountryInfoContentProps) {
+  const [otherLockedQuery, setOtherLockedQuery] = useState("");
+  const [otherLockedFilterStub, setOtherLockedFilterStub] = useState("all");
+
+  const displayNames = useMemo(() => buildRegionDisplayNames(props.regions), [props.regions]);
+  const buckets = useMemo(() => {
+    const unlockedSet = new Set(
+      props.regions.filter((region) => region.unlocked).map((region) => region.region_id)
+    );
+    const unlockedRows = props.regions.filter((row) => row.unlocked);
+    const adjacentLockedRows = props.regions.filter(
+      (row) => !row.unlocked && row.adjacent_region_ids.some((id) => unlockedSet.has(id))
+    );
+    const otherLockedRows = props.regions.filter(
+      (row) => !row.unlocked && !row.adjacent_region_ids.some((id) => unlockedSet.has(id))
+    );
+    return {
+      unlockedSet,
+      unlockedRows,
+      adjacentLockedRows,
+      otherLockedRows,
+    };
+  }, [props.regions]);
+
   const regionName = (region: RegionStatus | null): string => {
     if (!region) return "";
     return displayNames.get(region.region_id) ?? region.name;
   };
-  const isFocused = Boolean(selected && selected.region_id === props.focusRegionId);
+  const selected = props.regions.find((r) => r.region_id === props.selectedRegionId) ?? null;
+  const countryIso2 = selected?.country_iso2 ?? props.regions[0]?.country_iso2 ?? null;
+  const otherLockedRowsFiltered = useMemo(() => {
+    const query = otherLockedQuery.trim().toLocaleLowerCase();
+    if (!query) return buckets.otherLockedRows;
+    return buckets.otherLockedRows.filter((row) =>
+      (displayNames.get(row.region_id) ?? row.name).toLocaleLowerCase().includes(query)
+    );
+  }, [buckets.otherLockedRows, displayNames, otherLockedQuery]);
+
   const isUnlocked = Boolean(selected?.unlocked);
+  const isAdjacent = Boolean(
+    selected && selected.adjacent_region_ids.some((regionId) => buckets.unlockedSet.has(regionId))
+  );
+  const hasFunds = Boolean(
+    selected && props.currentBalanceBase !== null && props.currentBalanceBase >= selected.unlock_cost_base
+  );
+  const canUnlock = Boolean(selected && !isUnlocked && isAdjacent && hasFunds);
+  const unlockReason = selected && !isUnlocked
+    ? !isAdjacent
+      ? "Not adjacent yet. Unlock a neighboring region first."
+      : !hasFunds
+        ? "Available next, but current balance is below unlock cost."
+        : null
+    : null;
   const selectedHexNumber = selected ? parseHexNumberFromName(selected.name) : null;
   const selectedHexId = parseHexIdFromRegion(selected);
   const isUnassignedHexRegion = Boolean(
     selected && (selected.source_code ?? "").trim().toLowerCase() === "manual_region_unassigned_hex"
   );
-  const isAdjacent = Boolean(
-    selected && selected.adjacent_region_ids.some((regionId) => unlockedSet.has(regionId))
-  );
-  const hasFunds = Boolean(
-    selected && props.currentBalanceBase !== null && props.currentBalanceBase >= selected.unlock_cost_base
-  );
-  const canFocus = Boolean(selected && isUnlocked && !isFocused);
-  const canUnlock = Boolean(selected && !isUnlocked && isAdjacent && hasFunds);
-
-  let unlockReason = "";
-  if (selected && !selected.unlocked) {
-    if (!isAdjacent) unlockReason = "Unlock a neighboring region first.";
-    else if (!hasFunds) unlockReason = "Insufficient funds for this unlock.";
-    else unlockReason = "Adjacent region available to unlock.";
-  }
-
-  const groups: Group[] = [
-    {
-      title: "Focused",
-      rows: props.regions.filter((r) => r.region_id === props.focusRegionId),
-    },
-    {
-      title: "Unlocked",
-      rows: props.regions.filter((r) => r.unlocked && r.region_id !== props.focusRegionId),
-    },
-    {
-      title: "Adjacent Locked",
-      rows: props.regions.filter(
-        (r) => !r.unlocked && r.adjacent_region_ids.some((regionId) => unlockedSet.has(regionId))
-      ),
-    },
-    {
-      title: "Other Locked",
-      rows: props.regions.filter(
-        (r) => !r.unlocked && !r.adjacent_region_ids.some((regionId) => unlockedSet.has(regionId))
-      ),
-    },
-  ].filter((group) => group.rows.length > 0);
+  const selectedStatus = selected
+    ? selected.unlocked
+      ? "Unlocked"
+      : isAdjacent
+        ? "Available to Unlock"
+        : "Locked - Not Adjacent"
+    : null;
+  const selectedStateLine = selected
+    ? selected.unlocked
+      ? "This region is already in your active planning scope."
+      : !isAdjacent
+        ? "Expand through adjacent regions to unlock this area."
+        : !hasFunds
+          ? "This is a viable next expansion once funds are available."
+          : "This region can be unlocked now."
+    : null;
 
   return (
-    <div className="country-info-overlay">
-      <aside className="country-info-drawer">
+    <div className={`country-info-content ${props.compact ? "is-compact" : ""}`.trim()}>
         <div className="country-info-head">
           <div>
             <p>{countryNameFromIso2(countryIso2)}</p>
-            <h4>Country Info</h4>
+            <h4>Region Progression</h4>
           </div>
-          <button onClick={props.onClose}>Close</button>
+          {props.onClose ? <button onClick={props.onClose}>Close</button> : null}
         </div>
 
         <div className="country-info-strip">
           <span className="pill">Balance: {fmtMoney(props.currentBalanceBase)}</span>
-          <span className="pill">Planning Regions: {regionCountText}</span>
-          {focused ? <span className="pill">Focus: {regionName(focused)}</span> : null}
+          <span className="pill">Unlocked: {fmtCompact(buckets.unlockedRows.length)}</span>
         </div>
 
         {selected ? (
-          <section className="country-section selected-county-card">
+          <section
+            className={`country-section selected-county-card${selected.unlocked ? " is-unlocked" : " is-locked"}`}
+          >
             <div className="selected-county-head">
               <div>
                 <strong>{regionName(selected)}</strong>
-                <p>{isFocused ? "Focused region" : selected.unlocked ? "Unlocked region" : "Locked region"}</p>
+                <p>{selectedStatus}</p>
               </div>
-              {selected.nation ? <span className="status active">{selected.nation}</span> : null}
+              {selected.nation ? <span className="status active region-status-tag">{selected.nation}</span> : null}
             </div>
             <div className="selected-county-grid">
-              <p>Cells: {fmtCompact(selected.cells_res8)}</p>
-              <p>Unlock cost: {fmtCompact(selected.unlock_cost_base)}</p>
+              <p>Population: {fmtPopulation(selected.population)}</p>
+              <p>Jobs: {fmtJobs(selected.jobs)}</p>
+              {!selected.unlocked ? <p>Unlock cost: {fmtCompact(selected.unlock_cost_base)}</p> : null}
               {isUnassignedHexRegion ? (
                 <>
                   <p>Hex #: {selectedHexNumber !== null ? fmtCompact(selectedHexNumber) : "-"}</p>
@@ -151,15 +173,15 @@ export default function CountryInfoDrawer(props: {
                 </>
               ) : null}
             </div>
-            {!selected.unlocked && unlockReason ? <p className="hint-line">{unlockReason}</p> : null}
-            <div className="form-actions">
-              <button onClick={props.onFocusRegion} disabled={props.busy || !canFocus}>
-                Focus
-              </button>
-              <button onClick={props.onUnlockRegion} disabled={props.busy || !canUnlock}>
-                Unlock + Focus
-              </button>
-            </div>
+            {selectedStateLine ? <p className="hint-line">{selectedStateLine}</p> : null}
+            {!selected.unlocked ? (
+              <div className="form-actions">
+                <button onClick={props.onUnlockRegion} disabled={props.busy || !canUnlock}>
+                  Unlock for {fmtCompact(selected.unlock_cost_base)}
+                </button>
+                {unlockReason ? <p className="hint-line">{unlockReason}</p> : null}
+              </div>
+            ) : null}
           </section>
         ) : (
           <section className="country-section">
@@ -168,36 +190,128 @@ export default function CountryInfoDrawer(props: {
         )}
 
         <div className="country-sections-grid">
-          {groups.map((group) => (
-            <section key={group.title} className="country-section">
+          <section className="country-section country-section-unlocked">
+            <div className="country-section-intro">
               <div className="country-section-head">
-                <h5>{group.title}</h5>
-                <span>{group.rows.length}</span>
+                <h5>Unlocked</h5>
+                <span>{buckets.unlockedRows.length}</span>
               </div>
-              <div className="county-list">
-                {group.rows.slice(0, MAX_ROWS_PER_GROUP).map((region) => {
+              <p className="hint-line">Current strategic footprint.</p>
+            </div>
+            <div className="county-list">
+              {buckets.unlockedRows.slice(0, MAX_UNLOCKED_ROWS).map((region) => {
+                const active = region.region_id === props.selectedRegionId;
+                return (
+                  <button
+                    key={region.region_id}
+                    className={`county-row${active ? " active" : ""} is-unlocked`}
+                    onClick={() => props.onSelectRegion(region.region_id)}
+                  >
+                    <span>{regionName(region)}</span>
+                    <small>unlocked</small>
+                  </button>
+                );
+              })}
+              {buckets.unlockedRows.length > MAX_UNLOCKED_ROWS ? (
+                <p className="hint-line">
+                  Showing first {MAX_UNLOCKED_ROWS}. +{buckets.unlockedRows.length - MAX_UNLOCKED_ROWS} more
+                  unlocked regions.
+                </p>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="country-section country-section-candidates">
+            <div className="country-section-intro">
+              <div className="country-section-head">
+                <h5>Next Unlock Candidates</h5>
+                <span>{buckets.adjacentLockedRows.length}</span>
+              </div>
+              <p className="hint-line">Strongest adjacent options to expand next.</p>
+            </div>
+            <div className="county-list">
+              {buckets.adjacentLockedRows.slice(0, MAX_CANDIDATE_ROWS).map((region) => {
+                const active = region.region_id === props.selectedRegionId;
+                return (
+                  <button
+                    key={region.region_id}
+                    className={`county-row${active ? " active" : ""} is-candidate`}
+                    onClick={() => props.onSelectRegion(region.region_id)}
+                  >
+                    <span>{regionName(region)}</span>
+                    <small>unlock {fmtCompact(region.unlock_cost_base)}</small>
+                  </button>
+                );
+              })}
+              {buckets.adjacentLockedRows.length > MAX_CANDIDATE_ROWS ? (
+                <p className="hint-line">
+                  Showing first {MAX_CANDIDATE_ROWS}. +{buckets.adjacentLockedRows.length - MAX_CANDIDATE_ROWS} more
+                  candidates.
+                </p>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="country-section country-section-other-locked">
+            <div className="country-section-intro">
+              <div className="country-section-head">
+                <h5>Other Locked</h5>
+                <span>{otherLockedRowsFiltered.length}</span>
+              </div>
+              <p className="hint-line">Search the remaining locked regions.</p>
+            </div>
+            <div className="country-list-controls">
+              <input
+                type="search"
+                value={otherLockedQuery}
+                placeholder="Search locked regions"
+                onChange={(event) => setOtherLockedQuery(event.target.value)}
+              />
+              <select
+                aria-label="Locked region filter placeholder"
+                value={otherLockedFilterStub}
+                onChange={(event) => setOtherLockedFilterStub(event.target.value)}
+              >
+                <option value="all">Filter (placeholder)</option>
+                <option value="soon">More filters coming soon</option>
+              </select>
+            </div>
+            <div className="country-list-viewport">
+              <div className="county-list county-list-scroll" data-allow-surface-scroll="true">
+                {otherLockedRowsFiltered.map((region) => {
                   const active = region.region_id === props.selectedRegionId;
                   return (
                     <button
                       key={region.region_id}
-                      className={`county-row${active ? " active" : ""}`}
+                      className={`county-row${active ? " active" : ""} is-locked`}
                       onClick={() => props.onSelectRegion(region.region_id)}
                     >
                       <span>{regionName(region)}</span>
-                      <small>{region.unlocked ? "unlocked" : "locked"}</small>
+                      <small>locked</small>
                     </button>
                   );
                 })}
-                {group.rows.length > MAX_ROWS_PER_GROUP ? (
-                  <p className="hint-line">
-                    Showing first {MAX_ROWS_PER_GROUP}. +{group.rows.length - MAX_ROWS_PER_GROUP} more
-                    internal planning regions.
-                  </p>
+                {otherLockedRowsFiltered.length === 0 ? (
+                  <p className="hint-line">No locked regions match this search.</p>
                 ) : null}
               </div>
-            </section>
-          ))}
+            </div>
+          </section>
         </div>
+    </div>
+  );
+}
+
+export default function CountryInfoDrawer(props: CountryInfoContentProps & {
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!props.open) return null;
+
+  return (
+    <div className="country-info-overlay">
+      <aside className="country-info-drawer">
+        <CountryInfoContent {...props} />
       </aside>
     </div>
   );

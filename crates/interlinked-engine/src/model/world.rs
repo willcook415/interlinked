@@ -74,6 +74,32 @@ pub struct DemandCell {
     pub data_quality_score: f64,
     #[serde(default)]
     pub country_iso2: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocation_diagnostics: Option<DemandCellAllocationDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DemandCellAllocationDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_region_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_residential: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_employment: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_education: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_retail: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_leisure: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_weight_tourism: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocated_residential_mass: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocated_employment_mass: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

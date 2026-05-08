@@ -4,6 +4,11 @@ use interlinked_engine::model::Scenario;
 use interlinked_engine::sim::SimulationOutput;
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    default_counter_provenance_debug_legacy, default_counter_provenance_strategic_estimate,
+    CounterProvenance,
+};
+
 use super::fleet_state::stop_display_name;
 use super::inspection_line::compute_lines;
 
@@ -29,6 +34,69 @@ pub struct StationLineSummary {
     pub journey_times: Vec<StationJourneyTime>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StationRuntimeServiceDiagnostics {
+    #[serde(default = "default_counter_provenance_debug_legacy")]
+    pub counter_provenance: CounterProvenance,
+    pub service_id: String,
+    pub line_id: String,
+    pub planner_attempted_pax: f64,
+    pub planner_assigned_pax: f64,
+    pub planner_mode_transit_captured_pax: f64,
+    pub planner_candidate_paths_raw: usize,
+    pub planner_candidate_paths_boardable: usize,
+    pub planner_rejected_no_board_or_alight_paths: usize,
+    pub planner_rejected_unpaired_board_alight_paths: usize,
+    pub runtime_attempted_pax: f64,
+    pub planner_board_load_arrivals_pax: f64,
+    pub runtime_ingested_pax: f64,
+    pub runtime_dropped_not_dispatchable_pax: f64,
+    pub runtime_dropped_invalid_stop_pax: f64,
+    pub runtime_queue_pax: f64,
+    pub runtime_boarding_attempted_pax: f64,
+    pub runtime_boarded_pax: f64,
+    pub runtime_left_behind_pax: f64,
+    pub dispatchable: bool,
+    pub diagnostic_note: Option<String>,
+    pub planner_reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StationRuntimeDiagnostics {
+    #[serde(default = "default_counter_provenance_debug_legacy")]
+    pub counter_provenance: CounterProvenance,
+    pub tick_index: u64,
+    pub planner_attempted_total_pax: f64,
+    pub runtime_attempted_total_pax: f64,
+    pub planner_cohort_rows: usize,
+    pub runtime_queue_total_pax: f64,
+    pub snapshot_current_inside_pax: f64,
+    pub planner_demand_cells_total: usize,
+    pub planner_demand_cells_nonzero_activity: usize,
+    pub planner_zones_total: usize,
+    pub planner_zones_nonzero_activity: usize,
+    pub planner_latent_rows_total: usize,
+    pub planner_latent_total_pax: f64,
+    pub planner_mode_choice_rows_total: usize,
+    pub planner_mode_choice_rows_with_transit_capture: usize,
+    pub planner_mode_choice_transit_captured_pax: f64,
+    pub planner_mode_choice_candidate_paths_raw_total: usize,
+    pub planner_mode_choice_candidate_paths_boardable_total: usize,
+    pub planner_mode_choice_rejected_no_board_or_alight_total: usize,
+    pub planner_mode_choice_rejected_unpaired_board_alight_total: usize,
+    pub planner_assignment_od_rows_with_transit_latent: usize,
+    pub planner_assignment_od_rows_with_attempted: usize,
+    pub planner_assignment_attempted_total_pax: f64,
+    pub planner_assignment_candidate_paths_raw_total: usize,
+    pub planner_assignment_candidate_paths_boardable_total: usize,
+    pub planner_assignment_rejected_no_board_or_alight_total: usize,
+    pub planner_assignment_rejected_unpaired_board_alight_total: usize,
+    pub planner_first_zero_stage: Option<String>,
+    pub planner_first_zero_reason: Option<String>,
+    pub first_zero_or_mismatch: Option<String>,
+    pub services: Vec<StationRuntimeServiceDiagnostics>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationInspection {
     pub stop_id: String,
@@ -43,6 +111,8 @@ pub struct StationInspection {
     pub denied_boardings: f64,
     pub queue_end: f64,
     pub station_load_current_pax: f64,
+    #[serde(default = "default_counter_provenance_strategic_estimate")]
+    pub passenger_counter_provenance: CounterProvenance,
     pub station_capacity_boarding_pph: f64,
     pub station_capacity_alighting_pph: f64,
     pub station_queue_capacity_pax: f64,
@@ -63,6 +133,8 @@ pub struct StationInspection {
     pub catchment_mix_education: f64,
     pub catchment_mix_health: f64,
     pub served_lines: Vec<StationLineSummary>,
+    #[serde(default)]
+    pub runtime_diagnostics: Option<StationRuntimeDiagnostics>,
 }
 
 pub fn inspect_station_from_scenario(
@@ -384,6 +456,7 @@ pub fn inspect_station_from_scenario(
         denied_boardings,
         queue_end,
         station_load_current_pax,
+        passenger_counter_provenance: CounterProvenance::StrategicEstimate,
         station_capacity_boarding_pph,
         station_capacity_alighting_pph,
         station_queue_capacity_pax,
@@ -404,5 +477,6 @@ pub fn inspect_station_from_scenario(
         catchment_mix_education: mix_values[5],
         catchment_mix_health: mix_values[6],
         served_lines,
+        runtime_diagnostics: None,
     })
 }

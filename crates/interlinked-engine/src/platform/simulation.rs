@@ -15,6 +15,9 @@ use crate::sim::{HistoryConfig, SimHistory};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
+const RT_KERNEL_LOG_INTERVAL_STEPS: u64 = 20;
+const RT_KERNEL_SLOW_MS: f64 = 120.0;
+
 #[derive(Debug, Clone)]
 pub struct PlanningRunOptions {
     pub settings_override: Option<SimulationSettings>,
@@ -151,6 +154,7 @@ impl SimulationService {
         req: GameStepRequest,
         scope: &SimulationScope,
     ) -> Result<GameStepOutput, String> {
+        let step_started = Instant::now();
         if dt_s <= 0.0 {
             return Err("dt_s must be > 0".to_string());
         }
@@ -169,6 +173,13 @@ impl SimulationService {
         let scope_signature = simulation_scope_signature(scope);
         let strategic_interval_steps = state.run_cfg.strategic_refresh_interval_steps.max(1);
         state.kernel_state.perf.strategic_refresh_interval_steps = strategic_interval_steps;
+        let async_refresh_reason = if state.run_cfg.enable_kernel_partitioning {
+            state
+                .kernel_state
+                .poll_cadence_refresh_job(topology_signature, scope_signature)
+        } else {
+            None
+        };
 
         let refresh_reason = if state.run_cfg.enable_kernel_partitioning {
             should_run_strategic_refresh(
@@ -181,8 +192,34 @@ impl SimulationService {
             Some(StrategicRefreshReason::ExplicitForce)
         };
 
-        let (out, next_sim_state, strategic_refresh_executed, strategic_refresh_reason) =
-            if let Some(reason) = refresh_reason {
+        let sync_refresh_reason = if matches!(
+            refresh_reason,
+            Some(StrategicRefreshReason::CadenceInterval)
+        ) && state.run_cfg.enable_kernel_partitioning
+        {
+            if !state.kernel_state.has_pending_cadence_refresh() {
+                state.kernel_state.launch_cadence_refresh_job(
+                    state.store.scenario(),
+                    &state.run_cfg,
+                    &state.sim_state,
+                    dt_s,
+                    topology_signature,
+                    scope_signature,
+                );
+            }
+            None
+        } else {
+            refresh_reason
+        };
+        if matches!(
+            sync_refresh_reason,
+            Some(reason) if reason != StrategicRefreshReason::CadenceInterval
+        ) {
+            state.kernel_state.discard_pending_cadence_refresh();
+        }
+
+        let (out, next_sim_state, sync_refresh_executed, sync_refresh_reason_out, kernel_phase_ms) =
+            if let Some(reason) = sync_refresh_reason {
                 let started = Instant::now();
                 let (strategic_out, next) = step_simulation(
                     state.store.scenario(),
@@ -207,24 +244,92 @@ impl SimulationService {
                     reason,
                     strategic_interval_steps,
                 );
-                (strategic_out, next, true, Some(reason))
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                (strategic_out, next, true, Some(reason), elapsed_ms.max(0.0))
             } else {
                 let started = Instant::now();
                 let cache = state.kernel_state.strategic_cache.as_ref().ok_or_else(|| {
                     "missing strategic cache for fast operational step".to_string()
                 })?;
-                let (fast_out, next) = run_fast_operational_step(cache, &state.sim_state, dt_s)?;
+                let (fast_out, next) = run_fast_operational_step(
+                    cache,
+                    &state.sim_state,
+                    &state.run_cfg.fare_policy_context,
+                    dt_s,
+                )?;
                 state.kernel_state.last_scope_signature = scope_signature;
                 state.kernel_state.last_topology_signature = topology_signature;
                 update_fast_step_metrics(&mut state.kernel_state, started);
-                (fast_out, next, false, None)
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                (fast_out, next, false, None, elapsed_ms.max(0.0))
             };
+        let strategic_refresh_executed = sync_refresh_executed || async_refresh_reason.is_some();
+        let strategic_refresh_reason = sync_refresh_reason_out.or(async_refresh_reason);
 
+        let step_total_ms = step_started.elapsed().as_secs_f64() * 1000.0;
+        let kpi_trips_attempted = out.kpis.total_trips_attempted.max(0.0);
+        let kpi_trips_served = out.kpis.total_trips_served.max(0.0);
+        let board_load_rows = out.board_loads.len();
+        let cohort_rows = out.passenger_cohorts.len();
+        let assigned_od_rows = out.assigned_od_flows.len();
+        let mode_choice_rows = out.mode_choice_results.len();
         state.sim_state = next_sim_state;
         state.tick_s = state.sim_state.t_s;
         state.last_quick_kpis = Some(out.kpis.clone());
         state.last_output = Some(out.clone());
         state.history.push(&out, &state.sim_state);
+        let total_steps = state
+            .kernel_state
+            .perf
+            .fast_steps
+            .saturating_add(state.kernel_state.perf.strategic_steps);
+        let should_log = total_steps.is_multiple_of(RT_KERNEL_LOG_INTERVAL_STEPS)
+            || step_total_ms > RT_KERNEL_SLOW_MS
+            || kernel_phase_ms > RT_KERNEL_SLOW_MS;
+        if should_log {
+            eprintln!(
+                "[rt-kernel] tick_s={:.3} dt_s={:.3} total_ms={:.2} kernel_phase_ms={:.2} strategic_refresh_executed={} strategic_refresh_reason={} topology_signature={} scope_signature={} services={} stops={} links={} zones={} demand_cells={} board_load_rows={} cohort_rows={} assigned_od_rows={} mode_choice_rows={} trips_attempted={:.3} trips_served={:.3} fast_steps={} strategic_steps={} fast_last_ms={:.2} strategic_last_ms={:.2} fast_avg_ms={:.2} strategic_avg_ms={:.2} cache_hits={} cache_misses={} steps_since_last_strategic={} strategic_interval_steps={} invalidations={} async_pending={} async_launches={} async_completions={} async_discards={} async_failures={} async_last_ms={:.2}",
+                state.tick_s,
+                dt_s.max(0.0),
+                step_total_ms.max(0.0),
+                kernel_phase_ms.max(0.0),
+                strategic_refresh_executed,
+                strategic_refresh_reason
+                    .as_ref()
+                    .map(|reason| format!("{reason:?}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                topology_signature,
+                scope_signature,
+                state.store.scenario().world.services.len(),
+                state.store.scenario().world.stops.len(),
+                state.store.scenario().world.links.len(),
+                state.store.scenario().world.zones.len(),
+                state.store.scenario().world.demand_cells.len(),
+                board_load_rows,
+                cohort_rows,
+                assigned_od_rows,
+                mode_choice_rows,
+                kpi_trips_attempted,
+                kpi_trips_served,
+                state.kernel_state.perf.fast_steps,
+                state.kernel_state.perf.strategic_steps,
+                state.kernel_state.perf.last_fast_ms.max(0.0),
+                state.kernel_state.perf.last_strategic_ms.max(0.0),
+                state.kernel_state.perf.avg_fast_ms().max(0.0),
+                state.kernel_state.perf.avg_strategic_ms().max(0.0),
+                state.kernel_state.perf.strategic_cache_hits,
+                state.kernel_state.perf.strategic_cache_misses,
+                state.kernel_state.perf.steps_since_last_strategic,
+                strategic_interval_steps,
+                state.kernel_state.perf.invalidation_count,
+                state.kernel_state.has_pending_cadence_refresh(),
+                state.kernel_state.perf.strategic_async_launches,
+                state.kernel_state.perf.strategic_async_completions,
+                state.kernel_state.perf.strategic_async_discards,
+                state.kernel_state.perf.strategic_async_failures,
+                state.kernel_state.perf.strategic_async_last_ms.max(0.0),
+            );
+        }
 
         Ok(GameStepOutput {
             tick_s: state.tick_s,

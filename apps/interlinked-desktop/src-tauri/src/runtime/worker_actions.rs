@@ -8,7 +8,10 @@ use tauri::{AppHandle, Manager};
 use super::scheduling::plan_runtime_catchup;
 use super::snapshots::{publish_runtime_snapshots, publish_strategic_snapshot_for_tick};
 use super::worker_control::emit_runtime_control_snapshot;
-use crate::{normalize_speed, run_simulation_tick, ProjectManifest, RuntimeAction};
+use crate::{
+    merge_runtime_manifest_state, normalize_speed, read_manifest, run_simulation_tick,
+    ProjectManifest, RuntimeAction,
+};
 
 pub(crate) struct RuntimeWorkerActionContext<'a> {
     pub app: &'a AppHandle,
@@ -123,6 +126,28 @@ pub(crate) fn handle_runtime_worker_actions(
                 if let Ok(mut guard) = state.runtime_ops.lock() {
                     *guard = None;
                 };
+                if let Ok(reloaded) = read_manifest(ctx.project_root) {
+                    *ctx.manifest = merge_runtime_manifest_state(reloaded, ctx.manifest);
+                    *ctx.running = ctx.manifest.clock_state.running;
+                    *ctx.speed = normalize_speed(ctx.manifest.clock_state.speed);
+                    ctx.running_state.store(*ctx.running, Ordering::SeqCst);
+                    ctx.speed_state.store(*ctx.speed, Ordering::SeqCst);
+                    let clock_revision = ctx
+                        .clock_revision_state
+                        .fetch_add(1, Ordering::SeqCst)
+                        .saturating_add(1);
+                    let _ = emit_runtime_control_snapshot(
+                        &state,
+                        ctx.project_path,
+                        ctx.manifest,
+                        clock_revision,
+                        ctx.pending_actions.load(Ordering::SeqCst),
+                        ctx.manifest.runtime_scheduling.snapshot_ring,
+                    );
+                    *ctx.force_checkpoint = true;
+                    outcome.checkpoint_requested = true;
+                    outcome.control_snapshot_emitted = true;
+                }
                 outcome.invalidated_materialization = true;
             }
             RuntimeAction::ForceCheckpoint => {

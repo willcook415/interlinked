@@ -26,6 +26,10 @@ export const SRC_LINKS = "links";
 export const SRC_TRANSFERS = "transfers";
 export const SRC_STOPS = "stops";
 export const SRC_ZONES = "zones";
+export const SRC_DEMAND_CELLS = "demand-overlay-cells";
+// Back-compat alias for older demand source naming.
+export const SRC_DEMAND_ZONES = SRC_DEMAND_CELLS;
+export const SRC_DEMAND_CORRIDORS = "demand-overlay-corridors";
 export const SRC_BUILD_PREVIEW = "build-preview";
 export const SRC_VEHICLES = "vehicles";
 
@@ -103,6 +107,12 @@ export function ensureMapSources(map: MapLibreMap): void {
   if (!map.getSource(SRC_TRANSFERS)) map.addSource(SRC_TRANSFERS, { type: "geojson", data: fc() as never });
   if (!map.getSource(SRC_STOPS)) map.addSource(SRC_STOPS, { type: "geojson", data: fc() as never });
   if (!map.getSource(SRC_ZONES)) map.addSource(SRC_ZONES, { type: "geojson", data: fc() as never });
+  if (!map.getSource(SRC_DEMAND_CELLS)) {
+    map.addSource(SRC_DEMAND_CELLS, { type: "geojson", data: fc() as never });
+  }
+  if (!map.getSource(SRC_DEMAND_CORRIDORS)) {
+    map.addSource(SRC_DEMAND_CORRIDORS, { type: "geojson", data: fc() as never });
+  }
   if (!map.getSource(SRC_VEHICLES)) map.addSource(SRC_VEHICLES, { type: "geojson", data: fc() as never });
   if (!map.getSource(SRC_BUILD_PREVIEW)) {
     map.addSource(SRC_BUILD_PREVIEW, { type: "geojson", data: fc() as never });

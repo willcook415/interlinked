@@ -22,8 +22,8 @@ pub use planner::{
 pub use types::*;
 
 pub use stateful::{
-    init_sim_state, run_planning_stateful, step_simulation, DemandConfig, DemandEvent, RunConfig,
-    SimState, StepKernelConfig,
+    init_sim_state, run_planning_stateful, step_simulation, DemandConfig, DemandEvent,
+    EngineFarePolicyContext, RunConfig, SimState, StepKernelConfig,
 };
 
 pub use history::{HistoryConfig, HistoryFrame, QueueSummary, SimHistory};

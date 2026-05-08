@@ -1,0 +1,625 @@
+The seven pillars of peak Interlinked
+1. The world model
+
+This is the foundation of everything.
+
+At full strength, the world is not just a backdrop. It is a living, structured system.
+
+World-scale support
+every country eventually playable
+consistent region architecture everywhere
+robust data pipeline for map, administrative boundaries, settlements, and demand layers
+expandable modular imports for new countries and datasets
+quality tiers for different map/data fidelity depending on region
+Geographic realism
+real roads
+real rail corridors
+real waterways where relevant
+real topography constraints
+real settlement patterns
+real urban/rural distinctions
+airport, port, industrial, commercial, residential, educational anchors
+Land use + place identity
+
+Every place should feel different:
+
+dense city core
+suburban commuter belt
+post-industrial town
+university district
+airport cluster
+tourist coast
+rural villages
+logistics corridor
+
+Not just visually different — behaviorally different.
+
+A city should generate different transport problems from a rural county, and the player should feel that immediately.
+
+2. Demand and people simulation
+
+This is the soul of Interlinked.
+
+Peak Interlinked is won or lost here.
+
+At maximum strength, demand is not just “heatmap = build here.”
+It becomes a living behavioural model.
+
+Passenger segmentation
+
+Different groups with different needs:
+
+commuters
+students
+shoppers
+leisure travellers
+tourists
+night economy users
+airport passengers
+elderly users
+lower-income carless users
+premium/long-distance users
+
+Each group values different things:
+
+speed
+frequency
+reliability
+comfort
+cost
+directness
+accessibility
+operating hours
+Temporal realism
+
+Demand changes across:
+
+morning peak
+interpeak
+evening peak
+late night
+weekends
+holidays
+seasons
+weather
+school term vs break
+special events
+strikes / disruption / roadworks
+Behavioural mode choice
+
+Passengers choose between:
+
+bus
+tram
+metro
+suburban rail
+regional rail
+walking
+cycling
+car
+taxi/ridehail
+no trip / suppressed demand
+
+This means every network decision has strategic consequences.
+
+You are not only trying to move people.
+You are trying to win trips away from friction.
+
+Access and equity
+
+Peak Interlinked should also show:
+
+underserved communities
+transport deserts
+low-income accessibility gaps
+disability/accessibility constraints
+inequitable service distribution
+
+This is where the game starts having genuine planning bite, not just toy value.
+
+3. Multi-modal transport empire
+
+This is the sexy part everyone imagines first.
+
+At peak strength, Interlinked supports a full transport stack.
+
+Core playable modes
+bus
+BRT
+tram/light rail
+metro/subway
+suburban rail
+regional rail
+high-speed rail
+ferry
+cable/hill systems in niche terrain
+airport connectors
+park-and-ride / shuttle systems
+
+Potentially later:
+
+cycling infrastructure as a network layer
+pedestrianisation systems
+logistics/freight as a parallel gameplay dimension
+Mode differences must be meaningful
+
+Not just visual skins.
+
+Each mode should differ by:
+
+cost
+speed
+capacity
+reliability
+stop spacing
+infrastructure dependency
+flexibility
+political difficulty
+land-use influence
+user perception/prestige
+
+Bus is flexible but can get stuck.
+Metro is fast and powerful but ruinously expensive.
+Tram shapes corridors and urban identity.
+Rail crushes distance but needs anchors.
+
+That contrast is where the strategy lives.
+
+4. Operations and management depth
+
+This is what separates a line-drawing game from a transport sim.
+
+Peak Interlinked should let you go deep into operations without forcing micromanagement on casual players.
+
+Service planning
+route design
+stop spacing
+branch patterns
+express vs stopping services
+short turns
+interlining
+timed transfers
+clockface timetables
+span of service
+peak overlays
+weekend variants
+night networks
+Fleet management
+depot placement
+fleet allocation
+vehicle procurement
+vehicle types by route
+maintenance cycles
+fuel/energy type
+ageing fleets
+breakdown risk
+accessibility and comfort standards
+Reliability simulation
+delay propagation
+bunching
+recovery time
+missed connections
+congestion impacts
+dwell time effects
+transfer failure
+weather vulnerability
+infrastructure incidents
+Staffing and operations policy
+
+Potentially:
+
+driver shortages
+labour cost pressure
+industrial action
+control centre interventions
+dispatch strategies
+maintenance windows
+
+This is the layer that makes the network feel real and fragile.
+
+5. Economics, politics, and institutions
+
+This is where the game goes from “transport sim” to “systems masterpiece.”
+
+Peak Interlinked should model not just whether something works, but whether it can be afforded, approved, and defended.
+
+Financial systems
+capital costs
+operating costs
+fare revenue
+subsidies
+debt/borrowing
+grants
+phased delivery budgets
+cost overruns
+asset renewal cycles
+long-term maintenance liabilities
+Fare policy
+flat fare
+zonal fare
+distance-based fare
+integrated ticketing
+transfers
+concessionary fares
+fare capping
+free fare experiments
+political tradeoffs between access and revenue
+Governance
+
+Depending on scenario:
+
+local authority
+regional transport body
+private operator
+national government
+mixed franchise model
+deregulated competition
+concession-based operations
+
+Each governance model changes gameplay radically.
+
+Politics and public opinion
+neighbourhood opposition
+“war on cars” backlash
+business community pressure
+environmental pressure
+election cycles
+public approval
+media narratives
+scandal or project failure
+prestige projects vs practical improvements
+
+This is huge.
+
+A technically optimal solution should not always be politically feasible.
+That tension is part of what makes transport interesting in real life.
+
+6. Urban growth and world response
+
+This is one of the biggest possible differentiators.
+
+At peak, the world should respond to what the player builds.
+
+Dynamic development
+
+Transport affects:
+
+land value
+housing growth
+commercial development
+density clustering
+office districts
+regeneration
+sprawl
+station-area intensification
+retail decline or growth
+tourism growth
+
+A new tram or metro line should reshape the city over time.
+
+Induced demand and path dependence
+better service increases trip-making
+successful corridors reinforce themselves
+neglected areas stagnate
+road expansion can reshape settlement patterns
+rail stations can create new hubs
+airports can trigger regional growth
+
+This is where Interlinked becomes deeply replayable.
+
+You are not just serving a city.
+You are co-authoring its future.
+
+7. Player experience, presentation, and identity
+
+This part matters just as much as the systems.
+
+Peak Interlinked cannot feel like a spreadsheet in disguise.
+
+It needs to feel beautiful, premium, and alive.
+
+Visual experience
+gorgeous real-world map rendering
+clean stylised overlay language
+premium line design tools
+smooth transitions between strategic and operational layers
+city lights, day/night, weather mood
+clear mode identities and route aesthetics
+satisfying ridership/load visualisation
+strong sense of place
+UI/UX
+world-class build tools
+intuitive layer controls
+excellent route editing
+no menu sludge
+clean dashboards
+strong accessibility
+power-user depth without scaring normal players
+Sound and atmosphere
+satisfying build sounds
+city ambience
+subtle network activity cues
+tension under disruption
+calm planning mode
+soundtrack that makes it feel thoughtful, modern, and grand
+Identity
+
+The player should feel like:
+
+planner
+operator
+strategist
+civic architect
+transport visionary
+
+That fantasy matters.
+
+The big feature categories in peak Interlinked
+
+Now let’s go wider and more concrete.
+
+A. Massive scenario variety
+
+Different ways to play:
+
+sandbox
+budget-constrained campaign
+city rescue scenario
+growth challenge
+decarbonisation scenario
+car-dependent city retrofit
+event preparation
+historic city modernisation
+national rail reform challenge
+island/remote-region logistics challenge
+Historical eras
+
+A crazy-good expansion path:
+
+Victorian rail age
+interwar expansion
+postwar rebuilding
+1970s decline
+1990s deregulation / fragmentation
+present-day retrofit
+near-future green mobility
+
+That would be ridiculous in a good way.
+
+B. Layered zoom levels
+
+Peak Interlinked should let the player operate at multiple scales:
+
+stop-level
+route-level
+corridor-level
+district-level
+city-region level
+national level
+cross-border/international level
+
+You should be able to ask:
+
+why is this stop overcrowded?
+why is this corridor weak?
+why is this region economically disconnected?
+why is this country underperforming?
+
+That scale fluidity is insanely powerful.
+
+C. Deep analytics and explainability
+
+One of Interlinked’s strongest possible differentiators is that it can explain itself.
+
+Instead of hiding behind black-box sim output, it should tell the player:
+
+why ridership rose
+why a line underperformed
+why congestion worsened
+why mode share shifted
+why costs exploded
+why a station became overloaded
+why an area remains underserved
+
+This would make it feel smart instead of opaque.
+
+A true endgame version should have:
+
+route diagnostics
+corridor diagnostics
+station diagnostics
+demand breakdowns
+financial breakdowns
+equity analysis
+environmental analysis
+“what changed and why” reports
+
+That is elite.
+
+D. Infrastructure construction depth
+
+For higher-capacity modes especially:
+
+alignments
+tunnelling
+bridges
+right-of-way constraints
+land acquisition
+station placement
+depot/yard siting
+phasing
+disruptions during construction
+cost escalation based on terrain/urban density
+
+Not to civil-engineering-simulator extremes necessarily, but enough to make big projects feel like projects.
+
+E. Public realm and policy tools
+
+Absolute end-state stuff:
+
+bus lanes
+signal priority
+pedestrianisation
+congestion charging
+parking reform
+transit-oriented development zoning
+low-traffic neighbourhoods
+accessibility retrofits
+emissions zones
+fare integration mandates
+road reallocation
+
+This is where the “planner tool” energy comes in strongest.
+
+F. Multiplayer / collaborative planning
+
+Potential late-game, but very powerful:
+
+co-op city planning
+adversarial politics mode
+one player runs transport, another runs treasury/government
+community scenario sharing
+collaborative network design
+challenge leaderboards
+
+Not launch-critical ever, but in the true peak vision it’s a huge longevity feature.
+
+G. Modding and workshop ecosystem
+
+If Interlinked gets big, modding is massive.
+
+Peak support would include:
+
+custom scenarios
+custom regions
+custom demand profiles
+custom vehicles
+custom branding/visual packs
+gameplay overhaul mods
+alternative governance/economy systems
+historical network recreations
+challenge packs
+
+This is one of the strongest long-tail monetisation and community multipliers possible.
+
+H. Professional / planner mode
+
+This is where things get really interesting commercially.
+
+Not the game replacing real transport modelling software overnight — that’s overhype.
+But there is a possible “serious mode” layer.
+
+Potential advanced/professional tools
+exportable reports
+planning metrics dashboards
+scenario comparison tools
+accessibility scoring
+network redesign testing
+environmental impact summaries
+before/after comparison
+stakeholder presentation mode
+custom scenario builder from real geography
+
+This would likely sit behind either:
+
+a premium edition
+a professional license
+a separate product tier later
+
+Not day one, but absolutely part of peak Interlinked potential.
+
+What makes peak Interlinked actually special
+
+Loads of games could theoretically add more modes and maps.
+
+But peak Interlinked becomes special if it nails the combination of:
+
+1. Real-world grounding
+
+It feels tied to actual places and real movement patterns.
+
+2. Simulation credibility
+
+Not fake fluff numbers. The network behaves believably.
+
+3. Player readability
+
+The player understands the consequences of their decisions.
+
+4. Urban response
+
+The world changes because of what the player built.
+
+5. Emotional identity
+
+The player feels like they are genuinely transforming a place.
+
+That combination is rare.
+
+That’s what takes it from “good transport game” to “genre-defining.”
+
+The maximum monetisation version of peak Interlinked
+
+Since you asked earlier about money too, the ultimate monetisation stack for full-power Interlinked is actually really strong.
+
+Base game
+
+Core modes + core regions.
+
+Major expansions
+new countries
+new eras
+rail expansion
+metro expansion
+governance/politics expansion
+urban growth expansion
+freight/logistics expansion
+Smaller DLC
+scenario packs
+challenge packs
+historical packs
+vehicle packs
+creator packs
+soundtrack/artbook/supporter content
+Subscription later
+
+Only once the ecosystem is huge:
+
+all DLC access
+monthly scenarios
+premium maps
+planner toolkit tier
+cloud saves/share/community packs maybe
+Professional licensing
+
+Long-shot but potentially lucrative:
+
+academic version
+planning/stakeholder presentation version
+institutional toolkit layer
+
+That is the peak business form.
+
+The true endgame version in one sentence
+
+Peak Interlinked is:
+
+a world-scale, real-geography, multi-modal transport systems simulator where the player builds, operates, finances, and politically defends mobility networks that reshape cities, regions, and nations over time.
+
+That’s the final form.
+
+But let me be blunt for a sec
+
+The full peak version is amazing to picture, but it’s also dangerous.
+
+Because this vision is so good that it can tempt you into building five games at once.
+
+So the way to use this vision properly is:
+
+keep it as the north star
+do not let it dictate current scope
+use it to judge architecture and expansion paths
+not to justify feature bloat right now
+
+The dream should guide the structure.
+It should not drown the present.

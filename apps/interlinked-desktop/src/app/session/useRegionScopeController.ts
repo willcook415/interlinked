@@ -30,6 +30,12 @@ type UseRegionScopeControllerResult = {
 
 type RegionScopeMutation = FocusResult | UnlockFocusResult;
 
+function perfLog(label: string, startedMs: number): void {
+  const elapsedMs = performance.now() - startedMs;
+  // Intentional debug instrumentation for sluggish region-selection diagnostics.
+  console.info(`[perf] ${label}: ${elapsedMs.toFixed(1)}ms`);
+}
+
 function pickFocusRegionId(rows: RegionStatus[], preferredId: string | null): string | null {
   if (rows.length === 0) return null;
   if (preferredId && rows.some((row) => row.region_id === preferredId)) return preferredId;
@@ -52,30 +58,41 @@ export function useRegionScopeController({
 }: UseRegionScopeControllerParams): UseRegionScopeControllerResult {
   const selectCounty = useCallback(
     (regionId: string) => {
+      const started = performance.now();
       params.setSelectedRegionId(regionId);
       const region = params.regions.find((row) => row.region_id === regionId) ?? null;
-      const sourceCode = (region?.source_code ?? "").trim().toLowerCase();
-      const isManualUnassignedHex = sourceCode === "manual_region_unassigned_hex";
-      params.setShowCountryInfo(Boolean(region && (!region.unlocked || isManualUnassignedHex)));
+      params.setShowCountryInfo(Boolean(region));
+      perfLog("region.selectCounty", started);
     },
     [params]
   );
 
   const applyRegionMutation = useCallback(
     (mutation: RegionScopeMutation) => {
+      const chargedBase = "charged_base" in mutation ? mutation.charged_base : 0;
       params.setBundle((previous) => {
         if (!previous) return previous;
         const nextEconomy = previous.manifest.economy
           ? {
               ...previous.manifest.economy,
               current_balance_base: mutation.current_balance_base,
+              cumulative_capex_base:
+                previous.manifest.economy.cumulative_capex_base +
+                Math.max(0, chargedBase),
               unlocked_countries: mutation.unlocked_countries,
             }
           : previous.manifest.economy;
+        const nextProgressMetrics = previous.manifest.progress_metrics
+          ? {
+              ...previous.manifest.progress_metrics,
+              budget: mutation.current_balance_base,
+            }
+          : previous.manifest.progress_metrics;
         return {
           ...previous,
           manifest: {
             ...previous.manifest,
+            progress_metrics: nextProgressMetrics,
             region_state: {
               primary_focus_region_id: mutation.primary_focus_region_id,
               active_region_ids: mutation.active_region_ids,
@@ -102,6 +119,7 @@ export function useRegionScopeController({
         return {
           ...previous,
           current_balance_base: mutation.current_balance_base,
+          budget_display: mutation.current_balance_base,
         };
       });
     },
@@ -138,14 +156,19 @@ export function useRegionScopeController({
 
   const focusSelectedCounty = useCallback(async () => {
     if (!params.bundle || !params.selectedRegionId || params.sessionKind !== "game") return;
+    const started = performance.now();
     const selectedRegionId = params.selectedRegionId;
     const projectPath = params.bundle.project_path;
     const outcome = await withBusy(async () => {
+      const focusCallStarted = performance.now();
       const focus = (await setPrimaryFocusRegion(projectPath, selectedRegionId)) as FocusResult;
+      perfLog("region.focusSelectedCounty.setPrimaryFocusRegion", focusCallStarted);
+      const listRowsStarted = performance.now();
       const [regions, demandCoverage] = await Promise.all([
         listRegions(projectPath).catch(() => [] as RegionStatus[]),
         listDemandCoverage(projectPath).catch(() => [] as DemandCoverageMeta[]),
       ]);
+      perfLog("region.focusSelectedCounty.listRows", listRowsStarted);
       return { focus, regions, demandCoverage };
     });
     if (!outcome) return;
@@ -154,7 +177,8 @@ export function useRegionScopeController({
     applyRegionRows(outcome.regions, outcome.focus.primary_focus_region_id);
     applyDemandCoverageRows(outcome.demandCoverage);
     params.setShowCountryInfo(false);
-    params.setSaveStatus("Focused selected region");
+    params.setSaveStatus("Updated selected region scope");
+    perfLog("region.focusSelectedCounty.total", started);
   }, [
     applyDemandCoverageRows,
     applyRegionMutation,
@@ -165,17 +189,22 @@ export function useRegionScopeController({
 
   const unlockAndFocusSelectedCounty = useCallback(async () => {
     if (!params.bundle || !params.selectedRegionId || params.sessionKind !== "game") return;
+    const started = performance.now();
     const selectedRegionId = params.selectedRegionId;
     const projectPath = params.bundle.project_path;
     const outcome = await withBusy(async () => {
+      const unlockCallStarted = performance.now();
       const unlock = (await unlockAndFocusRegion(
         projectPath,
         selectedRegionId
       )) as UnlockFocusResult;
+      perfLog("region.unlockAndFocusSelectedCounty.unlockAndFocusRegion", unlockCallStarted);
+      const listRowsStarted = performance.now();
       const [regions, demandCoverage] = await Promise.all([
         listRegions(projectPath).catch(() => [] as RegionStatus[]),
         listDemandCoverage(projectPath).catch(() => [] as DemandCoverageMeta[]),
       ]);
+      perfLog("region.unlockAndFocusSelectedCounty.listRows", listRowsStarted);
       return { unlock, regions, demandCoverage };
     });
     if (!outcome) return;
@@ -183,8 +212,9 @@ export function useRegionScopeController({
     applyRegionMutation(outcome.unlock);
     applyRegionRows(outcome.regions, outcome.unlock.primary_focus_region_id);
     applyDemandCoverageRows(outcome.demandCoverage);
-    params.setShowCountryInfo(false);
-    params.setSaveStatus("Unlocked and focused selected region");
+    params.setShowCountryInfo(true);
+    params.setSaveStatus("Unlocked selected region");
+    perfLog("region.unlockAndFocusSelectedCounty.total", started);
   }, [
     applyDemandCoverageRows,
     applyRegionMutation,

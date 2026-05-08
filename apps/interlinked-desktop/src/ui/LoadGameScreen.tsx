@@ -31,6 +31,7 @@ function locationLabel(city: string | null | undefined, country: string | null |
 }
 
 export default function LoadGameScreen(props: {
+  busy: boolean;
   view: SaveBrowserViewModel;
   onBack: () => void;
   onQueryChange: (query: string) => void;
@@ -154,9 +155,10 @@ export default function LoadGameScreen(props: {
                     <InterlinkedButton
                       size="sm"
                       tone="secondary"
+                      disabled={props.busy}
                       onClick={(event) => {
                         event.stopPropagation();
-                        props.onSelect(s.project_id);
+                        if (props.busy) return;
                         props.onOpen(s.project_id);
                       }}
                     >
@@ -166,8 +168,10 @@ export default function LoadGameScreen(props: {
                       size="sm"
                       tone="ghost"
                       className="il-load-delete"
+                      disabled={props.busy}
                       onClick={(event) => {
                         event.stopPropagation();
+                        if (props.busy) return;
                         props.onSelect(s.project_id);
                         props.onDelete(s.project_id, s.name);
                       }}

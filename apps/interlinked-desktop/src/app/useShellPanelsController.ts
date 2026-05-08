@@ -20,8 +20,9 @@ function isTextInputLike(target: EventTarget | null): boolean {
 type WorkspacePanelSurface =
   | "none"
   | "filters"
+  | "network"
   | "missions"
-  | "country_info"
+  | "operations"
   | "fares"
   | "alerts"
   | "settings";
@@ -71,8 +72,7 @@ export function useShellPanelsController(args: {
     (panel: WorkspacePanelSurface): boolean => {
       if (!inSession) return false;
       if (panel === "none") return true;
-      if (workspaceMode === "build") return false;
-      if (panel === "missions" || panel === "country_info" || panel === "fares") {
+      if (panel === "missions" || panel === "operations" || panel === "fares") {
         return sessionKind === "game";
       }
       return true;
@@ -85,7 +85,7 @@ export function useShellPanelsController(args: {
       if (!inSession) return false;
       if (overlay === "none") return true;
       if (workspaceMode === "build") {
-        return overlay === "command_palette";
+        return overlay === "menu" || overlay === "command_palette";
       }
       return true;
     },
@@ -175,8 +175,12 @@ export function useShellPanelsController(args: {
     setPanelVisibility("missions", (previous) => !previous);
   }, [setPanelVisibility]);
 
+  const toggleNetworkPanel = useCallback(() => {
+    setPanelVisibility("network", (previous) => !previous);
+  }, [setPanelVisibility]);
+
   const toggleCountryInfoPanel = useCallback(() => {
-    setPanelVisibility("country_info", (previous) => !previous);
+    setPanelVisibility("operations", (previous) => !previous);
   }, [setPanelVisibility]);
 
   const toggleFarePanel = useCallback(() => {
@@ -217,7 +221,7 @@ export function useShellPanelsController(args: {
   }, []);
 
   const setShowCountryInfo: Dispatch<SetStateAction<boolean>> = useCallback(
-    (update) => setPanelVisibility("country_info", update),
+    (update) => setPanelVisibility("operations", update),
     [setPanelVisibility]
   );
   const setShowFares: Dispatch<SetStateAction<boolean>> = useCallback(
@@ -230,6 +234,10 @@ export function useShellPanelsController(args: {
   );
   const setShowMissions: Dispatch<SetStateAction<boolean>> = useCallback(
     (update) => setPanelVisibility("missions", update),
+    [setPanelVisibility]
+  );
+  const setShowNetwork: Dispatch<SetStateAction<boolean>> = useCallback(
+    (update) => setPanelVisibility("network", update),
     [setPanelVisibility]
   );
   const setShowAlerts: Dispatch<SetStateAction<boolean>> = useCallback(
@@ -258,7 +266,7 @@ export function useShellPanelsController(args: {
       if (buildAction && buildAction !== "select") return "line_builder";
       return "none";
     }
-    if (surfaceState.activePanel === "country_info") return "region_tool";
+    if (surfaceState.activePanel === "operations") return "region_tool";
     return "none";
   }, [buildAction, surfaceState.activePanel, workspaceMode]);
 
@@ -308,7 +316,7 @@ export function useShellPanelsController(args: {
     setSurfaceState((previous) => {
       if (
         previous.activePanel !== "missions" &&
-        previous.activePanel !== "country_info" &&
+        previous.activePanel !== "operations" &&
         previous.activePanel !== "fares"
       ) {
         return previous;
@@ -320,10 +328,11 @@ export function useShellPanelsController(args: {
     });
   }, [sessionKind]);
 
-  const showCountryInfo = surfaceState.activePanel === "country_info";
+  const showCountryInfo = surfaceState.activePanel === "operations";
   const showFares = surfaceState.activePanel === "fares";
   const showFilters = surfaceState.activePanel === "filters";
   const showMissions = surfaceState.activePanel === "missions";
+  const showNetwork = surfaceState.activePanel === "network";
   const showAlerts = surfaceState.activePanel === "alerts";
   const showSettings = surfaceState.activePanel === "settings";
   const showMenu = surfaceState.activeOverlay === "menu";
@@ -340,6 +349,8 @@ export function useShellPanelsController(args: {
     setShowFilters,
     showMissions,
     setShowMissions,
+    showNetwork,
+    setShowNetwork,
     showAlerts,
     setShowAlerts,
     showMenu,
@@ -355,6 +366,7 @@ export function useShellPanelsController(args: {
     openSettingsPanel,
     toggleFiltersPanel,
     toggleMissionsPanel,
+    toggleNetworkPanel,
     toggleCountryInfoPanel,
     toggleFarePanel,
     toggleAlertsPanel,
@@ -513,8 +525,8 @@ export function useShellCommandOrchestration(args: {
       },
       {
         id: "open_counties",
-        label: "Toggle County Info",
-        detail: "Open region progression panel",
+        label: "Toggle Operations",
+        detail: "Open the regions and strategic scope surface",
         disabled: !inGame || !inViewMode,
         run: () => {
           panels.toggleCountryInfoPanel();

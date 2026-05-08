@@ -32,3 +32,6 @@ Thumbs.db
 *.tiff
 *.mbtiles
 *.gpkg
+
+/target_codex/
+/target/

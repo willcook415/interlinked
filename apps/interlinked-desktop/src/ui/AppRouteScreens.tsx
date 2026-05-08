@@ -70,7 +70,6 @@ export default function AppRouteScreens(props: {
         }}
         onLoadGame={props.onRouteLoadGame}
         onNewGame={props.onRouteNewGame}
-        onNewScenario={props.onRouteNewScenario}
         onOpenSettings={props.onOpenSettings}
         canContinue={props.canContinue}
         latestGame={props.latestGameSave}
@@ -123,6 +122,7 @@ export default function AppRouteScreens(props: {
   if (props.route === "load_game") {
     return (
       <LoadGameScreen
+        busy={props.busy}
         view={props.gameBrowserView}
         onBack={props.onRouteHome}
         onQueryChange={(query) => props.onSaveBrowserQueryChange("game", query)}

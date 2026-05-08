@@ -1,16 +1,60 @@
+use crate::build::LineActivationReason;
 use crate::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use super::defaults::runtime_trains_authoritative_for_manifest;
 use super::fare::runtime_fare_base_per_boarding;
-use super::models::{RuntimeFareEvents, RuntimeOpsState, RuntimeTrainPhase};
+use super::models::{
+    RuntimeBoardingDebug, RuntimeFareEvents, RuntimeOpsState, RuntimeQueueIngestDebug,
+    RuntimeServiceProfile, RuntimeTrainPhase,
+};
 use super::service_profiles::{
     build_runtime_reverse_service_pairs, build_runtime_service_profiles,
-    runtime_service_units_assigned,
+    runtime_service_activation_reason,
 };
 use super::train_kernel::{
     advance_runtime_train, new_runtime_train_state, runtime_train_onboard_total,
     runtime_train_position_xy,
 };
+
+const RT_OPS_LOG_INTERVAL: u64 = 20;
+const RT_OPS_SLOW_TOTAL_MS: f64 = 90.0;
+const RT_OPS_SLOW_STAGE_MS: f64 = 40.0;
+static RUNTIME_OPS_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeQueueDisplayAggregates {
+    total_pax: f64,
+    by_stop: HashMap<String, f64>,
+    by_line: HashMap<String, f64>,
+}
+
+fn runtime_queue_display_aggregates(
+    queue_cohorts: &HashMap<(String, String, String), f64>,
+    profiles_by_service: &HashMap<String, RuntimeServiceProfile>,
+) -> RuntimeQueueDisplayAggregates {
+    // Display-only projection cache. The authoritative passenger lifecycle is
+    // engine-owned; these aggregates only avoid rescanning runtime projection
+    // queues while building station/line views and debug telemetry.
+    let mut aggregate = RuntimeQueueDisplayAggregates::default();
+    for ((service_id, stop_id, _destination_stop_id), queued) in queue_cohorts {
+        if !(queued.is_finite() && *queued > RUNTIME_QUEUE_EPS) {
+            continue;
+        }
+        let queued = queued.max(0.0);
+        aggregate.total_pax += queued;
+        *aggregate.by_stop.entry(stop_id.clone()).or_insert(0.0) += queued;
+        if let Some(profile) = profiles_by_service.get(service_id) {
+            *aggregate
+                .by_line
+                .entry(profile.line_id.clone())
+                .or_insert(0.0) += queued;
+        }
+    }
+    aggregate.total_pax = aggregate.total_pax.max(0.0);
+    aggregate
+}
 
 pub(crate) fn build_live_service_loads(
     gs: &interlinked_engine::platform::GameState,
@@ -102,6 +146,47 @@ pub(crate) fn build_live_service_loads(
         .collect::<Vec<_>>()
 }
 
+fn runtime_profile_leg_is_boardable(
+    profile: &RuntimeServiceProfile,
+    board_stop_id: &str,
+    destination_stop_id: &str,
+) -> bool {
+    let board_index = profile
+        .stop_ids
+        .iter()
+        .position(|stop_id| stop_id == board_stop_id);
+    let destination_index = profile
+        .stop_ids
+        .iter()
+        .position(|stop_id| stop_id == destination_stop_id);
+    matches!(
+        (board_index, destination_index),
+        (Some(board), Some(destination)) if destination > board
+    )
+}
+
+fn resolve_runtime_service_for_leg(
+    profiles_by_service: &HashMap<String, RuntimeServiceProfile>,
+    reverse_service_by_service: &HashMap<String, String>,
+    service_id: &str,
+    board_stop_id: &str,
+    destination_stop_id: &str,
+) -> Option<(String, bool)> {
+    if let Some(profile) = profiles_by_service.get(service_id) {
+        if runtime_profile_leg_is_boardable(profile, board_stop_id, destination_stop_id) {
+            return Some((service_id.to_string(), false));
+        }
+    }
+    let reverse_service_id = reverse_service_by_service.get(service_id)?;
+    let reverse_profile = profiles_by_service.get(reverse_service_id)?;
+    if runtime_profile_leg_is_boardable(reverse_profile, board_stop_id, destination_stop_id) {
+        return Some((reverse_service_id.clone(), true));
+    }
+    None
+}
+
+const RUNTIME_QUEUE_EPS: f64 = 1e-12;
+
 pub(crate) fn build_runtime_ops_views(
     state: &AppState,
     project_path: &str,
@@ -121,6 +206,10 @@ pub(crate) fn build_runtime_ops_views(
     ),
     String,
 > {
+    let call_index = RUNTIME_OPS_CALL_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    let total_started = Instant::now();
     #[derive(Debug, Clone, Default)]
     struct StationAgg {
         current_inside_pax: f64,
@@ -149,6 +238,9 @@ pub(crate) fn build_runtime_ops_views(
         .iter()
         .map(|service| (service.id.clone(), service_line_runtime_id(service)))
         .collect::<HashMap<_, _>>();
+    let stage_overlay_aggregate_started = Instant::now();
+    let output_board_load_rows = output.map(|sim| sim.board_loads.len()).unwrap_or(0);
+    let output_cohort_rows = output.map(|sim| sim.passenger_cohorts.len()).unwrap_or(0);
 
     if emit_runtime_views {
         if let Some(sim_output) = output {
@@ -192,11 +284,15 @@ pub(crate) fn build_runtime_ops_views(
             }
         }
     }
+    let stage_overlay_aggregate_ms =
+        stage_overlay_aggregate_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_lock_started = Instant::now();
     let mut guard = state
         .runtime_ops
         .lock()
         .map_err(|_| "runtime_ops mutex poisoned".to_string())?;
+    let stage_lock_ms = stage_lock_started.elapsed().as_secs_f64() * 1000.0;
     let should_reset = guard
         .as_ref()
         .map(|ops| ops.project_path != project_path)
@@ -213,6 +309,8 @@ pub(crate) fn build_runtime_ops_views(
             dispatch_service_ids: HashSet::new(),
             trains: BTreeMap::new(),
             queue_cohorts: HashMap::new(),
+            last_queue_ingest_by_service_stop: HashMap::new(),
+            last_boarding_by_service_stop: HashMap::new(),
         });
     }
     let Some(ops) = guard.as_mut() else {
@@ -224,7 +322,10 @@ pub(crate) fn build_runtime_ops_views(
             RuntimeFareEvents::default(),
         ));
     };
+    let stage_topology_refresh_started = Instant::now();
+    let mut topology_refreshed = false;
     if ops.topology_hash != topology_hash || ops.profiles_by_service.is_empty() {
+        topology_refreshed = true;
         let (profiles_by_service, stop_name_by_id) = build_runtime_service_profiles(scenario);
         let dispatch_service_ids = profiles_by_service.keys().cloned().collect::<HashSet<_>>();
         let reverse_service_by_service = build_runtime_reverse_service_pairs(&profiles_by_service);
@@ -259,32 +360,88 @@ pub(crate) fn build_runtime_ops_views(
         ops.fare_base_by_service = fare_base_by_service;
         ops.dispatch_service_ids = dispatch_service_ids;
     }
+    let stage_topology_refresh_ms = stage_topology_refresh_started.elapsed().as_secs_f64() * 1000.0;
     ops.topology_hash = topology_hash;
+    let queue_cohorts_before_ingest = ops.queue_cohorts.len();
+    let stage_queue_ingest_started = Instant::now();
+    let mut queue_ingest_debug = HashMap::<(String, String), RuntimeQueueIngestDebug>::new();
     ops.queue_cohorts
         .retain(|(service_id, board_stop_id, destination_stop_id), queued| {
             ops.dispatch_service_ids.contains(service_id)
                 && ops
-                    .stop_ids_by_service
+                    .profiles_by_service
                     .get(service_id)
-                    .map(|stops| {
-                        stops.contains(board_stop_id) && stops.contains(destination_stop_id)
+                    .map(|profile| {
+                        runtime_profile_leg_is_boardable(
+                            profile,
+                            board_stop_id,
+                            destination_stop_id,
+                        )
                     })
                     .unwrap_or(false)
                 && queued.is_finite()
-                && *queued > 1e-6
+                && *queued > RUNTIME_QUEUE_EPS
         });
     if let Some(sim_output) = output {
         let mut arrivals_by_key = HashMap::<(String, String, String), f64>::new();
+        let mut remap_logs_emitted = 0usize;
         for cohort in &sim_output.passenger_cohorts {
-            if !ops.dispatch_service_ids.contains(&cohort.service_id) {
-                continue;
-            }
             let arrivals = cohort.attempted_pax.max(0.0);
             if arrivals <= 0.0 {
                 continue;
             }
+            let resolved_service = resolve_runtime_service_for_leg(
+                &ops.profiles_by_service,
+                &ops.reverse_service_by_service,
+                &cohort.service_id,
+                &cohort.board_stop_id,
+                &cohort.destination_stop_id,
+            );
+            let (runtime_service_id, remapped_to_reverse) =
+                if let Some((service_id, remapped)) = resolved_service {
+                    (service_id, remapped)
+                } else {
+                    (cohort.service_id.clone(), false)
+                };
+            let debug_key = (runtime_service_id.clone(), cohort.board_stop_id.clone());
+            let debug_entry = queue_ingest_debug.entry(debug_key).or_default();
+            debug_entry.attempted_pax += arrivals;
+            if remapped_to_reverse {
+                debug_entry.remapped_to_reverse_service_pax += arrivals;
+                if remap_logs_emitted < 12 {
+                    eprintln!(
+                        "[pax-runtime-remap] planner_service={} runtime_service={} board_stop={} destination_stop={} attempted={:.6}",
+                        cohort.service_id,
+                        runtime_service_id,
+                        cohort.board_stop_id,
+                        cohort.destination_stop_id,
+                        arrivals,
+                    );
+                    remap_logs_emitted = remap_logs_emitted.saturating_add(1);
+                }
+            }
+            if !ops.dispatch_service_ids.contains(&runtime_service_id) {
+                debug_entry.dropped_not_dispatchable_pax += arrivals;
+                continue;
+            }
+            let valid_leg = ops
+                .profiles_by_service
+                .get(&runtime_service_id)
+                .map(|profile| {
+                    runtime_profile_leg_is_boardable(
+                        profile,
+                        &cohort.board_stop_id,
+                        &cohort.destination_stop_id,
+                    )
+                })
+                .unwrap_or(false);
+            if !valid_leg {
+                debug_entry.dropped_invalid_stop_pax += arrivals;
+                continue;
+            }
+            debug_entry.ingested_pax += arrivals;
             let key = (
-                cohort.service_id.clone(),
+                runtime_service_id,
                 cohort.board_stop_id.clone(),
                 cohort.destination_stop_id.clone(),
             );
@@ -295,16 +452,20 @@ pub(crate) fn build_runtime_ops_views(
         for (key, arrivals) in sorted_arrivals {
             let current = ops.queue_cohorts.get(&key).copied().unwrap_or(0.0);
             let next = (current + arrivals).max(0.0);
-            if next > 1e-6 {
+            if next > RUNTIME_QUEUE_EPS {
                 ops.queue_cohorts.insert(key, next);
             } else {
                 ops.queue_cohorts.remove(&key);
             }
         }
     }
+    ops.last_queue_ingest_by_service_stop = queue_ingest_debug;
     ops.queue_cohorts
-        .retain(|_, queued| queued.is_finite() && *queued > 1e-6);
+        .retain(|_, queued| queued.is_finite() && *queued > RUNTIME_QUEUE_EPS);
+    let stage_queue_ingest_ms = stage_queue_ingest_started.elapsed().as_secs_f64() * 1000.0;
+    let queue_cohorts_after_ingest = ops.queue_cohorts.len();
 
+    let stage_train_state_sync_started = Instant::now();
     let mut expected_train_ids = HashSet::<String>::new();
     for profile in ops.profiles_by_service.values() {
         for unit_index in 0..profile.vehicles_on_service {
@@ -352,14 +513,15 @@ pub(crate) fn build_runtime_ops_views(
     }
     ops.trains
         .retain(|train_id, _| expected_train_ids.contains(train_id));
+    let stage_train_state_sync_ms = stage_train_state_sync_started.elapsed().as_secs_f64() * 1000.0;
 
-    let queue_total_before_boarding = ops
-        .queue_cohorts
-        .values()
-        .copied()
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .sum::<f64>();
+    let queue_display_before_boarding =
+        runtime_queue_display_aggregates(&ops.queue_cohorts, &ops.profiles_by_service);
+    let queue_total_before_boarding = queue_display_before_boarding.total_pax;
     let mut fare_events = RuntimeFareEvents::default();
+    let stage_boarding_started = Instant::now();
+    let mut boarding_debug = HashMap::<(String, String), RuntimeBoardingDebug>::new();
+    let mut boarding_event_count = 0usize;
     for train in ops.trains.values_mut() {
         if let Some(profile) = ops.profiles_by_service.get(&train.service_id) {
             let fare_base_per_boarding = ops
@@ -374,9 +536,20 @@ pub(crate) fn build_runtime_ops_views(
                 &mut ops.queue_cohorts,
                 fare_base_per_boarding,
             );
-            fare_events.boarded_pax += delta.boarded_pax;
-            fare_events.completed_alightings_pax += delta.completed_alightings_pax;
-            fare_events.liability_accrued_base += delta.liability_accrued_base;
+            fare_events.boarded_pax += delta.fare.boarded_pax;
+            fare_events.completed_alightings_pax += delta.fare.completed_alightings_pax;
+            fare_events.liability_accrued_base += delta.fare.liability_accrued_base;
+            for event in delta.boarding_events {
+                boarding_event_count = boarding_event_count.saturating_add(1);
+                let key = (event.service_id, event.stop_id);
+                let entry = boarding_debug.entry(key).or_default();
+                entry.attempts = entry.attempts.saturating_add(1);
+                entry.attempted_pax += event.attempted_pax.max(0.0);
+                entry.boarded_pax += event.boarded_pax.max(0.0);
+                entry.left_behind_pax += event.left_behind_pax.max(0.0);
+                entry.queue_total_before_pax += event.queue_total_before_pax.max(0.0);
+                entry.queue_total_after_pax += event.queue_total_after_pax.max(0.0);
+            }
             train.onboard_pax = runtime_train_onboard_total(train);
 
             if train.phase == RuntimeTrainPhase::Layover && train.direction_step < 0 {
@@ -409,19 +582,56 @@ pub(crate) fn build_runtime_ops_views(
             }
         }
     }
-    let queue_total_after_boarding = ops
-        .queue_cohorts
-        .values()
-        .copied()
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .sum::<f64>();
+    let stage_boarding_ms = stage_boarding_started.elapsed().as_secs_f64() * 1000.0;
+    ops.last_boarding_by_service_stop = boarding_debug;
+    let queue_display_after_boarding =
+        runtime_queue_display_aggregates(&ops.queue_cohorts, &ops.profiles_by_service);
+    let queue_total_after_boarding = queue_display_after_boarding.total_pax;
+    let queue_cohorts_after_boarding = ops.queue_cohorts.len();
 
     if !emit_runtime_views {
         let mut provenance_warnings = Vec::<String>::new();
         if !ops.profiles_by_service.is_empty() {
             provenance_warnings.push(
-                "derived_calibrated: runtime ops advanced without materializing views on this tick"
+                "runtime_projection: runtime ops advanced without materializing views on this tick"
                     .to_string(),
+            );
+        }
+        let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+        let should_log = call_index.is_multiple_of(RT_OPS_LOG_INTERVAL)
+            || total_ms > RT_OPS_SLOW_TOTAL_MS
+            || stage_queue_ingest_ms > RT_OPS_SLOW_STAGE_MS
+            || stage_boarding_ms > RT_OPS_SLOW_STAGE_MS;
+        if should_log {
+            eprintln!(
+                "[rt-ops] call={} project={} emit_runtime_views={} dt_s={:.3} total_ms={:.2} overlay_aggregate_ms={:.2} lock_ms={:.2} topology_refresh_ms={:.2} topology_refreshed={} queue_ingest_ms={:.2} train_state_sync_ms={:.2} boarding_ms={:.2} services={} profiles={} dispatchable_services={} trains={} output_board_load_rows={} output_cohort_rows={} queue_cohorts={}=>{}=>{} queue_total_before_boarding={:.3} queue_total_after_boarding={:.3} boarding_events={} boarded_pax={:.3} alighted_pax={:.3} warnings={}",
+                call_index,
+                project_path,
+                emit_runtime_views,
+                dt_s.max(0.0),
+                total_ms.max(0.0),
+                stage_overlay_aggregate_ms.max(0.0),
+                stage_lock_ms.max(0.0),
+                stage_topology_refresh_ms.max(0.0),
+                topology_refreshed,
+                stage_queue_ingest_ms.max(0.0),
+                stage_train_state_sync_ms.max(0.0),
+                stage_boarding_ms.max(0.0),
+                scenario.world.services.len(),
+                ops.profiles_by_service.len(),
+                ops.dispatch_service_ids.len(),
+                ops.trains.len(),
+                output_board_load_rows,
+                output_cohort_rows,
+                queue_cohorts_before_ingest,
+                queue_cohorts_after_ingest,
+                queue_cohorts_after_boarding,
+                queue_total_before_boarding.max(0.0),
+                queue_total_after_boarding.max(0.0),
+                boarding_event_count,
+                fare_events.boarded_pax.max(0.0),
+                fare_events.completed_alightings_pax.max(0.0),
+                provenance_warnings.len(),
             );
         }
         return Ok((
@@ -433,6 +643,7 @@ pub(crate) fn build_runtime_ops_views(
         ));
     }
 
+    let stage_view_build_started = Instant::now();
     let mut trains_sorted = ops.trains.values().cloned().collect::<Vec<_>>();
     trains_sorted.sort_by(|a, b| {
         a.line_id
@@ -488,22 +699,22 @@ pub(crate) fn build_runtime_ops_views(
             y,
             at_stop_id,
             in_motion,
-            provenance: "derived_calibrated".to_string(),
+            provenance: CounterProvenance::AnimationOnly,
+            passenger_counter_provenance: CounterProvenance::AnimationOnly,
         });
     }
 
-    let mut queue_inside_by_stop = HashMap::<String, f64>::new();
-    for ((_service_id, stop_id, _destination_stop_id), queued) in &ops.queue_cohorts {
-        *queue_inside_by_stop.entry(stop_id.clone()).or_insert(0.0) += queued.max(0.0);
-    }
-
     let mut station_ids = station_agg.keys().cloned().collect::<BTreeSet<_>>();
-    station_ids.extend(queue_inside_by_stop.keys().cloned());
+    station_ids.extend(queue_display_after_boarding.by_stop.keys().cloned());
 
     let mut station_views = Vec::<StationRuntimeView>::new();
     for stop_id in station_ids {
         let agg = station_agg.get(&stop_id).cloned().unwrap_or_default();
-        let queue_inside = queue_inside_by_stop.get(&stop_id).copied().unwrap_or(0.0);
+        let queue_inside = queue_display_after_boarding
+            .by_stop
+            .get(&stop_id)
+            .copied()
+            .unwrap_or(0.0);
         let current_inside = if agg.capacity_pax > 0.0 {
             queue_inside.min(agg.capacity_pax)
         } else {
@@ -522,7 +733,8 @@ pub(crate) fn build_runtime_ops_views(
             entries_per_hour: agg.entries_per_hour.max(0.0),
             exits_per_hour: agg.exits_per_hour.max(0.0),
             avg_wait_to_board_s: avg_wait.max(0.0),
-            provenance: "derived_calibrated".to_string(),
+            provenance: CounterProvenance::RuntimeProjection,
+            passenger_counter_provenance: CounterProvenance::RuntimeProjection,
         });
     }
     station_views.sort_by(|a, b| a.stop_id.cmp(&b.stop_id));
@@ -533,19 +745,11 @@ pub(crate) fn build_runtime_ops_views(
             .entry(train.line_id.clone())
             .or_insert(0) += 1;
     }
-    let mut queue_end_by_line = HashMap::<String, f64>::new();
-    for ((service_id, _stop_id, _destination_stop_id), queued) in &ops.queue_cohorts {
-        if let Some(profile) = ops.profiles_by_service.get(service_id) {
-            *queue_end_by_line
-                .entry(profile.line_id.clone())
-                .or_insert(0.0) += queued.max(0.0);
-        }
-    }
     let mut line_ids = line_agg
         .keys()
         .cloned()
         .chain(active_trains_by_line.keys().cloned())
-        .chain(queue_end_by_line.keys().cloned())
+        .chain(queue_display_after_boarding.by_line.keys().cloned())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -565,20 +769,22 @@ pub(crate) fn build_runtime_ops_views(
             boarded_per_hour: agg.boarded_per_hour.max(0.0),
             alighted_per_hour: agg.alighted_per_hour.max(0.0),
             denied_boardings_per_hour: agg.denied_boardings_per_hour.max(0.0),
-            queue_end_pax: queue_end_by_line
+            queue_end_pax: queue_display_after_boarding
+                .by_line
                 .get(&line_id)
                 .copied()
                 .unwrap_or(0.0)
                 .max(0.0),
             mean_wait_s: mean_wait_s.max(0.0),
-            provenance: "derived_calibrated".to_string(),
+            provenance: CounterProvenance::RuntimeProjection,
+            passenger_counter_provenance: CounterProvenance::RuntimeProjection,
         });
     }
 
     let mut provenance_warnings = Vec::<String>::new();
     if !ops.profiles_by_service.is_empty() {
         provenance_warnings.push(
-            "derived_calibrated: train onboard and station flow are reconstructed from deterministic service-stop cohorts and board-load events"
+            "runtime_projection: station/line flow is reconstructed from board-load events; animation_only: train onboard is reconstructed from desktop train cohorts"
                 .to_string(),
         );
     }
@@ -586,19 +792,81 @@ pub(crate) fn build_runtime_ops_views(
     let boarding_mass_mismatch = (queue_drop - fare_events.boarded_pax.max(0.0)).abs();
     if boarding_mass_mismatch > 1e-3 {
         provenance_warnings.push(format!(
-            "derived_calibrated: queue/boarding conservation mismatch detected ({boarding_mass_mismatch:.3} pax)"
+            "runtime_projection: queue/boarding conservation mismatch detected ({boarding_mass_mismatch:.3} pax)"
         ));
     }
-    if scenario.world.services.iter().any(|service| {
-        let service_intent = !matches!(service.service_enabled, Some(false))
-            && service.headway_s.is_finite()
-            && service.headway_s > 0.0
-            && service.headway_s < 86_399.0
-            && service.operating_tph.unwrap_or(1.0) > 0.0;
-        service_intent && runtime_service_units_assigned(service) == 0
-    }) {
-        provenance_warnings.push(
-            "authored: service has zero assigned stock and is suppressed from dispatch".to_string(),
+    let mut suppressed_reason_counts = BTreeMap::<String, usize>::new();
+    for service in &scenario.world.services {
+        let reason = runtime_service_activation_reason(service);
+        if reason == LineActivationReason::Running {
+            continue;
+        }
+        let reason_key = match reason {
+            LineActivationReason::NoTargetTphInActiveBand => "no_target_tph_in_active_band",
+            LineActivationReason::NoAssignedUnits => "no_assigned_units",
+            LineActivationReason::NoOwnedUnits => "no_owned_units",
+            LineActivationReason::FleetInsufficientForRoundTrip => {
+                "fleet_insufficient_for_round_trip"
+            }
+            LineActivationReason::InvalidHeadwayOrDisabled => "invalid_headway_or_disabled",
+            LineActivationReason::NoRequiredUnits => "no_required_units",
+            LineActivationReason::Running => "running",
+        };
+        *suppressed_reason_counts
+            .entry(reason_key.to_string())
+            .or_insert(0) += 1;
+    }
+    if !suppressed_reason_counts.is_empty() {
+        let summary = suppressed_reason_counts
+            .into_iter()
+            .map(|(reason, count)| format!("{reason}:{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        provenance_warnings.push(format!(
+            "runtime_projection: service dispatch suppressed ({summary})"
+        ));
+    }
+    let stage_view_build_ms = stage_view_build_started.elapsed().as_secs_f64() * 1000.0;
+    let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+    let should_log = call_index.is_multiple_of(RT_OPS_LOG_INTERVAL)
+        || total_ms > RT_OPS_SLOW_TOTAL_MS
+        || stage_queue_ingest_ms > RT_OPS_SLOW_STAGE_MS
+        || stage_boarding_ms > RT_OPS_SLOW_STAGE_MS
+        || stage_view_build_ms > RT_OPS_SLOW_STAGE_MS;
+    if should_log {
+        eprintln!(
+            "[rt-ops] call={} project={} emit_runtime_views={} dt_s={:.3} total_ms={:.2} overlay_aggregate_ms={:.2} lock_ms={:.2} topology_refresh_ms={:.2} topology_refreshed={} queue_ingest_ms={:.2} train_state_sync_ms={:.2} boarding_ms={:.2} view_build_ms={:.2} services={} profiles={} dispatchable_services={} trains={} runtime_train_views={} runtime_station_views={} runtime_line_ops={} output_board_load_rows={} output_cohort_rows={} queue_cohorts={}=>{}=>{} queue_total_before_boarding={:.3} queue_total_after_boarding={:.3} boarding_events={} boarded_pax={:.3} alighted_pax={:.3} warnings={}",
+            call_index,
+            project_path,
+            emit_runtime_views,
+            dt_s.max(0.0),
+            total_ms.max(0.0),
+            stage_overlay_aggregate_ms.max(0.0),
+            stage_lock_ms.max(0.0),
+            stage_topology_refresh_ms.max(0.0),
+            topology_refreshed,
+            stage_queue_ingest_ms.max(0.0),
+            stage_train_state_sync_ms.max(0.0),
+            stage_boarding_ms.max(0.0),
+            stage_view_build_ms.max(0.0),
+            scenario.world.services.len(),
+            ops.profiles_by_service.len(),
+            ops.dispatch_service_ids.len(),
+            ops.trains.len(),
+            train_views.len(),
+            station_views.len(),
+            line_ops.len(),
+            output_board_load_rows,
+            output_cohort_rows,
+            queue_cohorts_before_ingest,
+            queue_cohorts_after_ingest,
+            queue_cohorts_after_boarding,
+            queue_total_before_boarding.max(0.0),
+            queue_total_after_boarding.max(0.0),
+            boarding_event_count,
+            fare_events.boarded_pax.max(0.0),
+            fare_events.completed_alightings_pax.max(0.0),
+            provenance_warnings.len(),
         );
     }
 
@@ -628,7 +896,7 @@ pub(crate) fn merge_runtime_manifest_state(
     mut reloaded: ProjectManifest,
     runtime: &ProjectManifest,
 ) -> ProjectManifest {
-    let use_runtime_economy = runtime.economy.economy_revision >= reloaded.economy.economy_revision;
+    let use_runtime_economy = runtime.economy.economy_revision > reloaded.economy.economy_revision;
     reloaded.clock_state.tick_seconds = reloaded
         .clock_state
         .tick_seconds
@@ -683,6 +951,7 @@ pub(crate) fn default_runtime_fast_snapshot_for_manifest(
         line_ops: Vec::new(),
         provenance_warnings: Vec::new(),
         trains_authoritative: runtime_trains_authoritative_for_manifest(manifest),
+        passenger_counter_provenance: CounterProvenance::RuntimeProjection,
     }
 }
 
@@ -713,6 +982,8 @@ pub(crate) fn default_runtime_strategic_snapshot_for_manifest(
         telemetry: RuntimePerfTelemetry::default(),
         provenance_warnings: Vec::new(),
         trains_authoritative: runtime_trains_authoritative_for_manifest(manifest),
+        passenger_counter_provenance: CounterProvenance::StrategicEstimate,
+        fare_counter_provenance: CounterProvenance::StrategicEstimate,
     }
 }
 
@@ -725,6 +996,97 @@ pub(crate) fn default_runtime_snapshot_for_manifest(
     let strategic =
         default_runtime_strategic_snapshot_for_manifest(project_path, manifest, clock_revision);
     runtime_snapshot_from_parts(&fast, Some(&strategic))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_profile(service_id: &str, line_id: &str, stops: &[&str]) -> RuntimeServiceProfile {
+        RuntimeServiceProfile {
+            service_id: service_id.to_string(),
+            line_id: line_id.to_string(),
+            line_name: line_id.to_string(),
+            mode: "metro".to_string(),
+            mode_variant: None,
+            stock_tier_id: None,
+            dwell_s: 15.0,
+            turnaround_s: 30.0,
+            speed_mps: 12.0,
+            vehicle_capacity: 500.0,
+            vehicles_on_service: 1,
+            stop_ids: stops.iter().map(|value| value.to_string()).collect(),
+            stop_xy: vec![(0.0, 0.0), (1.0, 0.0)],
+            segment_lengths_m: vec![1000.0],
+        }
+    }
+
+    #[test]
+    fn profile_leg_validation_requires_forward_stop_order() {
+        let profile = test_profile("svc_fwd", "line_1", &["A", "B"]);
+        assert!(runtime_profile_leg_is_boardable(&profile, "A", "B"));
+        assert!(!runtime_profile_leg_is_boardable(&profile, "B", "A"));
+        assert!(!runtime_profile_leg_is_boardable(&profile, "A", "A"));
+    }
+
+    #[test]
+    fn service_resolution_remaps_to_reverse_pair_when_direction_mismatched() {
+        let forward_id = "svc_fwd".to_string();
+        let reverse_id = "auto_reverse::line_1::svc_fwd".to_string();
+        let mut profiles = HashMap::<String, RuntimeServiceProfile>::new();
+        profiles.insert(
+            forward_id.clone(),
+            test_profile(&forward_id, "line_1", &["A", "B"]),
+        );
+        profiles.insert(
+            reverse_id.clone(),
+            test_profile(&reverse_id, "line_1", &["B", "A"]),
+        );
+        let mut reverse_pairs = HashMap::<String, String>::new();
+        reverse_pairs.insert(forward_id.clone(), reverse_id.clone());
+        reverse_pairs.insert(reverse_id.clone(), forward_id.clone());
+
+        let resolved_forward =
+            resolve_runtime_service_for_leg(&profiles, &reverse_pairs, &forward_id, "A", "B");
+        assert_eq!(resolved_forward, Some((forward_id.clone(), false)));
+
+        let resolved_from_reverse =
+            resolve_runtime_service_for_leg(&profiles, &reverse_pairs, &reverse_id, "A", "B");
+        assert_eq!(resolved_from_reverse, Some((forward_id.clone(), true)));
+
+        let resolved_to_reverse =
+            resolve_runtime_service_for_leg(&profiles, &reverse_pairs, &forward_id, "B", "A");
+        assert_eq!(resolved_to_reverse, Some((reverse_id.clone(), true)));
+    }
+
+    #[test]
+    fn queue_display_aggregates_match_projection_source_totals() {
+        let profile = test_profile("svc_fwd", "line_1", &["A", "B"]);
+        let profiles =
+            HashMap::<String, RuntimeServiceProfile>::from([(profile.service_id.clone(), profile)]);
+        let queue_cohorts = HashMap::<(String, String, String), f64>::from([
+            (
+                ("svc_fwd".to_string(), "A".to_string(), "B".to_string()),
+                4.0,
+            ),
+            (
+                ("svc_fwd".to_string(), "A".to_string(), "C".to_string()),
+                3.0,
+            ),
+            (
+                ("svc_unknown".to_string(), "Z".to_string(), "Q".to_string()),
+                2.0,
+            ),
+        ]);
+
+        let aggregate = runtime_queue_display_aggregates(&queue_cohorts, &profiles);
+
+        assert_eq!(aggregate.total_pax, 9.0);
+        assert_eq!(aggregate.by_stop.get("A").copied().unwrap_or(0.0), 7.0);
+        assert_eq!(aggregate.by_stop.get("Z").copied().unwrap_or(0.0), 2.0);
+        assert_eq!(aggregate.by_line.get("line_1").copied().unwrap_or(0.0), 7.0);
+        assert!(!aggregate.by_line.contains_key("svc_unknown"));
+    }
 }
 
 pub(crate) fn bootstrap_runtime_snapshot_from_state(

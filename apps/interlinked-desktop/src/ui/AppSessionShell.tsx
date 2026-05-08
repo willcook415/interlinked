@@ -1,11 +1,15 @@
+import { useEffect, useRef } from "react";
 import type { FocusStopRequest } from "../app/useMapBuildInteractions";
 import type { FocusVehicleRequest } from "../app/useInspectorPanelController";
+import type { VehicleInspection } from "../app/vehicleInspection";
 import type { SessionBootState } from "../app/useSessionController";
 import type { ShellCommandAction } from "../app/useShellPanelsController";
 import type { MapStopAction, MapWorldPoint } from "../MapView";
 import type {
   AlertItem,
   CurrencyCode,
+  DemandOverlayPayload,
+  DemandOverlayType,
   FarePolicyManifest,
   FinancialDashboardRequest,
   FinancialDashboardResponse,
@@ -23,26 +27,29 @@ import type {
   StationRuntimeView,
   TrainRuntimeView,
 } from "../types";
-import BuildPalette from "./BuildPalette";
+import BuildBottomPanel from "./BuildBottomPanel";
 import CommandPalette from "./CommandPalette";
-import CountryInfoDrawer from "./CountryInfoDrawer";
 import DiagnosticsOverlay from "./DiagnosticsOverlay";
-import FarePolicyPanel from "./FarePolicyPanel";
 import FinancialDashboardModal from "./FinancialDashboardModal";
 import LineDeleteDialog from "./LineDeleteDialog";
-import LineInspectorSheet from "./LineInspectorSheet";
+import LineInspector from "./LineInspector";
 import MapCanvas from "./MapCanvas";
-import MapFiltersPanel, { type LinkModeFilter } from "./MapFiltersPanel";
-import MissionsDrawer from "./MissionsDrawer";
+import { type LinkModeFilter } from "./MapFiltersPanel";
+import OperationsSurface from "./OperationsSurface";
 import RollingStockEditorSheet from "./RollingStockEditorSheet";
 import ScenarioControlsSidebar from "./ScenarioControlsSidebar";
 import ScheduleEditorSheet from "./ScheduleEditorSheet";
 import SessionHud from "./SessionHud";
-import SessionSideHud from "./SessionSideHud";
 import SettingsPanel from "./SettingsPanel";
 import ShellStatusOverlays from "./ShellStatusOverlays";
-import StationInspectorModal from "./StationInspectorModal";
+import StationInspector from "./StationInspector";
 import AlertsCenter from "./AlertsCenter";
+import AppSessionFrame from "./AppSessionFrame";
+import TrainInspector from "./TrainInspector";
+import ViewSummaryBottomPanel from "./ViewSummaryBottomPanel";
+import WorkspaceContextPanel from "./WorkspaceContextPanel";
+import WorkspaceNav, { type WorkspaceContextId } from "./WorkspaceNav";
+import { buildPerfEvent } from "../perf/buildPerf";
 
 type BuildControllerState = ReturnType<typeof import("../build/useBuildController").useBuildController>;
 type ShellPanelsState = ReturnType<typeof import("../app/useShellPanelsController").useShellPanelsController>;
@@ -119,6 +126,14 @@ export default function AppSessionShell(props: {
   setShowLinks: (value: boolean) => void;
   linkMode: LinkModeFilter;
   setLinkMode: (value: LinkModeFilter) => void;
+  showDemandOverlay: boolean;
+  setShowDemandOverlay: (value: boolean) => void;
+  demandOverlayType: DemandOverlayType;
+  setDemandOverlayType: (value: DemandOverlayType) => void;
+  demandOverlayLoading: boolean;
+  demandOverlayAvailable: boolean;
+  demandOverlayStatusMessage: string | null;
+  demandOverlayPayload: DemandOverlayPayload | null;
   currentBuildPreset: { label?: string | null } | null;
   fleetDeliveries: FleetDeliveryItem[];
   activeScenario: ScenarioLite | null;
@@ -137,16 +152,15 @@ export default function AppSessionShell(props: {
   hasZoneCentroidData: boolean;
   focusStopRequest: FocusStopRequest;
   focusVehicleRequest: FocusVehicleRequest;
-  setFocusVehicleRequest: (value: FocusVehicleRequest) => void;
+  selectedVehicleInspection: VehicleInspection | null;
   previewAnchorPoint: { x: number; y: number } | null;
   previewColor: string;
   buildConstraintMode: string | null;
-  stationCostBase: number | null;
-  lineCostPerKmBase: number | null;
   extensionAddedStations: number;
   extensionAddedLengthM: number;
-  extensionConstructionCostBase: number | null;
   lineDraftMode: boolean;
+  lineDraftAwaitingTerminus: boolean;
+  lineDraftAnchorStopName: string | null;
   activeLineDraftPreview: DraftPreview;
   selectedLinePresetId: string | null;
   selectedLineDetail: ReturnType<typeof import("../build/helpers").computeLocalLineDetail> | null;
@@ -227,6 +241,8 @@ export default function AppSessionShell(props: {
   onSelectCounty: (regionId: string) => void;
   onHandleStopAction: (payload: MapStopAction) => void;
   onHandleLineAction: (payload: { lineId: string }) => void;
+  onHandleVehicleAction: (payload: VehicleInspection) => void;
+  onClearVehicleInspection: () => void;
   onHandleMapPointAction: (point: MapWorldPoint) => void;
   onHandleMapClearSelection: () => void;
   onHandleScrapVehicleFromMap: (trainId: string) => void;
@@ -248,6 +264,9 @@ export default function AppSessionShell(props: {
   onClearSelectedStationInterchange: () => void;
   onApplySuggestedInterchange: (interchangeId: string) => void;
   onLeaveBuildMode: () => void;
+  buildExitConfirmOpen: boolean;
+  onCancelExitBuildModeConfirm: () => void;
+  onConfirmExitBuildModeDiscard: () => void;
   onNavigateFromAlert: (alert: AlertItem) => void;
   onRefreshDashboardFromHud: () => void;
   onExpediteFleetDelivery: (delivery: {
@@ -261,8 +280,7 @@ export default function AppSessionShell(props: {
   onSaveQuit: () => Promise<void>;
   onSetRunning: (running: boolean) => Promise<void>;
   onSetSpeed: (speed: 1 | 2 | 4) => Promise<void>;
-  onFocusSelectedCounty: () => Promise<void>;
-  onUnlockAndFocusSelectedCounty: () => Promise<void>;
+  onUnlockSelectedCounty: () => Promise<void>;
   onUpdateFarePolicy: (patch: Partial<FarePolicyManifest>) => void;
   onRetryMapLoad: () => void;
   closeLineEditors: () => void;
@@ -270,335 +288,506 @@ export default function AppSessionShell(props: {
   setScheduleEditorOpen: (value: boolean) => void;
 }) {
   const isGame = props.sessionKind === "game";
+  const draftLineBuilderActive =
+    props.build.workspaceMode === "build" &&
+    (props.build.buildAction === "start_line" || props.build.buildAction === "add_station_to_line");
+  const lineBuilderOpen = props.lineInspectorOpen || draftLineBuilderActive;
+  const lineBuilderOpenStartedAtRef = useRef<number | null>(null);
+  const stationInspectorOpenStartedAtRef = useRef<number | null>(null);
+  const lineBuilderOpenSeqRef = useRef(0);
+  const stationInspectorOpenSeqRef = useRef(0);
+  const currentRiders =
+    props.runtimeTrains.reduce(
+      (total, train) => total + Math.max(Math.round(train.onboard_pax ?? 0), 0),
+      0
+    ) +
+    props.runtimeStations.reduce(
+      (total, station) => total + Math.max(Math.round(station.current_inside_pax ?? 0), 0),
+      0
+    );
+  const activeWorkspacePanel = props.shellPanels.workspace.activePanel;
+  const workspaceContext: WorkspaceContextId =
+    activeWorkspacePanel === "missions" && isGame
+      ? "missions"
+      : activeWorkspacePanel === "network"
+        ? "network"
+        : "layers";
+  const selectedLineId = props.build.selection?.kind === "line" ? props.build.selection.lineId : null;
+  const openLayersContext = () => {
+    if (activeWorkspacePanel !== "filters") {
+      props.shellPanels.toggleFiltersPanel();
+    }
+  };
+  const openNetworkContext = () => {
+    if (activeWorkspacePanel !== "network") {
+      props.shellPanels.toggleNetworkPanel();
+    }
+  };
+  const openMissionsContext = () => {
+    if (!isGame || activeWorkspacePanel === "missions") return;
+    props.shellPanels.toggleMissionsPanel();
+  };
+  const openOperationsSurface = () => {
+    props.shellPanels.setShowCountryInfo(true);
+  };
+
+  useEffect(() => {
+    if (lineBuilderOpen) {
+      lineBuilderOpenStartedAtRef.current = performance.now();
+      lineBuilderOpenSeqRef.current += 1;
+      const openSeq = lineBuilderOpenSeqRef.current;
+      buildPerfEvent("build.ui.line_builder.open", {
+        draftLineBuilderActive,
+        buildAction: props.build.buildAction,
+        workspaceMode: props.build.workspaceMode,
+      });
+      requestAnimationFrame(() => {
+        if (lineBuilderOpenSeqRef.current !== openSeq) return;
+        const openedAt = lineBuilderOpenStartedAtRef.current;
+        if (openedAt === null) return;
+        buildPerfEvent("build.ui.line_builder.first_paint", {
+          elapsedMs: Number((performance.now() - openedAt).toFixed(2)),
+        });
+      });
+      return;
+    }
+    const openedAt = lineBuilderOpenStartedAtRef.current;
+    buildPerfEvent("build.ui.line_builder.close", {
+      visibleMs:
+        openedAt !== null ? Number((performance.now() - openedAt).toFixed(2)) : null,
+    });
+    lineBuilderOpenStartedAtRef.current = null;
+  }, [draftLineBuilderActive, lineBuilderOpen, props.build.buildAction, props.build.workspaceMode]);
+
+  useEffect(() => {
+    if (props.stationInspectorOpen) {
+      stationInspectorOpenStartedAtRef.current = performance.now();
+      stationInspectorOpenSeqRef.current += 1;
+      const openSeq = stationInspectorOpenSeqRef.current;
+      buildPerfEvent("build.ui.station_inspector.open", {
+        workspaceMode: props.build.workspaceMode,
+      });
+      requestAnimationFrame(() => {
+        if (stationInspectorOpenSeqRef.current !== openSeq) return;
+        const openedAt = stationInspectorOpenStartedAtRef.current;
+        if (openedAt === null) return;
+        buildPerfEvent("build.ui.station_inspector.first_paint", {
+          elapsedMs: Number((performance.now() - openedAt).toFixed(2)),
+        });
+      });
+      return;
+    }
+    const openedAt = stationInspectorOpenStartedAtRef.current;
+    buildPerfEvent("build.ui.station_inspector.close", {
+      visibleMs:
+        openedAt !== null ? Number((performance.now() - openedAt).toFixed(2)) : null,
+    });
+    stationInspectorOpenStartedAtRef.current = null;
+  }, [props.build.workspaceMode, props.stationInspectorOpen]);
+
+  useEffect(() => {
+    if (props.build.workspaceMode === "build") {
+      buildPerfEvent("build.ui.left_palette.mounted", {
+        buildAction: props.build.buildAction,
+      });
+    } else {
+      buildPerfEvent("build.ui.left_palette.unmounted");
+    }
+  }, [props.build.buildAction, props.build.workspaceMode]);
+
+  const topCommandBar = (
+    <SessionHud
+      sessionKind={props.sessionKind}
+      projectName={props.bundle.manifest.name}
+      clock={props.clock}
+      budget={props.liveEconomy?.budget_display ?? props.bundle.manifest.progress_metrics?.budget ?? null}
+      budgetCurrency={props.bundle.manifest.progress_metrics?.currency ?? "GBP"}
+      buildModeActive={props.build.workspaceMode === "build"}
+      buildTransportLabel={props.currentBuildPreset?.label ?? null}
+      menuOpen={props.shellPanels.showMenu}
+      fleetDeliveries={props.fleetDeliveries}
+      onMenuToggle={props.shellPanels.toggleMenuPanel}
+      onOpenFinancialDashboard={props.onRefreshDashboardFromHud}
+      onFocusLineFromFleet={(lineId) => {
+        props.build.selectLine(lineId);
+        props.closeLineEditors();
+      }}
+      onFocusVehicleFromFleet={props.onFocusVehicleFromFleet}
+      onExpediteFleetDelivery={props.onExpediteFleetDelivery}
+      onSave={() => {
+        void props.onSaveSession();
+      }}
+      onSaveQuit={() => {
+        void props.onSaveQuit();
+      }}
+      onOpenSettings={props.shellPanels.openSettingsPanel}
+      onOpenCommandPalette={props.shellPanels.openCommandPaletteFromHud}
+      onAlertsToggle={props.shellPanels.toggleAlertsPanel}
+      onToggleRunning={(running) => {
+        void props.onSetRunning(running);
+      }}
+      onSpeedChange={(speed) => {
+        void props.onSetSpeed(speed);
+      }}
+    />
+  );
+
+  const leftWorkspace = (
+    <WorkspaceNav
+      workspaceMode={props.build.workspaceMode}
+      activeContext={workspaceContext}
+      operationsOpen={props.shellPanels.showCountryInfo}
+      sessionKind={props.sessionKind}
+      missionCount={props.missions.length}
+      onEnterBuildMode={props.build.enterBuildMode}
+      onExitBuildMode={props.onLeaveBuildMode}
+      onSelectLayers={openLayersContext}
+      onSelectNetwork={openNetworkContext}
+      onSelectMissions={openMissionsContext}
+      onOpenOperations={openOperationsSurface}
+    />
+  );
+
+  const mapViewport = (
+    <>
+      <MapCanvas
+        instanceToken={props.mapInstanceToken}
+        scenario={props.activeScenario}
+        projectPath={props.bundle.project_path}
+        mapRuntimeConfig={props.mapRuntimeConfig}
+        clock={props.clock}
+        showShapeStops={props.showShapeStops}
+        showZoneCentroids={props.showZoneCentroids}
+        showStations={props.showStations}
+        showLinks={props.showLinks}
+        linkMode={props.linkMode}
+        showDemandOverlay={props.showDemandOverlay}
+        demandOverlayType={props.demandOverlayType}
+        demandOverlayPayload={props.demandOverlayPayload}
+        startCenter={props.startCenter}
+        serviceLoadByServiceId={props.serviceLoadByServiceId}
+        runtimeTrains={props.runtimeTrains}
+        trainsAuthoritative={props.trainsAuthoritative}
+        sessionKind={props.sessionKind}
+        visibleCountryIso2={props.visibleCountryIso2}
+        regions={props.regions}
+        focusRegionId={props.focusRegionId}
+        activeRegionIds={props.activeRegionIds}
+        selectedRegionId={props.selectedRegionId}
+        interactionMode={props.build.workspaceMode}
+        buildAction={props.build.buildAction}
+        buildConstraintMode={props.buildConstraintMode}
+        selectedStopId={props.build.selection?.kind === "stop" ? props.build.selection.stopId : null}
+        selectedLineId={props.build.selection?.kind === "line" ? props.build.selection.lineId : null}
+        selectedVehicleId={props.selectedVehicleInspection?.vehicleId ?? null}
+        activeLineId={props.build.activeLine?.lineId ?? null}
+        focusStopId={props.focusStopRequest?.stopId ?? null}
+        focusStopToken={props.focusStopRequest?.token ?? 0}
+        focusVehicleId={props.focusVehicleRequest?.vehicleId ?? null}
+        focusVehicleToken={props.focusVehicleRequest?.token ?? 0}
+        previewAnchorPoint={props.previewAnchorPoint}
+        previewColor={props.previewColor}
+        onBootProgress={props.onHandleMapBootProgress}
+        onSelectCounty={props.onSelectCounty}
+        onStopAction={(payload) => {
+          props.onClearVehicleInspection();
+          props.onHandleStopAction(payload);
+        }}
+        onLineAction={(payload) => {
+          props.onClearVehicleInspection();
+          props.onHandleLineAction(payload);
+        }}
+        onVehicleAction={props.onHandleVehicleAction}
+        onClearVehicleSelection={props.onClearVehicleInspection}
+        onMapPointAction={props.onHandleMapPointAction}
+        onClearSelection={() => {
+          props.onClearVehicleInspection();
+          props.onHandleMapClearSelection();
+        }}
+      />
+
+      <ScenarioControlsSidebar
+        open={!isGame && props.build.workspaceMode === "view"}
+        busy={props.busy}
+        runs={props.bundle.runs}
+        controller={props.scenarioSidebar}
+        onRunPlanning={props.onRunPlanning}
+        onRebuildDemand={props.onRebuildDemandForUnlocked}
+        onExportRunCsv={props.onExportRunCsv}
+        onExportRunJson={props.onExportRunJson}
+        onCompareRuns={props.onCompareRuns}
+      />
+    </>
+  );
+
+  const lineInspector = (
+    <LineInspector
+      inspection={props.build.lineInspection}
+      lineDetail={props.selectedLineDetail}
+      draftPreview={
+        draftLineBuilderActive
+          ? props.activeLineDraftPreview
+          : props.selectedLineDetail
+            ? null
+            : props.activeLineDraftPreview
+      }
+      forceDraftMode={draftLineBuilderActive}
+      editable={
+        props.build.workspaceMode === "build" &&
+        Boolean(props.selectedLineDetail) &&
+        !draftLineBuilderActive
+      }
+      stationDecorations={props.selectedLineStationDecorations}
+      presets={props.build.buildDefaults?.presets ?? []}
+      selectedPresetId={props.selectedLinePresetId}
+      budgetCurrency={props.budgetCurrency}
+      draftToolMode={props.build.buildAction}
+      estimatedCapexBase={props.selectedLineEstimatedCapexBase}
+      stationCapexBase={props.build.buildDefaults?.station_capex_base ?? null}
+      extensionAddedStations={props.extensionAddedStations}
+      extensionAddedLengthM={props.extensionAddedLengthM}
+      hasPendingBuildChanges={props.build.isDirty}
+      awaitingExtensionTerminus={props.lineDraftAwaitingTerminus}
+      extensionAnchorStopName={props.lineDraftAnchorStopName}
+      addingStationMode={props.build.buildAction === "add_station_to_line"}
+      canUndoDraftPlacement={(props.build.activeLine?.stationIds.length ?? 0) > 1}
+      onClose={() => {
+        if (draftLineBuilderActive) {
+          props.build.selectBuildAction("select");
+        }
+        props.build.setSelection(null);
+      }}
+      onAddStationToLine={() => props.build.armLineExtension()}
+      onFinishDraftRoute={props.build.finishLineDraw}
+      onUndoDraftPlacement={props.build.undoActiveLinePlacement}
+      onDelete={props.onRequestDeleteSelectedLine}
+      onNameChange={(value) => props.build.updateSelectedLine({ name: value })}
+      onColorChange={(value) => props.build.updateSelectedLine({ display_color: value })}
+      onStationClick={(stopId) => {
+        props.onFocusStationById(stopId);
+      }}
+      onOpenRollingStockEditor={props.onOpenRollingStockEditorFromLineInspector}
+      onOpenScheduleEditor={props.onOpenScheduleEditorFromLineInspector}
+      onRemoveDraftStation={(stopId) => {
+        props.build.removeStationFromActiveDraft(stopId);
+      }}
+    />
+  );
+
+  const stationInspector = (
+    <StationInspector
+      stop={props.build.selectedStop}
+      inspection={props.build.stationInspection}
+      localLines={props.selectedStationLines}
+      interchangeMembers={props.selectedStationInterchangeContext.members}
+      suggestedInterchanges={props.selectedStationInterchangeContext.suggestions}
+      transferLinks={props.selectedStationInterchangeContext.transfers}
+      editable={props.build.workspaceMode === "build"}
+      onClose={() => props.build.setSelection(null)}
+      onNameChange={props.build.renameSelectedStation}
+      onInterchangeChange={props.build.updateSelectedStationInterchange}
+      onCreateInterchangeGroup={props.onCreateInterchangeGroupForSelectedStation}
+      onClearInterchangeGroup={props.onClearSelectedStationInterchange}
+      onApplySuggestedInterchange={props.onApplySuggestedInterchange}
+      onSelectLinkedStop={props.onFocusStationById}
+      onDelete={props.build.deleteSelectedStation}
+    />
+  );
+
+  const trainInspector = props.selectedVehicleInspection ? (
+    <TrainInspector
+      vehicle={props.selectedVehicleInspection}
+      editable={props.build.workspaceMode === "build"}
+      onClose={props.onClearVehicleInspection}
+      onScrapVehicle={(vehicleId) => {
+        props.onHandleScrapVehicleFromMap(vehicleId);
+        props.onClearVehicleInspection();
+      }}
+    />
+  ) : null;
+
+  const workspaceContextPanel = (
+    <WorkspaceContextPanel
+      context={workspaceContext}
+      showStations={props.showStations}
+      showLinks={props.showLinks}
+      showZoneCentroids={props.showZoneCentroids}
+      showShapeStops={props.showShapeStops}
+      showDemandOverlay={props.showDemandOverlay}
+      demandOverlayType={props.demandOverlayType}
+      demandOverlayLoading={props.demandOverlayLoading}
+      demandOverlayAvailable={props.demandOverlayAvailable}
+      demandOverlayStatusMessage={props.demandOverlayStatusMessage}
+      demandOverlayPayload={props.demandOverlayPayload}
+      hasZoneCentroidData={props.hasZoneCentroidData}
+      hasShapeNodeData={props.hasShapeNodeData}
+      linkMode={props.linkMode}
+      missions={props.missions}
+      lines={props.build.lineSummaries.map((line) => ({
+        lineId: line.lineId,
+        name: line.name,
+        mode: line.mode,
+        modeVariant: line.modeVariant ?? null,
+        displayColor: line.displayColor ?? null,
+      }))}
+      selectedLineId={selectedLineId}
+      onSelectLine={(lineId) => {
+        props.build.selectLine(lineId);
+        props.closeLineEditors();
+      }}
+      onShowStationsChange={props.setShowStations}
+      onShowLinksChange={props.setShowLinks}
+      onShowZoneCentroidsChange={props.setShowZoneCentroids}
+      onShowShapeStopsChange={props.setShowShapeStops}
+      onShowDemandOverlayChange={props.setShowDemandOverlay}
+      onDemandOverlayTypeChange={props.setDemandOverlayType}
+      onLinkModeChange={props.setLinkMode}
+    />
+  );
+
+  const rightInspector = trainInspector && !draftLineBuilderActive ? (
+    trainInspector
+  ) : lineBuilderOpen ? (
+    lineInspector
+  ) : props.stationInspectorOpen ? (
+    stationInspector
+  ) : (
+    workspaceContextPanel
+  );
+
+  const bottomPanel =
+    props.build.workspaceMode === "build" ? (
+      <BuildBottomPanel
+        presets={props.build.buildDefaults?.presets ?? []}
+        transportPresetId={props.build.transportPresetId}
+        buildAction={props.build.buildAction}
+        budgetCurrency={props.budgetCurrency}
+        mutationPreview={props.build.mutationPreview}
+        estimatedCapexBase={props.selectedLineEstimatedCapexBase}
+        draftImpact={props.build.draftImpact}
+        stationCapexBase={props.build.buildDefaults?.station_capex_base ?? null}
+        isDirty={props.build.isDirty}
+        builderBusy={props.build.builderBusy}
+        builderError={props.build.builderError}
+        activeLineStopCount={props.build.activeLine?.stationIds.length ?? 0}
+        onSelectBuildAction={props.build.selectBuildAction}
+        onTransportPresetChange={props.build.setTransportPresetId}
+        onApplyDraft={() => props.build.applyDraft()}
+      />
+    ) : (
+      <ViewSummaryBottomPanel
+        currentRiders={currentRiders}
+        runtimeTrains={props.runtimeTrains}
+        runtimeStations={props.runtimeStations}
+        runtimeLineOps={props.runtimeLineOps}
+        alerts={props.shellStatus.visibleAlerts}
+        onOpenAlerts={() => props.shellPanels.setShowAlerts(true)}
+      />
+    );
 
   return (
     <div className={`session-shell ${props.build.workspaceMode === "build" ? "is-build-workspace" : ""}`}>
-      <SessionHud
-        sessionKind={props.sessionKind}
-        projectName={props.bundle.manifest.name}
-        clock={props.clock}
-        budget={props.liveEconomy?.budget_display ?? props.bundle.manifest.progress_metrics?.budget ?? null}
-        budgetCurrency={props.bundle.manifest.progress_metrics?.currency ?? "GBP"}
-        alerts={props.shellStatus.visibleAlerts}
-        alertsOpen={props.shellPanels.showAlerts}
-        buildModeActive={props.build.workspaceMode === "build"}
-        buildTransportLabel={props.currentBuildPreset?.label ?? null}
-        menuOpen={props.shellPanels.showMenu}
-        fleetDeliveries={props.fleetDeliveries}
-        onMenuToggle={props.shellPanels.toggleMenuPanel}
-        onOpenFinancialDashboard={props.onRefreshDashboardFromHud}
-        onFocusLineFromFleet={(lineId) => {
-          props.build.selectLine(lineId);
-          props.closeLineEditors();
-        }}
-        onFocusVehicleFromFleet={(vehicleId) => {
-          props.setFocusVehicleRequest({ vehicleId, token: Date.now() });
-        }}
-        onExpediteFleetDelivery={props.onExpediteFleetDelivery}
-        onSave={() => {
-          void props.onSaveSession();
-        }}
-        onSaveQuit={() => {
-          void props.onSaveQuit();
-        }}
-        onOpenSettings={props.shellPanels.openSettingsPanel}
-        onOpenCommandPalette={props.shellPanels.openCommandPaletteFromHud}
-        onAlertsToggle={props.shellPanels.toggleAlertsPanel}
-        onToggleRunning={(running) => {
-          void props.onSetRunning(running);
-        }}
-        onSpeedChange={(speed) => {
-          void props.onSetSpeed(speed);
+      <AppSessionFrame
+        workspaceMode={props.build.workspaceMode}
+        topBar={topCommandBar}
+        leftWorkspace={leftWorkspace}
+        mapViewport={mapViewport}
+        rightInspector={rightInspector}
+        bottomPanel={bottomPanel}
+      />
+
+      <OperationsSurface
+        open={isGame && props.shellPanels.showCountryInfo}
+        busy={props.busy}
+        regions={props.regions}
+        selectedRegionId={props.selectedRegionId}
+        currentBalanceBase={props.currentBalanceBase}
+        onClose={() => props.shellPanels.setShowCountryInfo(false)}
+        onSelectRegion={props.onSelectCounty}
+        onUnlockRegion={() => {
+          void props.onUnlockSelectedCounty();
         }}
       />
-      {props.build.workspaceMode === "view" ? (
-        <SessionSideHud
-          sessionKind={props.sessionKind}
-          buildModeActive={false}
-          filtersOpen={props.shellPanels.showFilters}
-          missionsOpen={props.shellPanels.showMissions}
-          countryInfoOpen={props.shellPanels.showCountryInfo}
-          faresOpen={props.shellPanels.showFares}
-          onEnterBuildMode={props.build.enterBuildMode}
-          onExitBuildMode={props.onLeaveBuildMode}
-          onOpenFilters={props.shellPanels.toggleFiltersPanel}
-          onOpenMissions={props.shellPanels.toggleMissionsPanel}
-          onOpenCountryInfo={props.shellPanels.toggleCountryInfoPanel}
-          onOpenFares={props.shellPanels.toggleFarePanel}
-        />
+
+      <LineDeleteDialog
+        open={props.lineDeleteDialogEnabled}
+        lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
+        unitLabel={props.selectedLineUnitLabel}
+        unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
+        unitsPending={props.selectedLineFleetEditorState?.unitsPending ?? 0}
+        budgetCurrency={props.budgetCurrency}
+        estimatedScrapValueBase={props.selectedLineScrapEstimateBase ?? 0}
+        transferTargets={props.selectedLineTransferTargets}
+        onCancel={props.onCancelDeleteSelectedLine}
+        onConfirmScrap={props.onDeleteSelectedLineWithScrap}
+        onConfirmTransfer={props.onDeleteSelectedLineWithTransfer}
+      />
+
+      <RollingStockEditorSheet
+        open={props.rollingStockEditorEnabled}
+        editable={props.build.workspaceMode === "build" && !props.lineDraftMode}
+        lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
+        budgetCurrency={props.budgetCurrency}
+        modeId={props.selectedLineBuildPreset?.engine_mode ?? props.selectedLineDetail?.mode ?? null}
+        preset={props.selectedLineBuildPreset}
+        packageId={props.selectedLineFleetEditorState?.packageId ?? "standard"}
+        unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
+        unitsCommitted={
+          props.selectedLineFleetEditorState?.unitsCommitted ?? props.selectedLineFleetEditorState?.unitsOwned ?? 0
+        }
+        unitsPending={props.selectedLineFleetEditorState?.unitsPending ?? 0}
+        unitsAssigned={props.selectedLineFleetEditorState?.unitsAssigned ?? 0}
+        carsPerUnit={props.selectedLineFleetEditorState?.carsPerUnit ?? 1}
+        speedLevel={props.selectedLineFleetEditorState?.speedLevel ?? "balanced"}
+        comfortLevel={props.selectedLineFleetEditorState?.comfortLevel ?? "standard"}
+        requiredUnitsNow={props.selectedLineFleetEditorState?.requiredUnitsNow ?? 0}
+        pendingOrders={props.selectedLineFleetEditorState?.pendingOrders ?? []}
+        activeVehicles={props.selectedLineActiveVehicles}
+        currentTickS={props.clock?.tick_seconds ?? 0}
+        clockRunning={props.clock?.running ?? false}
+        clockSpeed={props.clock?.speed ?? 1}
+        onClose={() => props.setRollingStockEditorOpen(false)}
+        onSave={(patch) => props.build.updateSelectedLineOperations({ fleet: patch })}
+        onFocusVehicle={props.onFocusVehicleFromFleet}
+      />
+
+      <ScheduleEditorSheet
+        open={props.scheduleEditorEnabled}
+        editable={props.build.workspaceMode === "build" && !props.lineDraftMode}
+        lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
+        budgetCurrency={props.budgetCurrency}
+        preset={props.selectedLineBuildPreset}
+        unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
+        roundTripS={props.selectedLineDetail?.roundTripS ?? 0}
+        schedule={
+          props.selectedLineScheduleState ?? {
+            peak_start_minute: 420,
+            peak_end_minute: 570,
+            overnight_start_minute: 0,
+            overnight_end_minute: 300,
+            tph_peak: 0,
+            tph_off_peak: 0,
+            tph_overnight: 0,
+          }
+        }
+        onClose={() => props.setScheduleEditorOpen(false)}
+        onOpenRollingStockEditor={props.onOpenRollingStockEditorFromSchedule}
+        onSave={(patch) => props.build.updateSelectedLineOperations({ schedule: patch })}
+      />
+      {props.buildExitConfirmOpen ? (
+        <div className="build-exit-overlay" role="dialog" aria-modal="true" aria-label="Discard build changes">
+          <div className="build-exit-dialog">
+            <p>Discard build changes?</p>
+            <h4>You have unapplied build changes. Leaving build mode now will discard them.</h4>
+            <div className="build-exit-actions">
+              <button onClick={props.onCancelExitBuildModeConfirm}>Cancel</button>
+              <button className="danger-button" onClick={props.onConfirmExitBuildModeDiscard}>
+                Discard and Exit
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
-
-      <main className="session-main">
-        <MapCanvas
-          instanceToken={props.mapInstanceToken}
-          scenario={props.activeScenario}
-          projectPath={props.bundle.project_path}
-          mapRuntimeConfig={props.mapRuntimeConfig}
-          clock={props.clock}
-          showShapeStops={props.showShapeStops}
-          showZoneCentroids={props.showZoneCentroids}
-          showStations={props.showStations}
-          showLinks={props.showLinks}
-          linkMode={props.linkMode}
-          startCenter={props.startCenter}
-          serviceLoadByServiceId={props.serviceLoadByServiceId}
-          runtimeTrains={props.runtimeTrains}
-          trainsAuthoritative={props.trainsAuthoritative}
-          sessionKind={props.sessionKind}
-          visibleCountryIso2={props.visibleCountryIso2}
-          regions={props.regions}
-          focusRegionId={props.focusRegionId}
-          activeRegionIds={props.activeRegionIds}
-          selectedRegionId={props.selectedRegionId}
-          interactionMode={props.build.workspaceMode}
-          buildAction={props.build.buildAction}
-          buildConstraintMode={props.buildConstraintMode}
-          selectedStopId={props.build.selection?.kind === "stop" ? props.build.selection.stopId : null}
-          selectedLineId={props.build.selection?.kind === "line" ? props.build.selection.lineId : null}
-          activeLineId={props.build.activeLine?.lineId ?? null}
-          focusStopId={props.focusStopRequest?.stopId ?? null}
-          focusStopToken={props.focusStopRequest?.token ?? 0}
-          focusVehicleId={props.focusVehicleRequest?.vehicleId ?? null}
-          focusVehicleToken={props.focusVehicleRequest?.token ?? 0}
-          previewAnchorPoint={props.previewAnchorPoint}
-          previewColor={props.previewColor}
-          onBootProgress={props.onHandleMapBootProgress}
-          onSelectCounty={props.onSelectCounty}
-          onStopAction={props.onHandleStopAction}
-          onLineAction={props.onHandleLineAction}
-          onMapPointAction={props.onHandleMapPointAction}
-          onClearSelection={props.onHandleMapClearSelection}
-          onScrapVehicle={props.build.workspaceMode === "build" ? props.onHandleScrapVehicleFromMap : undefined}
-        />
-
-        <ScenarioControlsSidebar
-          open={!isGame && props.build.workspaceMode === "view"}
-          busy={props.busy}
-          runs={props.bundle.runs}
-          controller={props.scenarioSidebar}
-          onRunPlanning={props.onRunPlanning}
-          onRebuildDemand={props.onRebuildDemandForUnlocked}
-          onExportRunCsv={props.onExportRunCsv}
-          onExportRunJson={props.onExportRunJson}
-          onCompareRuns={props.onCompareRuns}
-        />
-
-        <LineInspectorSheet
-          open={props.lineInspectorOpen || props.lineDraftMode}
-          inspection={props.build.lineInspection}
-          lineDetail={props.selectedLineDetail}
-          draftPreview={
-            props.lineDraftMode
-              ? props.activeLineDraftPreview
-              : props.selectedLineDetail
-                ? null
-                : props.activeLineDraftPreview
-          }
-          forceDraftMode={props.lineDraftMode}
-          editable={props.build.workspaceMode === "build" && Boolean(props.selectedLineDetail)}
-          stationDecorations={props.selectedLineStationDecorations}
-          presets={props.build.buildDefaults?.presets ?? []}
-          selectedPresetId={props.selectedLinePresetId}
-          budgetCurrency={props.budgetCurrency}
-          estimatedCapexBase={props.selectedLineEstimatedCapexBase}
-          stationCapexBase={props.build.buildDefaults?.station_capex_base ?? null}
-          addingStationMode={props.build.buildAction === "add_station_to_line"}
-          onClose={() => props.build.setSelection(null)}
-          onAddStationToLine={() => props.build.armLineExtension()}
-          onDelete={props.onRequestDeleteSelectedLine}
-          onNameChange={(value) => props.build.updateSelectedLine({ name: value })}
-          onColorChange={(value) => props.build.updateSelectedLine({ display_color: value })}
-          onPresetChange={props.build.updateSelectedLinePreset}
-          onStationClick={(stopId) => {
-            props.onFocusStationById(stopId);
-          }}
-          onOpenRollingStockEditor={props.onOpenRollingStockEditorFromLineInspector}
-          onOpenScheduleEditor={props.onOpenScheduleEditorFromLineInspector}
-          onRemoveDraftStation={(stopId) => {
-            props.build.removeStationFromActiveDraft(stopId);
-          }}
-        />
-
-        <LineDeleteDialog
-          open={props.lineDeleteDialogEnabled}
-          lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
-          unitLabel={props.selectedLineUnitLabel}
-          unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
-          unitsPending={props.selectedLineFleetEditorState?.unitsPending ?? 0}
-          budgetCurrency={props.budgetCurrency}
-          estimatedScrapValueBase={props.selectedLineScrapEstimateBase}
-          transferTargets={props.selectedLineTransferTargets}
-          onCancel={props.onCancelDeleteSelectedLine}
-          onConfirmScrap={props.onDeleteSelectedLineWithScrap}
-          onConfirmTransfer={props.onDeleteSelectedLineWithTransfer}
-        />
-
-        <RollingStockEditorSheet
-          open={props.rollingStockEditorEnabled}
-          editable={props.build.workspaceMode === "build" && !props.lineDraftMode}
-          lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
-          budgetCurrency={props.budgetCurrency}
-          modeId={props.selectedLineBuildPreset?.engine_mode ?? props.selectedLineDetail?.mode ?? null}
-          preset={props.selectedLineBuildPreset}
-          packageId={props.selectedLineFleetEditorState?.packageId ?? "standard"}
-          unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
-          unitsCommitted={
-            props.selectedLineFleetEditorState?.unitsCommitted ?? props.selectedLineFleetEditorState?.unitsOwned ?? 0
-          }
-          unitsPending={props.selectedLineFleetEditorState?.unitsPending ?? 0}
-          unitsAssigned={props.selectedLineFleetEditorState?.unitsAssigned ?? 0}
-          carsPerUnit={props.selectedLineFleetEditorState?.carsPerUnit ?? 1}
-          speedLevel={props.selectedLineFleetEditorState?.speedLevel ?? "balanced"}
-          comfortLevel={props.selectedLineFleetEditorState?.comfortLevel ?? "standard"}
-          requiredUnitsNow={props.selectedLineFleetEditorState?.requiredUnitsNow ?? 0}
-          pendingOrders={props.selectedLineFleetEditorState?.pendingOrders ?? []}
-          activeVehicles={props.selectedLineActiveVehicles}
-          currentTickS={props.clock?.tick_seconds ?? 0}
-          clockRunning={props.clock?.running ?? false}
-          clockSpeed={props.clock?.speed ?? 1}
-          onClose={() => props.setRollingStockEditorOpen(false)}
-          onSave={(patch) => props.build.updateSelectedLineOperations({ fleet: patch })}
-          onFocusVehicle={props.onFocusVehicleFromFleet}
-        />
-
-        <ScheduleEditorSheet
-          open={props.scheduleEditorEnabled}
-          editable={props.build.workspaceMode === "build" && !props.lineDraftMode}
-          lineName={props.selectedLineDetail?.name?.trim() ? props.selectedLineDetail.name : "Untitled Line"}
-          budgetCurrency={props.budgetCurrency}
-          preset={props.selectedLineBuildPreset}
-          unitsOwned={props.selectedLineFleetEditorState?.unitsOwned ?? 0}
-          roundTripS={props.selectedLineDetail?.roundTripS ?? 0}
-          schedule={
-            props.selectedLineScheduleState ?? {
-              peak_start_minute: 420,
-              peak_end_minute: 570,
-              overnight_start_minute: 0,
-              overnight_end_minute: 300,
-              tph_peak: 0,
-              tph_off_peak: 0,
-              tph_overnight: 0,
-            }
-          }
-          onClose={() => props.setScheduleEditorOpen(false)}
-          onOpenRollingStockEditor={props.onOpenRollingStockEditorFromSchedule}
-          onSave={(patch) => props.build.updateSelectedLineOperations({ schedule: patch })}
-        />
-
-        <StationInspectorModal
-          open={props.stationInspectorOpen}
-          stop={props.build.selectedStop}
-          inspection={props.build.stationInspection}
-          localLines={props.selectedStationLines}
-          interchangeMembers={props.selectedStationInterchangeContext.members}
-          suggestedInterchanges={props.selectedStationInterchangeContext.suggestions}
-          transferLinks={props.selectedStationInterchangeContext.transfers}
-          editable={props.build.workspaceMode === "build"}
-          onClose={() => props.build.setSelection(null)}
-          onNameChange={props.build.renameSelectedStation}
-          onInterchangeChange={props.build.updateSelectedStationInterchange}
-          onCreateInterchangeGroup={props.onCreateInterchangeGroupForSelectedStation}
-          onClearInterchangeGroup={props.onClearSelectedStationInterchange}
-          onApplySuggestedInterchange={props.onApplySuggestedInterchange}
-          onSelectLinkedStop={props.onFocusStationById}
-          onDelete={props.build.deleteSelectedStation}
-        />
-      </main>
-
-      {props.build.workspaceMode === "build" && (
-        <BuildPalette
-          presets={props.build.buildDefaults?.presets ?? []}
-          lines={props.build.lineSummaries.map((line) => ({
-            lineId: line.lineId,
-            name: line.name,
-            mode: line.mode,
-            modeVariant: line.modeVariant ?? null,
-            displayColor: line.displayColor ?? null,
-          }))}
-          transportPresetId={props.build.transportPresetId}
-          buildAction={props.build.buildAction}
-          hasSelectedLine={props.build.selection?.kind === "line"}
-          hasSelectedStop={props.build.selection?.kind === "stop"}
-          selectedLineId={props.build.selection?.kind === "line" ? props.build.selection.lineId : null}
-          selectedLineName={props.selectedLineDetail?.name ?? props.build.lineInspection?.name ?? null}
-          selectedStopName={props.build.selectedStop?.name ?? null}
-          selectedLineConstructionCostBase={props.selectedLineEstimatedCapexBase}
-          mutationPreview={props.build.mutationPreview}
-          isDirty={props.build.isDirty}
-          builderBusy={props.build.builderBusy}
-          builderError={props.build.builderError}
-          budgetCurrency={props.budgetCurrency}
-          stationCostBase={props.stationCostBase}
-          lineCostPerKmBase={props.lineCostPerKmBase}
-          extensionAddedStations={props.extensionAddedStations}
-          extensionAddedLengthM={props.extensionAddedLengthM}
-          extensionConstructionCostBase={props.extensionConstructionCostBase}
-          activeLineStopCount={props.build.activeLine?.stationIds.length ?? 0}
-          canUndoDraftPlacement={(props.build.activeLine?.stationIds.length ?? 0) > 1}
-          onExitBuildMode={props.onLeaveBuildMode}
-          onSelectBuildAction={props.build.selectBuildAction}
-          onArmLineExtension={() => props.build.armLineExtension()}
-          onTransportPresetChange={props.build.setTransportPresetId}
-          onSelectLine={props.build.selectLine}
-          onApplyDraft={() => props.build.applyDraft()}
-          onFinishLine={props.build.finishLineDraw}
-          onUndoLinePlacement={props.build.undoActiveLinePlacement}
-        />
-      )}
-      {isGame && props.build.workspaceMode === "view" && (
-        <CountryInfoDrawer
-          open={props.shellPanels.showCountryInfo}
-          busy={props.busy}
-          regions={props.regions}
-          selectedRegionId={props.selectedRegionId}
-          focusRegionId={props.focusRegionId}
-          currentBalanceBase={props.currentBalanceBase}
-          onClose={() => props.shellPanels.setShowCountryInfo(false)}
-          onSelectRegion={props.onSelectCounty}
-          onFocusRegion={() => {
-            void props.onFocusSelectedCounty();
-          }}
-          onUnlockRegion={() => {
-            void props.onUnlockAndFocusSelectedCounty();
-          }}
-        />
-      )}
-      {isGame && props.build.workspaceMode === "view" && (
-        <FarePolicyPanel
-          open={props.shellPanels.showFares}
-          busy={props.busy}
-          policy={props.farePolicy}
-          onClose={() => props.shellPanels.setShowFares(false)}
-          onChange={props.onUpdateFarePolicy}
-        />
-      )}
-
-      {props.build.workspaceMode === "view" && (
-        <MapFiltersPanel
-          open={props.shellPanels.showFilters}
-          onClose={() => props.shellPanels.setShowFilters(false)}
-          showStations={props.showStations}
-          showLinks={props.showLinks}
-          showZoneCentroids={props.showZoneCentroids}
-          showShapeStops={props.showShapeStops}
-          hasZoneCentroidData={props.hasZoneCentroidData}
-          hasShapeNodeData={props.hasShapeNodeData}
-          linkMode={props.linkMode}
-          onShowStationsChange={props.setShowStations}
-          onShowLinksChange={props.setShowLinks}
-          onShowZoneCentroidsChange={props.setShowZoneCentroids}
-          onShowShapeStopsChange={props.setShowShapeStops}
-          onLinkModeChange={props.setLinkMode}
-        />
-      )}
-      {props.build.workspaceMode === "view" && (
-        <MissionsDrawer
-          open={props.shellPanels.showMissions}
-          missions={props.missions}
-          onClose={() => props.shellPanels.setShowMissions(false)}
-        />
-      )}
-
       <AlertsCenter
         open={props.shellPanels.showAlerts}
         alerts={props.shellStatus.visibleAlerts}

@@ -893,17 +893,15 @@ pub(crate) fn country_pack_status_for(
     }
     let idx_entry = index.packs.iter().find(|p| p.country_iso2 == iso);
     let resolved_surface = resolve_demand_surface_path(app, &iso);
-    let mut surface_version = idx_entry.and_then(|p| p.surface_version.clone());
-    let mut cells_count = idx_entry.map(|p| p.cells_count).unwrap_or(0);
+    let surface_version = idx_entry.and_then(|p| p.surface_version.clone());
+    let cells_count = idx_entry.map(|p| p.cells_count).unwrap_or(0);
     let mut last_updated_at = idx_entry.and_then(|p| p.last_updated_at.clone());
     let mut build_state = idx_entry
         .map(|p| p.build_state.clone())
         .unwrap_or_else(|| "missing".to_string());
-    if let Some(resolved) = resolved_surface.as_ref() {
-        if let Ok(surface) = load_surface_wire(&resolved.path) {
-            surface_version = Some(surface.surface_version.clone());
-            cells_count = surface.cells_res8.len();
-        }
+    if resolved_surface.is_some() {
+        // Deferred expensive load_surface_wire block.
+        // We use index cache or fallback to 0/None to keep startup listing extremely fast.
         if build_state != "building" {
             build_state = "installed".to_string();
         }

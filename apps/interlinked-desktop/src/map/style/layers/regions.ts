@@ -120,52 +120,22 @@ export function ensureRegionBoundaryLayers(map: MapLibreMap): void {
         paint: {
           "fill-color": [
             "case",
-            ["==", ["get", "focus"], 1],
-            "#d9eafe",
             ["==", ["get", "unlocked"], 1],
-            "#eaf4ff",
-            "#9ca8b6",
+            "#e8f1fb",
+            "#4f5966",
           ],
           "fill-opacity": [
             "interpolate",
             ["linear"],
             ["zoom"],
             4,
-            [
-              "case",
-              ["==", ["get", "focus"], 1],
-              0.14,
-              ["==", ["get", "unlocked"], 1],
-              0.06,
-              0.12,
-            ],
+            ["case", ["==", ["get", "unlocked"], 1], 0.05, 0.36],
             8,
-            [
-              "case",
-              ["==", ["get", "focus"], 1],
-              0.1,
-              ["==", ["get", "unlocked"], 1],
-              0.045,
-              0.085,
-            ],
+            ["case", ["==", ["get", "unlocked"], 1], 0.038, 0.31],
             11.5,
-            [
-              "case",
-              ["==", ["get", "focus"], 1],
-              0.07,
-              ["==", ["get", "unlocked"], 1],
-              0.03,
-              0.055,
-            ],
+            ["case", ["==", ["get", "unlocked"], 1], 0.026, 0.26],
             14,
-            [
-              "case",
-              ["==", ["get", "focus"], 1],
-              0.05,
-              ["==", ["get", "unlocked"], 1],
-              0.02,
-              0.04,
-            ],
+            ["case", ["==", ["get", "unlocked"], 1], 0.02, 0.22],
           ],
         },
       } as never,
@@ -181,11 +151,21 @@ export function ensureRegionBoundaryLayers(map: MapLibreMap): void {
         "line-color": [
           "case",
           ["==", ["get", "unlocked"], 1],
-          "#6f859d",
-          "#546478",
+          "#6e849a",
+          "#2f3945",
         ],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.8, 8.5, 1.1, 11.5, 1.8],
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.52, 8.5, 0.74, 11.5, 0.88],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.9, 8.5, 1.2, 11.5, 1.9],
+        "line-opacity": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          ["case", ["==", ["get", "unlocked"], 1], 0.3, 0.8],
+          8.5,
+          ["case", ["==", ["get", "unlocked"], 1], 0.4, 0.88],
+          11.5,
+          ["case", ["==", ["get", "unlocked"], 1], 0.5, 0.96],
+        ],
       },
     } as never);
   }
@@ -194,10 +174,10 @@ export function ensureRegionBoundaryLayers(map: MapLibreMap): void {
       id: "region-focus-outline",
       type: "line",
       source: SRC_REGIONS,
-      filter: ["==", ["get", "focus"], 1],
+      filter: ["==", ["get", "region_id"], "__none__"],
       paint: {
-        "line-color": "#2560a8",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.4, 11, 3.1],
+        "line-color": "#5b6e84",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.0, 11, 2.2],
       },
     } as never);
   }
@@ -208,9 +188,9 @@ export function ensureRegionBoundaryLayers(map: MapLibreMap): void {
       source: SRC_REGIONS,
       filter: ["==", ["get", "unlocked"], 1],
       paint: {
-        "line-color": "rgba(56,116,183,0.78)",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.8, 11, 1.6],
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.36, 11, 0.68],
+        "line-color": "rgba(79,109,145,0.62)",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.6, 11, 1.1],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.28, 11, 0.52],
       },
     } as never);
   }
@@ -237,8 +217,12 @@ export function ensureRegionSelectedOutlineLayer(map: MapLibreMap): void {
       id: "region-selected-outline",
       type: "line",
       source: SRC_REGIONS,
-      filter: ["==", ["get", "selected"], 1],
-      paint: { "line-color": "#2a6bbb", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.4, 11, 3.2] },
+      filter: ["==", ["get", "region_id"], "__none__"],
+      paint: {
+        "line-color": "#6a4f30",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.0, 11, 2.6],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.6, 11, 0.85],
+      },
     } as never);
   }
 }

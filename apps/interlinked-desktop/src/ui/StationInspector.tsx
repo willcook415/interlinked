@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import type { StationInspection, StationLineSummary, StopLite } from "../types";
+import { formatCounterProvenance } from "../app/counterProvenance";
+import { buildPerfEvent } from "../perf/buildPerf";
+import InspectorPanel from "./InspectorPanel";
 
 type StationInspectorTab = "overview" | "connected_lines" | "demand_usage" | "upgrades" | "performance";
 
@@ -9,14 +12,23 @@ function formatSeconds(value: number): string {
   return `${Math.round(value)}s`;
 }
 
-function formatCapacityValue(value: number): string {
+function formatPassengerCount(value: number): string {
   const safe = Number.isFinite(value) ? Math.max(value, 0) : 0;
   if (safe >= 1000) return Math.round(safe).toLocaleString();
   if (safe >= 100) return safe.toFixed(0);
   if (safe >= 10) return safe.toFixed(1);
   if (safe >= 1) return safe.toFixed(2);
   if (safe > 0) return safe.toFixed(3);
-  return safe.toFixed(2);
+  return "0";
+}
+
+function formatDebugPassengerValue(value: number): string {
+  const safe = Number.isFinite(value) ? Math.max(value, 0) : 0;
+  if (safe >= 100) return Math.round(safe).toLocaleString();
+  if (safe >= 1) return safe.toFixed(2);
+  if (safe >= 0.01) return safe.toFixed(4);
+  if (safe > 0) return safe.toFixed(6);
+  return "0";
 }
 
 function formatDistanceMeters(value: number): string {
@@ -44,8 +56,7 @@ function humanizeStopType(value: string | null | undefined): string {
     .join(" ");
 }
 
-export default function StationInspectorModal(props: {
-  open: boolean;
+export default function StationInspector(props: {
   stop: StopLite | null;
   inspection: StationInspection | null;
   localLines: StationLineSummary[];
@@ -69,8 +80,10 @@ export default function StationInspectorModal(props: {
   onSelectLinkedStop: (stopId: string) => void;
   onDelete: () => void;
 }) {
-  if (!props.open || !props.stop) return null;
+  if (!props.stop) return null;
 
+  const stopId = props.stop.id;
+  const stopType = props.stop.stop_type;
   const canEdit = props.editable ?? true;
   const stopName = props.stop.name ?? "";
   const stopNameDisplay = stopName.trim() ? stopName : props.stop.id;
@@ -92,23 +105,45 @@ export default function StationInspectorModal(props: {
   const entriesPerHour = Math.max(props.inspection?.station_entries_per_hour ?? 0, 0);
   const exitsPerHour = Math.max(props.inspection?.station_exits_per_hour ?? 0, 0);
   const averageWaitToBoardS = Math.max(props.inspection?.average_wait_to_board_s ?? 0, 0);
+  const runtimeDiagnostics = props.inspection?.runtime_diagnostics ?? null;
+  const passengerProvenanceLabel = formatCounterProvenance(
+    props.inspection?.passenger_counter_provenance ?? "strategic_estimate"
+  );
+  const debugProvenanceLabel = formatCounterProvenance(
+    runtimeDiagnostics?.counter_provenance ?? "debug_legacy"
+  );
   const selectedInterchangeId = props.stop.interchange_id?.trim() ?? "";
   const [activeTab, setActiveTab] = useState<StationInspectorTab>("overview");
 
   useEffect(() => {
     setActiveTab("overview");
-  }, [props.stop.id]);
+  }, [stopId]);
+
+  useEffect(() => {
+    buildPerfEvent("build.ui.station_inspector.mount", {
+      stopId,
+      editable: canEdit,
+    });
+    return () => {
+      buildPerfEvent("build.ui.station_inspector.unmount", { stopId });
+    };
+  }, [canEdit, stopId]);
+
+  useEffect(() => {
+    buildPerfEvent("build.ui.station_inspector.tab_selected", {
+      stopId,
+      tab: activeTab,
+    });
+  }, [activeTab, stopId]);
 
   return (
-    <aside className="station-inspector-sheet">
-      <div className="station-modal-head">
-        <div>
-          <p>Station Inspector</p>
-          <h4>{stopNameDisplay}</h4>
-        </div>
-        <button onClick={props.onClose}>Close</button>
-      </div>
-
+    <InspectorPanel
+      variant="station"
+      eyebrow="Station Inspector"
+      title={stopNameDisplay}
+      status={humanizeStopType(stopType)}
+      onClose={props.onClose}
+    >
       <div className="inspector-tab-row" role="tablist" aria-label="Station inspector sections">
         <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>
           Overview
@@ -133,7 +168,7 @@ export default function StationInspectorModal(props: {
       {activeTab === "overview" ? (
         <section className="inspector-section">
           {canEdit ? (
-            <div className="station-modal-grid">
+            <div className="station-inspector-grid">
               <label>
                 Station Name
                 <input
@@ -169,9 +204,9 @@ export default function StationInspectorModal(props: {
               queueAtCapacity ? "is-critical" : queueNearCapacity ? "is-warning" : ""
             }`}
           >
-            <small>Station Capacity</small>
+            <small>Station Capacity - {passengerProvenanceLabel}</small>
             <strong>
-              {formatCapacityValue(currentLoad)} / {formatCapacityValue(queueCapSafe)} pax
+              {formatPassengerCount(currentLoad)} / {formatPassengerCount(queueCapSafe)} passengers
             </strong>
             <span>
               {queueCapSafe > 0 ? `${queueUsagePct.toFixed(0)}% used` : "No capacity limit set"} |{" "}
@@ -274,11 +309,11 @@ export default function StationInspectorModal(props: {
           </div>
           <div className="inspector-stat-row">
             <div className="inspector-stat">
-              <small>Passengers Declined</small>
+              <small>Passengers Declined - {passengerProvenanceLabel}</small>
               <strong>{Math.round(passengersDeclinedLastHour).toLocaleString()}</strong>
             </div>
             <div className="inspector-stat">
-              <small>In Station</small>
+              <small>In Station - {passengerProvenanceLabel}</small>
               <strong>
                 {queueCapSafe > 0
                   ? `${Math.round(currentLoad).toLocaleString()} / ${Math.round(queueCapSafe).toLocaleString()}`
@@ -286,13 +321,13 @@ export default function StationInspectorModal(props: {
               </strong>
             </div>
             <div className="inspector-stat">
-              <small>Entry / Exit per Hour</small>
+              <small>Entry / Exit per Hour - {passengerProvenanceLabel}</small>
               <strong>
                 {Math.round(entriesPerHour).toLocaleString()} / {Math.round(exitsPerHour).toLocaleString()}
               </strong>
             </div>
             <div className="inspector-stat">
-              <small>Avg Wait To Board</small>
+              <small>Avg Wait To Board - {passengerProvenanceLabel}</small>
               <strong>{formatSeconds(averageWaitToBoardS)}</strong>
             </div>
           </div>
@@ -364,11 +399,11 @@ export default function StationInspectorModal(props: {
         <section className="inspector-section">
           <div className="inspector-section-head">
             <h5>Performance</h5>
-            <span>{humanizeStopType(props.stop.stop_type)}</span>
+            <span>{humanizeStopType(stopType)}</span>
           </div>
           <div className="inspector-stat-row">
             <div className="inspector-stat">
-              <small>Queue End</small>
+              <small>Queue End - {passengerProvenanceLabel}</small>
               <strong>{Math.round(queueEnd).toLocaleString()}</strong>
             </div>
             <div className="inspector-stat">
@@ -380,18 +415,174 @@ export default function StationInspectorModal(props: {
               <strong>{queueCapSafe > 0 ? `${queueUsagePct.toFixed(0)}%` : "-"}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Entry / Hr</small>
+              <small>Entry / Hr - {passengerProvenanceLabel}</small>
               <strong>{Math.round(entriesPerHour).toLocaleString()}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Exit / Hr</small>
+              <small>Exit / Hr - {passengerProvenanceLabel}</small>
               <strong>{Math.round(exitsPerHour).toLocaleString()}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Declined / Hr</small>
+              <small>Declined / Hr - {passengerProvenanceLabel}</small>
               <strong>{Math.round(passengersDeclinedLastHour).toLocaleString()}</strong>
             </div>
           </div>
+          {runtimeDiagnostics ? (
+            <details className="station-runtime-debug" open>
+              <summary>{debugProvenanceLabel}</summary>
+              <div className="inspector-stat-row">
+                <div className="inspector-stat">
+                  <small>Tick</small>
+                  <strong>{runtimeDiagnostics.tick_index.toLocaleString()}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Planner Attempted</small>
+                  <strong>{formatDebugPassengerValue(runtimeDiagnostics.planner_attempted_total_pax)}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Runtime Attempted</small>
+                  <strong>{formatDebugPassengerValue(runtimeDiagnostics.runtime_attempted_total_pax)}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Runtime Queue</small>
+                  <strong>{formatDebugPassengerValue(runtimeDiagnostics.runtime_queue_total_pax)}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Snapshot Inside</small>
+                  <strong>{formatDebugPassengerValue(runtimeDiagnostics.snapshot_current_inside_pax)}</strong>
+                </div>
+              </div>
+              <div className="inspector-stat-row">
+                <div className="inspector-stat">
+                  <small>Demand Cells</small>
+                  <strong>
+                    {runtimeDiagnostics.planner_demand_cells_nonzero_activity.toLocaleString()} /{" "}
+                    {runtimeDiagnostics.planner_demand_cells_total.toLocaleString()}
+                  </strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Latent Total</small>
+                  <strong>{formatDebugPassengerValue(runtimeDiagnostics.planner_latent_total_pax)}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Mode Raw Paths</small>
+                  <strong>{runtimeDiagnostics.planner_mode_choice_candidate_paths_raw_total.toLocaleString()}</strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Mode Boardable</small>
+                  <strong>
+                    {runtimeDiagnostics.planner_mode_choice_candidate_paths_boardable_total.toLocaleString()}
+                  </strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Mode Capture</small>
+                  <strong>
+                    {formatDebugPassengerValue(runtimeDiagnostics.planner_mode_choice_transit_captured_pax)}
+                  </strong>
+                </div>
+                <div className="inspector-stat">
+                  <small>Assign Attempted</small>
+                  <strong>
+                    {formatDebugPassengerValue(runtimeDiagnostics.planner_assignment_attempted_total_pax)}
+                  </strong>
+                </div>
+              </div>
+              {runtimeDiagnostics.planner_first_zero_stage ? (
+                <p className="hint-line">
+                  Planner first zero: <strong>{runtimeDiagnostics.planner_first_zero_stage}</strong>
+                  {runtimeDiagnostics.planner_first_zero_reason ? (
+                    <> ({runtimeDiagnostics.planner_first_zero_reason})</>
+                  ) : null}
+                </p>
+              ) : null}
+              {runtimeDiagnostics.first_zero_or_mismatch ? (
+                <p className="hint-line">
+                  First zero/mismatch: <strong>{runtimeDiagnostics.first_zero_or_mismatch}</strong>
+                </p>
+              ) : null}
+              {runtimeDiagnostics.services.length > 0 ? (
+                <div className="station-line-list station-runtime-service-list">
+                  {runtimeDiagnostics.services.map((service) => (
+                    <div key={service.service_id} className="station-line-card station-runtime-service-card">
+                      <div className="station-line-head">
+                        <div className="station-line-title">
+                          <strong className="station-runtime-service-id">{service.service_id}</strong>
+                        </div>
+                        <span className="station-line-position station-runtime-dispatch">
+                          {service.dispatchable ? "Dispatchable" : "Not Dispatchable"}
+                        </span>
+                      </div>
+                      <p className="station-runtime-line-id">{service.line_id || "line:unknown"}</p>
+                      <div className="inspector-stat-row">
+                        <div className="inspector-stat">
+                          <small>Planner Attempted</small>
+                          <strong>{formatDebugPassengerValue(service.planner_attempted_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Planner Assigned</small>
+                          <strong>{formatDebugPassengerValue(service.planner_assigned_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Mode Capture</small>
+                          <strong>{formatDebugPassengerValue(service.planner_mode_transit_captured_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Path Raw</small>
+                          <strong>{service.planner_candidate_paths_raw.toLocaleString()}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Path Boardable</small>
+                          <strong>{service.planner_candidate_paths_boardable.toLocaleString()}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Runtime Attempted</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_attempted_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Ingested</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_ingested_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Dropped (Dispatch)</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_dropped_not_dispatchable_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Dropped (Key)</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_dropped_invalid_stop_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Queue</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_queue_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Board Attempted</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_boarding_attempted_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Boarded</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_boarded_pax)}</strong>
+                        </div>
+                        <div className="inspector-stat">
+                          <small>Left Behind</small>
+                          <strong>{formatDebugPassengerValue(service.runtime_left_behind_pax)}</strong>
+                        </div>
+                      </div>
+                      {service.diagnostic_note ? (
+                        <p className="hint-line station-runtime-reason">{service.diagnostic_note}</p>
+                      ) : null}
+                      {service.planner_reason_code ? (
+                        <p className="hint-line station-runtime-reason">
+                          planner_reason: {service.planner_reason_code}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="hint-line">No service-level runtime diagnostics are available yet for this station.</p>
+              )}
+            </details>
+          ) : null}
         </section>
       ) : null}
 
@@ -402,6 +593,6 @@ export default function StationInspectorModal(props: {
           </button>
         </div>
       ) : null}
-    </aside>
+    </InspectorPanel>
   );
 }

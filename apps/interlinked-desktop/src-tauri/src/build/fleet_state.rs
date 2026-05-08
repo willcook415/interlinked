@@ -27,6 +27,101 @@ pub struct LineScheduleState {
     pub tph_overnight: f64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LineActivationReason {
+    Running,
+    NoTargetTphInActiveBand,
+    NoAssignedUnits,
+    NoOwnedUnits,
+    FleetInsufficientForRoundTrip,
+    InvalidHeadwayOrDisabled,
+    NoRequiredUnits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineActivationDiagnostics {
+    pub minute_of_day: u32,
+    pub active_band: String,
+    pub target_tph: f64,
+    pub units_owned: usize,
+    pub units_assigned: usize,
+    pub required_units: usize,
+    pub effective_tph: f64,
+    pub enabled: bool,
+    pub reason: LineActivationReason,
+}
+
+pub fn resolve_assigned_units_for_line_mode(
+    mode: &str,
+    units_owned: usize,
+    units_assigned_raw: usize,
+) -> usize {
+    let clamped = units_assigned_raw.min(units_owned);
+    // Metro-first product rule: line-owned stock is auto-assigned to its owning line.
+    if mode.eq_ignore_ascii_case("metro") && units_owned > 0 && clamped == 0 {
+        units_owned
+    } else {
+        clamped
+    }
+}
+
+pub fn line_activation_diagnostics(
+    mode: &str,
+    schedule: &LineScheduleState,
+    minute_of_day: u32,
+    round_trip_s: f64,
+    units_owned: usize,
+    units_assigned_raw: usize,
+    service_enabled_hint: Option<bool>,
+) -> LineActivationDiagnostics {
+    let active_band = active_schedule_band(schedule, minute_of_day);
+    let target_tph = tph_for_band(schedule, active_band.as_str()).max(0.0);
+    let units_assigned =
+        resolve_assigned_units_for_line_mode(mode, units_owned, units_assigned_raw);
+    let required_units = required_units_for_tph(round_trip_s, target_tph);
+    let max_tph_from_fleet = if round_trip_s.is_finite() && round_trip_s > 0.0 {
+        (units_assigned as f64 * 3600.0) / round_trip_s
+    } else {
+        0.0
+    };
+    let effective_tph = if target_tph > 0.0 {
+        target_tph.min(max_tph_from_fleet.max(0.0))
+    } else {
+        0.0
+    };
+
+    let reason = if matches!(service_enabled_hint, Some(false)) {
+        LineActivationReason::InvalidHeadwayOrDisabled
+    } else if units_owned == 0 {
+        LineActivationReason::NoOwnedUnits
+    } else if units_assigned == 0 {
+        LineActivationReason::NoAssignedUnits
+    } else if target_tph <= 0.0 {
+        LineActivationReason::NoTargetTphInActiveBand
+    } else if required_units == 0 {
+        LineActivationReason::NoRequiredUnits
+    } else if effective_tph <= 0.0 {
+        LineActivationReason::FleetInsufficientForRoundTrip
+    } else {
+        LineActivationReason::Running
+    };
+
+    let enabled = reason == LineActivationReason::Running && effective_tph > 0.0;
+
+    LineActivationDiagnostics {
+        minute_of_day: minute_of_day % 1440,
+        active_band,
+        target_tph,
+        units_owned,
+        units_assigned,
+        required_units,
+        effective_tph,
+        enabled,
+        reason,
+    }
+}
+
 pub(super) fn normalize_tier_id(raw: Option<&str>) -> String {
     let fallback = "standard".to_string();
     raw.map(|value| value.trim().to_ascii_lowercase())
@@ -495,6 +590,7 @@ pub fn settle_pending_purchase_orders(scenario: &mut Scenario, now_tick_s: f64) 
     if !now_tick_s.is_finite() || now_tick_s < 0.0 {
         return 0;
     }
+    let instant_delivery_mode = cfg!(debug_assertions);
     let mut services_by_line = HashMap::<String, Vec<usize>>::new();
     for (index, service) in scenario.world.services.iter().enumerate() {
         services_by_line
@@ -523,7 +619,7 @@ pub fn settle_pending_purchase_orders(scenario: &mut Scenario, now_tick_s: f64) 
         let mut delivered_units = 0usize;
         for order in pending {
             let eta = order.eta_at_tick_s.unwrap_or(f64::INFINITY);
-            if eta.is_finite() && eta <= now_tick_s + 1e-6 {
+            if instant_delivery_mode || (eta.is_finite() && eta <= now_tick_s + 1e-6) {
                 delivered_units = delivered_units.saturating_add(order.units as usize);
             } else {
                 kept_orders.push(order);

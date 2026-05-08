@@ -17,13 +17,18 @@ export default function ShellStatusOverlays(props: {
   onSkipOnboarding: () => void;
   onAdvanceOnboarding: () => void;
 }) {
+  const openingSessionFromColdBoot = props.busy && !props.showSessionBootOverlay;
   return (
     <>
       {props.busy ? (
         <div className="app-status-overlay">
           <div className="app-status-card">
-            <strong>Working...</strong>
-            <span>Preparing data and applying your request.</span>
+            <strong>{openingSessionFromColdBoot ? "Opening Save" : "Working..."}</strong>
+            <span>
+              {openingSessionFromColdBoot
+                ? "Loading world demand and region data. First load after app start can take a moment."
+                : "Preparing data and applying your request."}
+            </span>
           </div>
         </div>
       ) : null}
@@ -53,7 +58,7 @@ export default function ShellStatusOverlays(props: {
         <div className="offline-banner">Offline: cloud-dependent features are temporarily unavailable.</div>
       ) : null}
 
-      {props.showPausedBanner ? <div className="paused-banner">Simulation Paused</div> : null}
+
 
       {props.saveStatus.trim() ? (
         <div className="status-toast">

@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 use super::persistence::persist_runtime_manifest_now;
-use super::scheduling::plan_runtime_catchup;
+use super::scheduling::{
+    effective_max_steps_per_cycle, effective_strategic_refresh_interval_ticks, plan_runtime_catchup,
+};
 use super::snapshots::{
     latest_runtime_fast_snapshot_for_project, publish_runtime_snapshots,
     publish_strategic_snapshot_for_tick, push_runtime_fast_snapshot,
@@ -15,6 +17,11 @@ use crate::{
     merge_runtime_manifest_state, normalize_speed, read_manifest, run_simulation_tick,
     ProjectManifest, RuntimeSnapshot,
 };
+
+const RT_LOOP_LOG_TICK_INTERVAL: u64 = 20;
+const RT_LOOP_SUMMARY_CYCLE_INTERVAL: u64 = 60;
+const RT_LOOP_SLOW_CYCLE_MS: f64 = 120.0;
+const RT_LOOP_SLOW_STEP_MS: f64 = 90.0;
 
 pub(crate) struct RuntimeWorkerTickCycleContext<'a> {
     pub app: &'a AppHandle,
@@ -39,6 +46,8 @@ pub(crate) struct RuntimeWorkerTickCycleContext<'a> {
     pub perf_cycle_total_ms: &'a mut f64,
     pub perf_step_count: &'a mut u64,
     pub perf_step_total_ms: &'a mut f64,
+    pub last_gate_signature: &'a mut Option<(bool, bool)>,
+    pub warmup_catchup_pending: &'a mut bool,
     pub cycle_start: Instant,
 }
 
@@ -69,6 +78,31 @@ pub(crate) fn run_runtime_worker_tick_cycle(
     let now = Instant::now();
     let elapsed = now.saturating_duration_since(*ctx.last_wall).as_secs_f64();
     *ctx.last_wall = now;
+    let gate_signature = (*ctx.running, ctx.manifest.runtime_scheduling.enabled);
+    let previous_gate_signature = *ctx.last_gate_signature;
+    if ctx
+        .last_gate_signature
+        .map(|previous| previous != gate_signature)
+        .unwrap_or(true)
+    {
+        eprintln!(
+            "[rt-loop] gate project={} running={} scheduling_enabled={} elapsed_s={:.4} accumulator_s={:.4}",
+            ctx.project_root.to_string_lossy(),
+            gate_signature.0,
+            gate_signature.1,
+            elapsed,
+            *ctx.accumulator_s
+        );
+        *ctx.last_gate_signature = Some(gate_signature);
+    }
+    let entered_runnable_gate = gate_signature.0
+        && gate_signature.1
+        && previous_gate_signature
+            .map(|previous| !previous.0 || !previous.1)
+            .unwrap_or(true);
+    if entered_runnable_gate {
+        *ctx.warmup_catchup_pending = true;
+    }
     if !*ctx.running || !ctx.manifest.runtime_scheduling.enabled {
         if *ctx.force_checkpoint {
             let _ = persist_runtime_manifest_now(ctx.project_root, ctx.manifest);
@@ -84,26 +118,25 @@ pub(crate) fn run_runtime_worker_tick_cycle(
         .runtime_scheduling
         .fixed_step_s
         .clamp(0.05, 1.0);
-    let max_steps_per_cycle = ctx
-        .manifest
-        .runtime_scheduling
-        .max_steps_per_cycle
-        .clamp(1, 128);
-    *ctx.perf_wall_elapsed_s += elapsed.max(0.0);
-    *ctx.perf_target_game_elapsed_s += elapsed.max(0.0) * *ctx.speed as f64;
-    *ctx.accumulator_s += elapsed.max(0.0) * *ctx.speed as f64;
-    let catchup = plan_runtime_catchup(
-        *ctx.accumulator_s,
-        fixed_step_s,
-        max_steps_per_cycle as usize,
+    let max_steps_per_cycle = effective_max_steps_per_cycle(
+        ctx.manifest.runtime_scheduling.max_steps_per_cycle,
+        *ctx.speed,
     );
+    let accumulator_before = *ctx.accumulator_s;
+    let step_game_target_s = elapsed.max(0.0) * *ctx.speed as f64;
+    *ctx.perf_wall_elapsed_s += elapsed.max(0.0);
+    *ctx.perf_target_game_elapsed_s += step_game_target_s;
+    *ctx.accumulator_s += step_game_target_s;
+    let catchup = plan_runtime_catchup(*ctx.accumulator_s, fixed_step_s, max_steps_per_cycle);
     let mut steps = 0usize;
     let mut latest_snapshot: Option<RuntimeSnapshot> = None;
-    let strategic_interval = ctx
-        .manifest
-        .runtime_scheduling
-        .strategic_refresh_interval_ticks
-        .max(1) as u64;
+    let mut suppress_warmup_catchup_debt = false;
+    let strategic_interval = effective_strategic_refresh_interval_ticks(
+        ctx.manifest
+            .runtime_scheduling
+            .strategic_refresh_interval_ticks,
+        *ctx.speed,
+    ) as u64;
     while steps < catchup.steps_to_run {
         *ctx.tick_index = (*ctx.tick_index).saturating_add(1);
         let clock_revision = ctx
@@ -114,7 +147,7 @@ pub(crate) fn run_runtime_worker_tick_cycle(
         let emit_runtime_views = steps + 1 == catchup.steps_to_run;
         let strategic_refresh_due =
             emit_runtime_views && (*ctx.tick_index).is_multiple_of(strategic_interval);
-        if let Ok(snapshot) = run_simulation_tick(
+        match run_simulation_tick(
             &state,
             ctx.project_root,
             ctx.manifest,
@@ -128,15 +161,67 @@ pub(crate) fn run_runtime_worker_tick_cycle(
             emit_runtime_views,
             strategic_refresh_due,
         ) {
-            *ctx.perf_step_count = (*ctx.perf_step_count).saturating_add(1);
-            *ctx.perf_step_total_ms += snapshot.telemetry.tick_total_ms.max(0.0);
-            if emit_runtime_views {
-                latest_snapshot = Some(snapshot);
+            Ok(snapshot) => {
+                *ctx.perf_step_count = (*ctx.perf_step_count).saturating_add(1);
+                *ctx.perf_step_total_ms += snapshot.telemetry.tick_total_ms.max(0.0);
+                let strategic_missing_cache = snapshot.telemetry.engine_strategic_refresh_executed
+                    && snapshot
+                        .telemetry
+                        .engine_strategic_refresh_reason
+                        .as_deref()
+                        .map(|reason| reason.contains("MissingCache"))
+                        .unwrap_or(false);
+                if *ctx.warmup_catchup_pending && strategic_missing_cache {
+                    suppress_warmup_catchup_debt = true;
+                    *ctx.warmup_catchup_pending = false;
+                } else if *ctx.warmup_catchup_pending {
+                    // Only arm suppression for the first live step after resume.
+                    *ctx.warmup_catchup_pending = false;
+                }
+                if emit_runtime_views {
+                    if (*ctx.tick_index).is_multiple_of(RT_LOOP_LOG_TICK_INTERVAL) {
+                        eprintln!(
+                            "[rt-loop] tick_ok project={} tick_index={} tick_seconds={:.3} clock_revision={} running={} speed={} step_ms={:.2} stage_prepare_ms={:.2} stage_step_ms={:.2} stage_runtime_ops_ms={:.2} stage_economy_ms={:.2}",
+                            ctx.project_root.to_string_lossy(),
+                            *ctx.tick_index,
+                            snapshot.clock.tick_seconds,
+                            snapshot.clock_revision,
+                            snapshot.clock.running,
+                            snapshot.clock.speed,
+                            snapshot.telemetry.tick_total_ms.max(0.0),
+                            snapshot.telemetry.stage_prepare_ms.max(0.0),
+                            snapshot.telemetry.stage_step_ms.max(0.0),
+                            snapshot.telemetry.stage_runtime_ops_ms.max(0.0),
+                            snapshot.telemetry.stage_economy_ms.max(0.0),
+                        );
+                    }
+                    latest_snapshot = Some(snapshot);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[rt-loop] tick_err project={} tick_index={} clock_revision={} error={}",
+                    ctx.project_root.to_string_lossy(),
+                    *ctx.tick_index,
+                    clock_revision,
+                    error
+                );
             }
         }
         *ctx.accumulator_s = (*ctx.accumulator_s - fixed_step_s).max(0.0);
         *ctx.perf_game_elapsed_s += fixed_step_s;
         steps += 1;
+    }
+    if suppress_warmup_catchup_debt {
+        // Exclude one-time strategic cache warm-up wall time from catch-up debt on first resume.
+        // This keeps initial 1x pacing stable instead of burst-running backlog immediately after load.
+        *ctx.last_wall = Instant::now();
+        eprintln!(
+            "[rt-loop] warmup_rebase project={} tick_index={} reason=missing_cache_startup cycle_elapsed_ms={:.2}",
+            ctx.project_root.to_string_lossy(),
+            *ctx.tick_index,
+            ctx.cycle_start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     // Ordering matters: telemetry and snapshot publishing are computed only after all
@@ -164,9 +249,66 @@ pub(crate) fn run_runtime_worker_tick_cycle(
     } else {
         1.0
     };
+    if steps > 0 {
+        let should_emit_cycle = (*ctx.tick_index).is_multiple_of(RT_LOOP_LOG_TICK_INTERVAL)
+            || catchup.backlog_steps > 0
+            || catchup.steps_to_run > 1
+            || cycle_elapsed_ms > RT_LOOP_SLOW_CYCLE_MS
+            || avg_sim_step_ms > RT_LOOP_SLOW_STEP_MS;
+        if should_emit_cycle {
+            eprintln!(
+                "[rt-loop] cycle project={} tick_index={} running={} speed={} wall_elapsed_s={:.4} target_game_elapsed_s={:.4} game_advanced_s={:.4} fixed_step_s={:.3} accumulator_before_s={:.4} accumulator_after_s={:.4} steps_to_run={} steps_executed={} backlog_steps={} max_steps_per_cycle={} cycle_ms={:.2} avg_cycle_ms={:.2} avg_step_ms={:.2} achieved_speed_ratio={:.3} achieved_vs_target_ratio={:.3} pending_actions={} queue_depth={} target_tick_ms={:.2}",
+                ctx.project_root.to_string_lossy(),
+                *ctx.tick_index,
+                *ctx.running,
+                *ctx.speed,
+                elapsed.max(0.0),
+                step_game_target_s.max(0.0),
+                (steps as f64 * fixed_step_s).max(0.0),
+                fixed_step_s,
+                accumulator_before.max(0.0),
+                (*ctx.accumulator_s).max(0.0),
+                catchup.steps_to_run,
+                steps,
+                catchup.backlog_steps,
+                max_steps_per_cycle,
+                cycle_elapsed_ms.max(0.0),
+                avg_cycle_elapsed_ms.max(0.0),
+                avg_sim_step_ms.max(0.0),
+                achieved_speed_ratio.max(0.0),
+                achieved_vs_target_ratio.max(0.0),
+                ctx.pending_actions.load(Ordering::SeqCst),
+                ctx.pending_actions.load(Ordering::SeqCst),
+                ctx.manifest.runtime_scheduling.target_tick_ms.clamp(4.0, 250.0),
+            );
+        }
+    }
+    if (*ctx.perf_cycle_count).is_multiple_of(RT_LOOP_SUMMARY_CYCLE_INTERVAL)
+        || catchup.backlog_steps > 0
+    {
+        eprintln!(
+            "[rt-summary] loop project={} cycles={} steps={} running={} speed={} real_elapsed_s={:.2} target_game_elapsed_s={:.2} game_elapsed_s={:.2} achieved_speed_ratio={:.3} achieved_vs_target_ratio={:.3} avg_cycle_ms={:.2} avg_step_ms={:.2} backlog_steps={} backlog_s={:.3} max_steps_per_cycle={} fixed_step_s={:.3}",
+            ctx.project_root.to_string_lossy(),
+            *ctx.perf_cycle_count,
+            *ctx.perf_step_count,
+            *ctx.running,
+            *ctx.speed,
+            (*ctx.perf_wall_elapsed_s).max(0.0),
+            (*ctx.perf_target_game_elapsed_s).max(0.0),
+            (*ctx.perf_game_elapsed_s).max(0.0),
+            achieved_speed_ratio.max(0.0),
+            achieved_vs_target_ratio.max(0.0),
+            avg_cycle_elapsed_ms.max(0.0),
+            avg_sim_step_ms.max(0.0),
+            catchup.backlog_steps,
+            (*ctx.accumulator_s).max(0.0),
+            max_steps_per_cycle,
+            fixed_step_s,
+        );
+    }
     if let Some(mut snapshot) = latest_snapshot {
         snapshot.telemetry.executed_steps_this_cycle = catchup.steps_to_run as u32;
-        snapshot.telemetry.max_steps_per_cycle = max_steps_per_cycle;
+        snapshot.telemetry.max_steps_per_cycle = max_steps_per_cycle as u32;
         snapshot.telemetry.backlog_steps = catchup.backlog_steps as u32;
         snapshot.telemetry.backlog_s = (*ctx.accumulator_s).max(0.0);
         snapshot.telemetry.accumulator_s = (*ctx.accumulator_s).max(0.0);
@@ -198,7 +340,7 @@ pub(crate) fn run_runtime_worker_tick_cycle(
             snapshot.telemetry.backlog_steps = catchup.backlog_steps as u32;
             snapshot.telemetry.backlog_s = (*ctx.accumulator_s).max(0.0);
             snapshot.telemetry.accumulator_s = (*ctx.accumulator_s).max(0.0);
-            snapshot.telemetry.max_steps_per_cycle = max_steps_per_cycle;
+            snapshot.telemetry.max_steps_per_cycle = max_steps_per_cycle as u32;
             snapshot.telemetry.executed_steps_this_cycle = catchup.steps_to_run as u32;
             snapshot.telemetry.real_elapsed_s = (*ctx.perf_wall_elapsed_s).max(0.0);
             snapshot.telemetry.game_elapsed_s = (*ctx.perf_game_elapsed_s).max(0.0);

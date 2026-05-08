@@ -1,5 +1,28 @@
 use crate::commands::content_library::resolve_map_assets;
 use crate::*;
+use serde_json::value::RawValue;
+
+#[derive(Deserialize)]
+struct CountyLanduseFeatureCollection<'a> {
+    #[serde(borrow)]
+    features: Vec<CountyLanduseFeature<'a>>,
+}
+
+#[derive(Default, Deserialize)]
+struct CountyLanduseFeatureProps<'a> {
+    #[serde(default, borrow)]
+    feature_layer: Option<&'a str>,
+    #[serde(default, borrow)]
+    landuse_class: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct CountyLanduseFeature<'a> {
+    #[serde(default, borrow)]
+    properties: CountyLanduseFeatureProps<'a>,
+    #[serde(default, borrow)]
+    geometry: Option<&'a RawValue>,
+}
 
 pub(crate) fn landuse_class_profile(class_name: &str) -> Option<([f64; 7], f64)> {
     let class_name = class_name.trim().to_ascii_lowercase();
@@ -18,36 +41,32 @@ pub(crate) fn landuse_class_profile(class_name: &str) -> Option<([f64; 7], f64)>
 
 pub(crate) fn parse_county_landuse_profile(path: &Path) -> Result<CountyLanduseProfile, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let value =
-        serde_json::from_str::<JsonValue>(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
-    let features = value
-        .get("features")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| format!("{} is missing feature collection data", path.display()))?;
+    let feature_collection = serde_json::from_str::<CountyLanduseFeatureCollection<'_>>(&raw)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let mut samples = Vec::<LanduseSample>::new();
-    for feature in features {
-        let Some(props) = feature.get("properties").and_then(|v| v.as_object()) else {
-            continue;
-        };
-        let layer = props
-            .get("feature_layer")
-            .and_then(|v| v.as_str())
+    for feature in feature_collection.features {
+        let layer = feature
+            .properties
+            .feature_layer
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
         if layer != "landuse" {
             continue;
         }
-        let Some(class_name) = props.get("landuse_class").and_then(|v| v.as_str()) else {
+        let Some(class_name) = feature.properties.landuse_class else {
             continue;
         };
         let Some((mix, intensity)) = landuse_class_profile(class_name) else {
             continue;
         };
-        let Some(geometry) = feature.get("geometry") else {
+        let Some(geometry_raw) = feature.geometry else {
             continue;
         };
-        let Some((min_lon, min_lat, max_lon, max_lat)) = geometry_lonlat_bounds(geometry) else {
+        let Ok(geometry) = serde_json::from_str::<JsonValue>(geometry_raw.get()) else {
+            continue;
+        };
+        let Some((min_lon, min_lat, max_lon, max_lat)) = geometry_lonlat_bounds(&geometry) else {
             continue;
         };
         let center_lon = (min_lon + max_lon) * 0.5;

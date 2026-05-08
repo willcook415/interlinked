@@ -117,3 +117,13 @@ pub fn get_demand_tile_source(
 pub fn get_demand_layer_stats(project_path: String) -> Result<DemandLayerStats, String> {
     economy_service::get_demand_layer_stats(project_path)
 }
+
+#[command]
+pub fn get_demand_overlay_payload(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    project_path: String,
+    overlay_type: Option<String>,
+) -> Result<DemandOverlayPayload, String> {
+    economy_service::get_demand_overlay_payload(app, state, project_path, overlay_type)
+}

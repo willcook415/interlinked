@@ -390,6 +390,8 @@ pub(crate) fn runtime_ops_from_persisted(
         dispatch_service_ids: HashSet::new(),
         trains,
         queue_cohorts,
+        last_queue_ingest_by_service_stop: HashMap::new(),
+        last_boarding_by_service_stop: HashMap::new(),
     }
 }
 

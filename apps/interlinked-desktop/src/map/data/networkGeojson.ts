@@ -60,7 +60,7 @@ function modeBadgeForStop(modeClassValue: string): string {
     case "tram":
       return "T";
     case "metro":
-      return "M";
+      return "";
     case "ferry":
       return "F";
     case "commuter_rail":
@@ -81,7 +81,7 @@ function modeSymbolForStop(modeClassValue: string): string {
     case "tram":
       return "◆";
     case "metro":
-      return "●";
+      return "M";
     case "ferry":
       return "▲";
     case "commuter_rail":

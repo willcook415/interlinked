@@ -34,7 +34,6 @@ export default function FarePolicyPanel(props: {
   onChange: (patch: FareDraft) => void;
 }) {
   if (!props.open || !props.policy) return null;
-  const p = props.policy;
 
   return (
     <aside className="editor-drawer-sheet fare-policy-sheet">
@@ -45,6 +44,33 @@ export default function FarePolicyPanel(props: {
         </div>
         <button onClick={props.onClose}>Close</button>
       </div>
+      <FarePolicyContent
+        busy={props.busy}
+        policy={props.policy}
+        onChange={props.onChange}
+      />
+    </aside>
+  );
+}
+
+export function FarePolicyContent(props: {
+  busy: boolean;
+  policy: FarePolicyManifest | null;
+  onChange: (patch: FareDraft) => void;
+}) {
+  if (!props.policy) {
+    return (
+      <section className="workspace-empty-card">
+        <strong>Fare policy unavailable</strong>
+        <span>Fare controls will appear once a fare policy is loaded for this session.</span>
+      </section>
+    );
+  }
+
+  const p = props.policy;
+
+  return (
+    <div className="fare-policy-content">
       <label className="fare-toggle">
         <input
           type="checkbox"
@@ -88,6 +114,6 @@ export default function FarePolicyPanel(props: {
         />
       </label>
       <p className="hint-line">Free transfers per trip: {p.free_transfers_per_trip} (fixed in v1)</p>
-    </aside>
+    </div>
   );
 }

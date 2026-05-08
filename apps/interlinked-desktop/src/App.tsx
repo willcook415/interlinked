@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AlertItem,
   AppRoute,
@@ -24,6 +24,8 @@ import type {
   StationRuntimeView,
   TrainRuntimeView,
   DifficultyProfile,
+  DemandOverlayPayload,
+  DemandOverlayType,
 } from "./types";
 import {
   getBuildPreset,
@@ -52,9 +54,16 @@ import {
 } from "./app/useSessionController";
 import { useSessionLifecycleController } from "./app/session/useSessionLifecycleController";
 import type { LinkModeFilter } from "./ui/MapFiltersPanel";
+import {
+  mergeRuntimeVehicleInspection,
+  vehicleInspectionFromRuntimeTrain,
+  type VehicleInspection,
+} from "./app/vehicleInspection";
+import { getDemandOverlayPayload } from "./api/desktopApi";
 import AppRouteScreens from "./ui/AppRouteScreens";
 import AppSessionShell from "./ui/AppSessionShell";
 import SettingsPanel from "./ui/SettingsPanel";
+import { buildPerfEvent } from "./perf/buildPerf";
 
 const MISSIONS: Mission[] = [
   {
@@ -150,12 +159,9 @@ function formatBackendError(error: unknown): string {
   return message;
 }
 
-const NON_EDITABLE_FRONTEND_ROUTES: ReadonlySet<AppRoute> = new Set([
-  "home",
-  "new_game",
-  "new_scenario",
-  "load_game",
-  "load_scenario",
+const GAME_SURFACE_ROUTES: ReadonlySet<AppRoute> = new Set([
+  "session_game",
+  "session_scenario",
 ]);
 
 function isEditableSurfaceTarget(target: EventTarget | null): boolean {
@@ -165,6 +171,41 @@ function isEditableSurfaceTarget(target: EventTarget | null): boolean {
       'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'
     )
   );
+}
+
+function allowsScrollOverflow(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "auto" || normalized === "scroll" || normalized === "overlay";
+}
+
+function canConsumeScrollDelta(target: EventTarget | null, deltaX: number, deltaY: number): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".maplibregl-canvas-container, .maplibregl-canvas")) return true;
+
+  let node: Element | null = target;
+  while (node && node !== document.body) {
+    if (node instanceof HTMLElement) {
+      const style = window.getComputedStyle(node);
+      const canScrollY =
+        allowsScrollOverflow(style.overflowY) && node.scrollHeight > node.clientHeight + 1;
+      if (canScrollY) {
+        const maxY = node.scrollHeight - node.clientHeight;
+        if ((deltaY < 0 && node.scrollTop > 0) || (deltaY > 0 && node.scrollTop < maxY)) {
+          return true;
+        }
+      }
+      const canScrollX =
+        allowsScrollOverflow(style.overflowX) && node.scrollWidth > node.clientWidth + 1;
+      if (canScrollX) {
+        const maxX = node.scrollWidth - node.clientWidth;
+        if ((deltaX < 0 && node.scrollLeft > 0) || (deltaX > 0 && node.scrollLeft < maxX)) {
+          return true;
+        }
+      }
+    }
+    node = node.parentElement;
+  }
+  return false;
 }
 
 export default function App() {
@@ -183,6 +224,7 @@ export default function App() {
   const [regions, setRegions] = useState<RegionStatus[]>([]);
   const [focusRegionId, setFocusRegionId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [buildExitConfirmOpen, setBuildExitConfirmOpen] = useState(false);
   const [mapRuntimeConfig, setMapRuntimeConfig] = useState<MapRuntimeConfig | null>(null);
   const [farePolicy, setFarePolicy] = useState<FarePolicyManifest | null>(null);
   const [liveEconomy, setLiveEconomy] = useState<SimulationAdvanceEconomy | null>(null);
@@ -207,6 +249,17 @@ export default function App() {
   const [showStations, setShowStations] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
   const [linkMode, setLinkMode] = useState<LinkModeFilter>("all");
+  const [showDemandOverlay, setShowDemandOverlay] = useState(false);
+  const [demandOverlayType, setDemandOverlayType] = useState<DemandOverlayType>(
+    "total_allocation"
+  );
+  const [demandOverlayPayload, setDemandOverlayPayload] = useState<DemandOverlayPayload | null>(
+    null
+  );
+  const [demandOverlayLoading, setDemandOverlayLoading] = useState(false);
+  const [demandOverlayStatusMessage, setDemandOverlayStatusMessage] = useState<string | null>(
+    null
+  );
   const [financialRequest, setFinancialRequest] = useState<FinancialDashboardRequest>({
     granularity: "month",
     periods: 12,
@@ -216,6 +269,7 @@ export default function App() {
   const [financialError, setFinancialError] = useState<string | null>(null);
   const [focusStopRequest, setFocusStopRequest] = useState<FocusStopRequest>(null);
   const [focusVehicleRequest, setFocusVehicleRequest] = useState<FocusVehicleRequest>(null);
+  const [selectedVehicleSnapshot, setSelectedVehicleSnapshot] = useState<VehicleInspection | null>(null);
   const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimePerfTelemetry | null>(null);
   const [snapshotLatencyMs, setSnapshotLatencyMs] = useState<number | null>(null);
   const [temporalDiagnostics, setTemporalDiagnostics] = useState<RuntimeTemporalDiagnostics>({
@@ -231,7 +285,7 @@ export default function App() {
 
   useEffect(() => {
     const body = document.body;
-    const applyDesktopSurfacePolicy = NON_EDITABLE_FRONTEND_ROUTES.has(route);
+    const applyDesktopSurfacePolicy = GAME_SURFACE_ROUTES.has(route);
 
     if (!applyDesktopSurfacePolicy) {
       body.classList.remove("il-noneditable-surface");
@@ -243,11 +297,18 @@ export default function App() {
       if (isEditableSurfaceTarget(event.target)) return;
       event.preventDefault();
     };
+    const onWheel = (event: WheelEvent) => {
+      if (isEditableSurfaceTarget(event.target)) return;
+      if (canConsumeScrollDelta(event.target, event.deltaX, event.deltaY)) return;
+      event.preventDefault();
+    };
 
     document.addEventListener("contextmenu", onContextMenu, true);
+    document.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => {
       body.classList.remove("il-noneditable-surface");
       document.removeEventListener("contextmenu", onContextMenu, true);
+      document.removeEventListener("wheel", onWheel, true);
     };
   }, [route]);
 
@@ -311,6 +372,7 @@ export default function App() {
     lineSummaries: build.lineSummaries,
     runtimeLineOps,
     runtimeStations,
+    runtimeTelemetry,
     currentBalanceBase,
     builderError: build.builderError,
     demandWarning,
@@ -384,6 +446,35 @@ export default function App() {
     runtimeTrains,
     setFocusVehicleRequest,
   });
+
+  const selectedVehicleInspection = useMemo(
+    () => mergeRuntimeVehicleInspection(selectedVehicleSnapshot, runtimeTrains),
+    [runtimeTrains, selectedVehicleSnapshot]
+  );
+
+  const clearVehicleInspection = useCallback(() => {
+    setSelectedVehicleSnapshot(null);
+  }, []);
+
+  const handleVehicleInspection = useCallback(
+    (vehicle: VehicleInspection) => {
+      build.setSelection(null);
+      setSelectedVehicleSnapshot(vehicle);
+    },
+    [build]
+  );
+
+  const focusVehicleInspectionFromFleet = useCallback(
+    (vehicleId: string) => {
+      const runtimeVehicle = runtimeTrains.find((train) => train.train_id === vehicleId) ?? null;
+      if (runtimeVehicle) {
+        setSelectedVehicleSnapshot(vehicleInspectionFromRuntimeTrain(runtimeVehicle));
+      }
+      focusVehicleFromFleet(vehicleId);
+    },
+    [focusVehicleFromFleet, runtimeTrains]
+  );
+
   const activeLineMetrics = useMemo(() => {
     if (!build.activeLine || !activeScenario) {
       return { totalLengthM: 0, extensionLengthM: 0 };
@@ -461,11 +552,18 @@ export default function App() {
   );
   const previewAnchorPoint = useMemo(() => {
     if (!build.activeLine || !activeScenario) return null;
+    if (build.buildAction === "add_station_to_line") {
+      const anchorStopId = build.activeLine.extensionAnchorStopId ?? null;
+      if (!anchorStopId) return null;
+      const anchorStop = activeScenario.world.stops.find((stop) => stop.id === anchorStopId);
+      if (!anchorStop) return null;
+      return { x: anchorStop.x, y: anchorStop.y };
+    }
     const lastStopId = build.activeLine.stationIds[build.activeLine.stationIds.length - 1];
     const lastStop = activeScenario.world.stops.find((stop) => stop.id === lastStopId);
     if (!lastStop) return null;
     return { x: lastStop.x, y: lastStop.y };
-  }, [activeScenario, build.activeLine]);
+  }, [activeScenario, build.activeLine, build.buildAction]);
   const previewColor = useMemo(() => {
     if (build.buildAction === "add_station_to_line") {
       return selectedLineDetail?.displayColor ?? currentBuildPreset?.default_color ?? "#104894";
@@ -496,11 +594,6 @@ export default function App() {
     build.transportPresetId,
     previewColor,
   ]);
-  const stationCostBase = useMemo(() => build.buildDefaults?.station_capex_base ?? null, [build.buildDefaults]);
-  const lineCostPerKmBase = useMemo(
-    () => selectedLineBuildPreset?.capex_per_km_base ?? currentBuildPreset?.capex_per_km_base ?? null,
-    [currentBuildPreset, selectedLineBuildPreset]
-  );
   const extensionAddedStations = useMemo(() => {
     if (selectedLineDetail) {
       const baseCount = selectedBaseLineDetail?.stationIds.length ?? 0;
@@ -517,16 +610,22 @@ export default function App() {
         : activeLineMetrics.extensionLengthM,
     [activeLineMetrics.extensionLengthM, selectedBaseLineDetail?.lengthM, selectedLineDetail]
   );
-  const extensionConstructionCostBase = useMemo(() => {
-    if (stationCostBase === null || lineCostPerKmBase === null) return null;
-    const stationComponent = extensionAddedStations * stationCostBase;
-    const trackComponent = (Math.max(extensionAddedLengthM, 0) / 1000) * lineCostPerKmBase;
-    return stationComponent + trackComponent;
-  }, [extensionAddedLengthM, extensionAddedStations, lineCostPerKmBase, stationCostBase]);
   const lineDraftMode =
     build.workspaceMode === "build" &&
     (build.buildAction === "start_line" || build.buildAction === "add_station_to_line") &&
     Boolean(build.activeLine);
+  const lineDraftAwaitingTerminus =
+    build.workspaceMode === "build" &&
+    build.buildAction === "add_station_to_line" &&
+    Boolean(build.activeLine) &&
+    !build.activeLine?.extensionAnchorStopId;
+  const lineDraftAnchorStopName = useMemo(() => {
+    const anchorStopId = build.activeLine?.extensionAnchorStopId ?? null;
+    if (!anchorStopId || !activeScenario) return null;
+    const stop = activeScenario.world.stops.find((candidate) => candidate.id === anchorStopId);
+    if (!stop) return null;
+    return stopDisplayName(stop);
+  }, [activeScenario, build.activeLine?.extensionAnchorStopId]);
   const buildConstraintMode = useMemo(() => {
     if (build.workspaceMode !== "build") return null;
     if (build.buildAction === "add_station_to_line") {
@@ -574,7 +673,6 @@ export default function App() {
     loadGameSave,
     loadScenarioSave,
     selectCounty,
-    focusSelectedCounty,
     unlockAndFocusSelectedCounty,
     deleteSave,
     restoreDeletedSave,
@@ -680,13 +778,45 @@ export default function App() {
   }
 
   function leaveBuildMode() {
+    buildPerfEvent("build.ui.exit_button_pressed", {
+      workspaceMode: build.workspaceMode,
+      isDirty: build.isDirty,
+    });
     if (build.workspaceMode !== "build") return;
     if (build.isDirty) {
-      const discard = window.confirm("Discard the current build draft and return to view mode?");
-      if (!discard) return;
+      setBuildExitConfirmOpen(true);
+      buildPerfEvent("build.ui.exit_confirm_opened");
+      return;
     }
+    setBuildExitConfirmOpen(false);
     build.cancelBuildMode();
   }
+
+  function cancelLeaveBuildModeConfirm() {
+    buildPerfEvent("build.ui.exit_confirm_cancelled");
+    setBuildExitConfirmOpen(false);
+  }
+
+  function confirmLeaveBuildModeDiscard() {
+    buildPerfEvent("build.ui.exit_confirm_discard");
+    setBuildExitConfirmOpen(false);
+    if (build.workspaceMode !== "build") return;
+    build.cancelBuildMode();
+  }
+
+  useEffect(() => {
+    buildPerfEvent("build.state.workspace_mode_changed", {
+      workspaceMode: build.workspaceMode,
+      buildAction: build.buildAction,
+      isDirty: build.isDirty,
+    });
+  }, [build.buildAction, build.isDirty, build.workspaceMode]);
+
+  useEffect(() => {
+    if (build.workspaceMode !== "build" || !build.isDirty) {
+      setBuildExitConfirmOpen(false);
+    }
+  }, [build.isDirty, build.workspaceMode]);
 
   const {
     handleStopAction,
@@ -745,6 +875,90 @@ export default function App() {
     (activeScenario?.world.transfers.length ?? 0) +
     (activeScenario?.world.stops.length ?? 0) +
     (activeScenario?.world.zones.length ?? 0);
+  const unlockedRegionSignature = useMemo(
+    () =>
+      regions
+        .filter((region) => region.unlocked)
+        .map((region) => region.region_id)
+        .sort()
+        .join("|"),
+    [regions]
+  );
+  const demandOverlaySelection = useMemo(() => {
+    if (demandOverlayStatusMessage?.trim()) {
+      return {
+        available: false,
+        reason: demandOverlayStatusMessage.trim(),
+      };
+    }
+    if (!demandOverlayPayload) {
+      return {
+        available: false,
+        reason: "Demand overlays are unavailable.",
+      };
+    }
+    const available = demandOverlayPayload.available ?? false;
+    return {
+      available,
+      reason: available
+        ? null
+        : demandOverlayPayload.reason?.trim() ??
+          "Demand overlay is unavailable.",
+    };
+  }, [demandOverlayPayload, demandOverlayStatusMessage]);
+  const demandOverlayAvailable = demandOverlaySelection.available;
+  const demandOverlaySelectedMessage = demandOverlaySelection.reason;
+
+  useEffect(() => {
+    setDemandOverlayPayload(null);
+    setDemandOverlayStatusMessage(null);
+    setDemandOverlayLoading(false);
+  }, [bundle?.project_path]);
+
+  useEffect(() => {
+    const projectPath = bundle?.project_path?.trim();
+    if (!showDemandOverlay || !projectPath) {
+      setDemandOverlayLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const refreshPayload = async () => {
+      setDemandOverlayLoading(true);
+      try {
+        const payload = await getDemandOverlayPayload(projectPath, demandOverlayType);
+        if (cancelled) return;
+        setDemandOverlayPayload(payload);
+        setDemandOverlayStatusMessage(null);
+      } catch (error) {
+        if (cancelled) return;
+        const detail =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "Unknown backend error";
+        console.error("[demand-overlay] payload load failed", error);
+        setDemandOverlayPayload(null);
+        setDemandOverlayStatusMessage(
+          `Demand overlays could not be loaded. ${detail}`
+        );
+      } finally {
+        if (!cancelled) {
+          setDemandOverlayLoading(false);
+        }
+      }
+    };
+    void refreshPayload();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    bundle?.project_path,
+    demandOverlayType,
+    showDemandOverlay,
+    unlockedRegionSignature,
+  ]);
+
   const { commandActions, runPaletteCommand } = useShellCommandOrchestration({
     route,
     workspaceMode: build.workspaceMode,
@@ -897,6 +1111,14 @@ export default function App() {
       setShowLinks={setShowLinks}
       linkMode={linkMode}
       setLinkMode={setLinkMode}
+      showDemandOverlay={showDemandOverlay}
+      setShowDemandOverlay={setShowDemandOverlay}
+      demandOverlayType={demandOverlayType}
+      setDemandOverlayType={setDemandOverlayType}
+      demandOverlayLoading={demandOverlayLoading}
+      demandOverlayAvailable={demandOverlayAvailable}
+      demandOverlayStatusMessage={demandOverlaySelectedMessage}
+      demandOverlayPayload={demandOverlayPayload}
       currentBuildPreset={currentBuildPreset}
       fleetDeliveries={fleetDeliveries}
       activeScenario={activeScenario}
@@ -913,16 +1135,15 @@ export default function App() {
       hasZoneCentroidData={hasZoneCentroidData}
       focusStopRequest={focusStopRequest}
       focusVehicleRequest={focusVehicleRequest}
-      setFocusVehicleRequest={setFocusVehicleRequest}
+      selectedVehicleInspection={selectedVehicleInspection}
       previewAnchorPoint={previewAnchorPoint}
       previewColor={previewColor}
       buildConstraintMode={buildConstraintMode}
-      stationCostBase={stationCostBase}
-      lineCostPerKmBase={lineCostPerKmBase}
       extensionAddedStations={extensionAddedStations}
       extensionAddedLengthM={extensionAddedLengthM}
-      extensionConstructionCostBase={extensionConstructionCostBase}
       lineDraftMode={lineDraftMode}
+      lineDraftAwaitingTerminus={lineDraftAwaitingTerminus}
+      lineDraftAnchorStopName={lineDraftAnchorStopName}
       activeLineDraftPreview={activeLineDraftPreview}
       selectedLinePresetId={selectedLinePresetId}
       selectedLineDetail={selectedLineDetail}
@@ -958,6 +1179,8 @@ export default function App() {
       onSelectCounty={selectCounty}
       onHandleStopAction={handleStopAction}
       onHandleLineAction={handleLineAction}
+      onHandleVehicleAction={handleVehicleInspection}
+      onClearVehicleInspection={clearVehicleInspection}
       onHandleMapPointAction={handleMapPointAction}
       onHandleMapClearSelection={handleMapClearSelection}
       onHandleScrapVehicleFromMap={handleScrapVehicleFromMap}
@@ -973,12 +1196,15 @@ export default function App() {
       onCancelDeleteSelectedLine={cancelDeleteSelectedLine}
       onDeleteSelectedLineWithScrap={deleteSelectedLineWithScrap}
       onDeleteSelectedLineWithTransfer={deleteSelectedLineWithTransfer}
-      onFocusVehicleFromFleet={focusVehicleFromFleet}
+      onFocusVehicleFromFleet={focusVehicleInspectionFromFleet}
       onOpenRollingStockEditorFromSchedule={openRollingStockEditorFromSchedule}
       onCreateInterchangeGroupForSelectedStation={createInterchangeGroupForSelectedStation}
       onClearSelectedStationInterchange={clearSelectedStationInterchange}
       onApplySuggestedInterchange={applySuggestedInterchange}
       onLeaveBuildMode={leaveBuildMode}
+      buildExitConfirmOpen={buildExitConfirmOpen}
+      onCancelExitBuildModeConfirm={cancelLeaveBuildModeConfirm}
+      onConfirmExitBuildModeDiscard={confirmLeaveBuildModeDiscard}
       onNavigateFromAlert={navigateFromAlert}
       onRefreshDashboardFromHud={async () => {
         shellPanels.setShowFinancialDashboard(true);
@@ -989,8 +1215,7 @@ export default function App() {
       onSaveQuit={saveQuit}
       onSetRunning={setRunning}
       onSetSpeed={setSpeed}
-      onFocusSelectedCounty={focusSelectedCounty}
-      onUnlockAndFocusSelectedCounty={unlockAndFocusSelectedCounty}
+      onUnlockSelectedCounty={unlockAndFocusSelectedCounty}
       onUpdateFarePolicy={updateFarePolicy}
       onRetryMapLoad={retryMapLoad}
       closeLineEditors={closeLineEditors}

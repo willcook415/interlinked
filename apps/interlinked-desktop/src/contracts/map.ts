@@ -52,11 +52,19 @@ export type RegionStatus = {
   active: boolean;
   adjacent_region_ids: string[];
   unlock_cost_base: number;
+  population?: number | null;
+  jobs?: number | null;
   residents_smooth: number;
   jobs_smooth: number;
   employment_estimate?: number;
   cells_res8: number;
   geometry?: GeoJsonGeometry | null;
+  /** Backend-authoritative hex number from substrate hex numbering.
+   *  This is the canonical number that `manual_regions.json` hex_numbers refer to. */
+  canonical_hex_number?: number | null;
+  /** Parallel array to `geometry` polygons. If `geometry` is a MultiPolygon,
+   *  this array contains the canonical hex number for each polygon in order. */
+  constituent_hex_numbers?: number[] | null;
 };
 
 export type WorldCountryFeatureProperties = {
@@ -154,4 +162,78 @@ export type ScopeState = {
   adjacent_update_interval_ticks: number;
   active_region_ids: string[];
   materialized_cells: number;
+};
+
+export type DemandOverlayType =
+  | "residential_allocation"
+  | "employment_allocation"
+  | "total_allocation"
+  | "raw_residential_weight"
+  | "raw_employment_weight"
+  | "fallback_cells";
+
+export type DemandOverlayRegionDatum = {
+  region_id: string;
+  region_name: string;
+  lon: number;
+  lat: number;
+  intensity_score: number;
+  service_gap_score: number;
+  service_gap_ratio: number;
+};
+
+export type DemandOverlayCorridorDatum = {
+  origin_region_id: string;
+  destination_region_id: string;
+  origin_lon: number;
+  origin_lat: number;
+  destination_lon: number;
+  destination_lat: number;
+  corridor_score: number;
+  latent_passengers: number;
+  realised_passengers: number;
+  unserved_passengers: number;
+  is_underserved: boolean;
+};
+
+export type DemandOverlayCellDatum = {
+  cell_id: string;
+  planning_region_id?: string | null;
+  lon: number;
+  lat: number;
+  area_m2: number;
+  residents_night: number;
+  jobs_day: number;
+  centrality_score: number;
+  data_quality_score: number;
+  activity_mix_residential: number;
+  activity_mix_office: number;
+  activity_mix_retail: number;
+  activity_mix_recreation: number;
+  activity_mix_industrial: number;
+  activity_mix_education: number;
+  activity_mix_health: number;
+  raw_weight_residential: number;
+  raw_weight_employment: number;
+  allocated_residential_mass: number;
+  allocated_employment_mass: number;
+  fallback_reason?: string | null;
+};
+
+export type DemandOverlayPayload = {
+  available: boolean;
+  reason?: string | null;
+  intensity_available?: boolean;
+  intensity_reason?: string | null;
+  service_gap_available?: boolean;
+  service_gap_reason?: string | null;
+  corridor_desire_available?: boolean;
+  corridor_desire_reason?: string | null;
+  run_id?: string | null;
+  cell_data_total?: number;
+  cell_data_mappable?: number;
+  cell_fallback_count?: number;
+  cell_data: DemandOverlayCellDatum[];
+  region_data: DemandOverlayRegionDatum[];
+  corridor_data: DemandOverlayCorridorDatum[];
 };

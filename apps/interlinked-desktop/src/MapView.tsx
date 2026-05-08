@@ -6,7 +6,24 @@ import maplibregl, {
   type PointLike,
 } from "maplibre-gl";
 import type { LinkModeFilter } from "./ui/MapFiltersPanel";
-import { EMPTY_LINE_FILTER, EMPTY_STOP_FILTER, SRC_BUILD_PREVIEW, SRC_HEX_COVERAGE_GAPS, SRC_LINKS, SRC_MAJOR_ROADS, SRC_REGIONS, SRC_REGION_HEXES, SRC_STOPS, SRC_TRANSFERS, SRC_VEHICLES, SRC_WORLD, SRC_WORLD_LABELS, SRC_ZONES, ensureMapLayers } from "./map/style/ensureMapLayers";
+import {
+  EMPTY_LINE_FILTER,
+  EMPTY_STOP_FILTER,
+  SRC_BUILD_PREVIEW,
+  SRC_DEMAND_CELLS,
+  SRC_HEX_COVERAGE_GAPS,
+  SRC_LINKS,
+  SRC_MAJOR_ROADS,
+  SRC_REGIONS,
+  SRC_REGION_HEXES,
+  SRC_STOPS,
+  SRC_TRANSFERS,
+  SRC_VEHICLES,
+  SRC_WORLD,
+  SRC_WORLD_LABELS,
+  SRC_ZONES,
+  ensureMapLayers,
+} from "./map/style/ensureMapLayers";
 import {
   buildServiceById,
   buildVehicleData,
@@ -18,10 +35,11 @@ import {
   type OverlayGeoCollection,
   type OverlayGeoFeature,
   type VehicleSnapshot,
-  vehicleTypeLabel,
 } from "./map/runtimeVehicleOverlay";
 import type {
   CountryMapContext,
+  DemandOverlayPayload,
+  DemandOverlayType,
   GeoJsonFeatureCollection,
   GeoJsonGeometry,
   MapRuntimeConfig,
@@ -43,9 +61,11 @@ import {
   buildCountyLabelData,
   buildHexCoverageGapFeatures,
   buildPlanningHexFeatures,
+  type UkHexCoverageDiagnostics,
   buildUkHexCoverageDiagnostics,
   buildWorldCountryData,
   buildWorldCountryLabelData,
+  buildRegionDisplayFeatures,
   fetchFeatureCollection,
   normalizeBasemapFeatureCollection,
   parseRegionGeometry,
@@ -57,10 +77,13 @@ import {
   formatDistanceKm,
   modeColor,
 } from "./map/data/networkGeojson";
+import { buildDemandOverlayGeojson } from "./map/data/demandOverlay";
 import {
   activeVehicleOverlayCollection,
   buildBuildPreviewOverlay,
 } from "./map/data/runtimeOverlays";
+import { buildPerfEvent, buildPerfMeasure } from "./perf/buildPerf";
+import type { VehicleInspection } from "./app/vehicleInspection";
 
 type LabelMarker = {
   marker: maplibregl.Marker;
@@ -90,6 +113,22 @@ type RuntimeVehicleTransition = {
   startedAtMs: number;
 };
 
+type PlacementHint = {
+  message: string;
+  x: number;
+  y: number;
+};
+
+const EMPTY_UK_HEX_COVERAGE_DIAGNOSTICS: UkHexCoverageDiagnostics = {
+  expected_land_hexes: 0,
+  covered_hexes: 0,
+  missing_land_hexes: 0,
+  extra_non_land_hexes: 0,
+  missing_hex_ids: [],
+  coverage_ratio: 1,
+  error: null,
+};
+
 export type MapWorldPoint = {
   lng: number;
   lat: number;
@@ -106,6 +145,51 @@ export type MapLineAction = {
   lineId: string;
 };
 
+type DemandCellInspectDatum = {
+  cellId: string;
+  planningRegionId: string | null;
+  areaM2: number;
+  residentsNight: number;
+  jobsDay: number;
+  centralityScore: number;
+  dataQualityScore: number;
+  activityMixResidential: number;
+  activityMixOffice: number;
+  activityMixRetail: number;
+  activityMixRecreation: number;
+  activityMixIndustrial: number;
+  activityMixEducation: number;
+  activityMixHealth: number;
+  rawWeightResidential: number;
+  rawWeightEmployment: number;
+  allocatedResidentialMass: number;
+  allocatedEmploymentMass: number;
+  totalAllocation: number;
+  fallbackReason: string | null;
+};
+
+function vehicleInspectionFromSnapshot(snapshot: VehicleSnapshot): VehicleInspection {
+  return {
+    vehicleId: snapshot.vehicleId,
+    vehicleOrdinal: snapshot.vehicleOrdinal,
+    serviceId: snapshot.serviceId,
+    lineId: snapshot.lineId,
+    lineName: snapshot.lineName,
+    destinationLabel: snapshot.destinationLabel,
+    mode: snapshot.mode,
+    modeVariant: snapshot.modeVariant,
+    stockTierId: snapshot.stockTierId,
+    vehicleCapacity: snapshot.vehicleCapacity,
+    passengersOnBoard: snapshot.passengersOnBoard,
+    headwayS: snapshot.headwayS,
+    lng: snapshot.lng,
+    lat: snapshot.lat,
+    displayColor: snapshot.displayColor,
+    provenance: snapshot.provenance,
+    passengerCounterProvenance: snapshot.passengerCounterProvenance ?? snapshot.provenance,
+  };
+}
+
 function setData(map: MapLibreMap, sourceId: string, data: GeoCollection | GeoJsonFeatureCollection): void {
   (map.getSource(sourceId) as GeoJSONSource | undefined)?.setData(data as never);
 }
@@ -113,6 +197,43 @@ function setData(map: MapLibreMap, sourceId: string, data: GeoCollection | GeoJs
 function setVisibility(map: MapLibreMap, layerId: string, visible: boolean): void {
   if (!map.getLayer(layerId)) return;
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+}
+
+const PERF_LOG_THRESHOLD_MS = 24;
+
+function perfMeasure<T>(label: string, run: () => T): T {
+  const started = performance.now();
+  const output = run();
+  const elapsed = performance.now() - started;
+  if (elapsed >= PERF_LOG_THRESHOLD_MS) {
+    console.info(`[perf] ${label}: ${elapsed.toFixed(1)}ms`);
+  }
+  return output;
+}
+
+function demandOverlayLabel(overlayType: DemandOverlayType): string {
+  switch (overlayType) {
+    case "residential_allocation":
+      return "Residential Allocation";
+    case "employment_allocation":
+      return "Employment Allocation";
+    case "total_allocation":
+      return "Total Allocation";
+    case "raw_residential_weight":
+      return "Raw Residential Weight";
+    case "raw_employment_weight":
+      return "Raw Employment Weight";
+    case "fallback_cells":
+      return "Fallback Cells";
+    default:
+      return "Demand Cells";
+  }
+}
+
+function formatDemandMetric(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return "0";
+  if (Math.abs(value) >= 1000) return Math.round(value).toLocaleString();
+  return value.toFixed(digits);
 }
 
 
@@ -126,6 +247,9 @@ export default function MapView(props: {
   showStations: boolean;
   showLinks: boolean;
   linkMode: LinkModeFilter;
+  demandOverlayEnabled: boolean;
+  demandOverlayType: DemandOverlayType;
+  demandOverlayPayload: DemandOverlayPayload | null;
   startCenter: [number, number] | null;
   serviceLoadByServiceId?: Record<string, number>;
   runtimeTrains?: TrainRuntimeView[];
@@ -141,6 +265,7 @@ export default function MapView(props: {
   buildConstraintMode?: string | null;
   selectedStopId?: string | null;
   selectedLineId?: string | null;
+  selectedVehicleId?: string | null;
   activeLineId?: string | null;
   focusStopId?: string | null;
   focusStopToken?: number;
@@ -157,9 +282,10 @@ export default function MapView(props: {
   onSelectCounty: (regionId: string) => void;
   onStopAction?: (payload: MapStopAction) => void;
   onLineAction?: (payload: MapLineAction) => void;
+  onVehicleAction?: (payload: VehicleInspection) => void;
+  onClearVehicleSelection?: () => void;
   onMapPointAction?: (payload: MapWorldPoint) => void;
   onClearSelection?: () => void;
-  onScrapVehicle?: (vehicleId: string) => void;
 }) {
   const [forceCompatibilityBasemap, setForceCompatibilityBasemap] = useState(false);
   const vectorStyleUrl =
@@ -168,6 +294,7 @@ export default function MapView(props: {
       : props.mapRuntimeConfig?.style_url ?? null;
   const usesVectorBasemap = Boolean(vectorStyleUrl);
   const gameMode = props.sessionKind === "game";
+  const allowHexAuthoring = import.meta.env.DEV;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const propsRef = useRef(props);
@@ -181,6 +308,7 @@ export default function MapView(props: {
   const hoverPointRef = useRef<MapWorldPoint | null>(null);
   const hoverStopIdRef = useRef<string | null>(null);
   const selectedVehicleIdRef = useRef<string | null>(null);
+  const selectedDemandCellIdRef = useRef<string | null>(null);
   const vehicleByIdRef = useRef<Map<string, VehicleSnapshot>>(new Map());
   const runtimeVehicleFeatureByIdRef = useRef<Map<string, OverlayGeoFeature>>(new Map());
   const runtimeVehicleGeoJsonRef = useRef<OverlayGeoCollection>(overlayCollection());
@@ -201,11 +329,23 @@ export default function MapView(props: {
   const [selectedHex, setSelectedHex] = useState<HexInspectDatum | null>(null);
   const [visibleHexCount, setVisibleHexCount] = useState(0);
   const [runtimeVehicleGeoJsonVersion, setRuntimeVehicleGeoJsonVersion] = useState(0);
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [localSelectedVehicleId, setLocalSelectedVehicleId] = useState<string | null>(null);
+  const [selectedDemandCell, setSelectedDemandCell] = useState<DemandCellInspectDatum | null>(null);
+  const [placementHint, setPlacementHint] = useState<PlacementHint | null>(null);
   const [worldContextData, setWorldContextData] = useState<GeoCollection>(fc());
   const [majorRoadData, setMajorRoadData] = useState<GeoCollection>(fc());
   const hintTimerRef = useRef<number | null>(null);
+  const placementHintTimerRef = useRef<number | null>(null);
   const bootReadyEmittedRef = useRef(false);
+
+  const showPlacementHint = useCallback(
+    (message: string, point: { x: number; y: number }, durationMs = 1800) => {
+      if (placementHintTimerRef.current) window.clearTimeout(placementHintTimerRef.current);
+      setPlacementHint({ message, x: point.x, y: point.y });
+      placementHintTimerRef.current = window.setTimeout(() => setPlacementHint(null), durationMs);
+    },
+    []
+  );
 
   useEffect(() => {
     setForceCompatibilityBasemap(false);
@@ -221,6 +361,13 @@ export default function MapView(props: {
   }, [authoringMode]);
 
   useEffect(() => {
+    if (allowHexAuthoring) return;
+    authoringModeRef.current = false;
+    setAuthoringMode(false);
+  }, [allowHexAuthoring]);
+
+  useEffect(() => {
+    if (!allowHexAuthoring) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey && event.key.toLowerCase() === "h") {
         event.preventDefault();
@@ -239,7 +386,7 @@ export default function MapView(props: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [allowHexAuthoring]);
 
   const emitBootProgress = useCallback(
     (payload: {
@@ -253,9 +400,35 @@ export default function MapView(props: {
     []
   );
 
+  const selectedVehicleId =
+    props.selectedVehicleId === undefined ? localSelectedVehicleId : props.selectedVehicleId ?? null;
+
+  const clearVehicleSelection = useCallback(() => {
+    selectedVehicleIdRef.current = null;
+    if (propsRef.current.selectedVehicleId === undefined) {
+      setLocalSelectedVehicleId(null);
+      return;
+    }
+    propsRef.current.onClearVehicleSelection?.();
+  }, []);
+
+  const selectVehicleSnapshot = useCallback((snapshot: VehicleSnapshot) => {
+    selectedVehicleIdRef.current = snapshot.vehicleId;
+    if (propsRef.current.selectedVehicleId === undefined) {
+      setLocalSelectedVehicleId(snapshot.vehicleId);
+      return;
+    }
+    propsRef.current.onVehicleAction?.(vehicleInspectionFromSnapshot(snapshot));
+  }, []);
+
   useEffect(() => {
     selectedVehicleIdRef.current = selectedVehicleId;
   }, [selectedVehicleId]);
+
+  useEffect(() => {
+    selectedDemandCellIdRef.current =
+      selectedDemandCell?.cellId?.trim() ? selectedDemandCell.cellId : null;
+  }, [selectedDemandCell]);
 
   const regionDisplayNameById = useMemo(
     () => buildRegionDisplayNames(props.regions),
@@ -305,11 +478,10 @@ export default function MapView(props: {
   );
 
   const regionFeatures = useMemo<GeoCollection>(
-    () => {
+    () =>
+      perfMeasure("map.build_region_features", () => {
       const base = buildCountyFeatures({
         regions: props.regions,
-        focusRegionId: props.focusRegionId,
-        selectedRegionId: props.selectedRegionId,
         resolveRegionGeometry,
       });
       return fc(
@@ -326,8 +498,8 @@ export default function MapView(props: {
           };
         })
       );
-    },
-    [props.regions, props.focusRegionId, props.selectedRegionId, regionDisplayNameById, resolveRegionGeometry]
+    }),
+    [props.regions, regionDisplayNameById, resolveRegionGeometry]
   );
 
   const lockedRegionNameAtPoint = useCallback(
@@ -352,23 +524,35 @@ export default function MapView(props: {
     () =>
       buildCountyLabelData({
         regions: props.regions,
-        focusRegionId: props.focusRegionId,
+        focusRegionId: null,
         resolveRegionGeometry,
       }).map((label) => ({
         ...label,
         name: regionDisplayNameById.get(label.regionId) ?? label.name,
       })),
-    [props.regions, props.focusRegionId, regionDisplayNameById, resolveRegionGeometry]
+    [props.regions, regionDisplayNameById, resolveRegionGeometry]
   );
 
   const planningHexData = useMemo(
-    () => {
+    () =>
+      perfMeasure("map.build_planning_hex_data", () => {
       const raw = buildPlanningHexFeatures({
         regions: props.regions,
         regionFeatures,
       });
+      // Backend-authoritative canonical hex numbers (from substrate hex numbering).
+      // These are the numbers that manual_regions.json hex_numbers refer to.
+      const canonicalNumberByFeatureIndex = new Map<number, number>();
+      raw.features.forEach((feature, index) => {
+        const canonical = Number(feature.properties?.hex_canonical_number ?? NaN);
+        if (Number.isFinite(canonical) && canonical > 0) {
+          canonicalNumberByFeatureIndex.set(index, Math.trunc(canonical));
+        }
+      });
+      // Fallback: explicit hex numbers from unassigned hex region names (legacy compat).
       const explicitNumberByFeatureIndex = new Map<number, number>();
       raw.features.forEach((feature, index) => {
+        if (canonicalNumberByFeatureIndex.has(index)) return;
         const isUnassigned = Number(feature.properties?.hex_unassigned ?? 0) === 1;
         if (!isUnassigned) return;
         const name = String(feature.properties?.name ?? "").trim();
@@ -379,6 +563,8 @@ export default function MapView(props: {
           explicitNumberByFeatureIndex.set(index, Math.trunc(parsed));
         }
       });
+      // Last-resort: stable frontend-synthesized ordering for features with no
+      // backend number (e.g. coverage gap backfill hexes, non-UK countries).
       const stableOrder = raw.features
         .map((feature, index) => {
           const hexId = String(feature.properties?.hex_id ?? "").trim();
@@ -400,13 +586,14 @@ export default function MapView(props: {
           properties: {
             ...feature.properties,
             hex_num:
+              canonicalNumberByFeatureIndex.get(index) ??
               explicitNumberByFeatureIndex.get(index) ??
               displayNumberByFeatureIndex.get(index) ??
               index + 1,
           },
         }))
       );
-    },
+    }),
     [regionFeatures, props.regions]
   );
 
@@ -442,29 +629,50 @@ export default function MapView(props: {
     };
   }, [planningHexData]);
 
+  const regionDisplayFeatures = useMemo<GeoCollection>(
+    () =>
+      perfMeasure("map.build_region_display_features", () =>
+        buildRegionDisplayFeatures(regionFeatures, planningHexData, props.regions)
+      ),
+    [regionFeatures, planningHexData, props.regions]
+  );
+
+  const shouldComputeHexCoverageDiagnostics = allowHexAuthoring && authoringMode;
+
   const ukHexCoverageDiagnostics = useMemo(
-    () => buildUkHexCoverageDiagnostics(worldCountryData, planningHexData),
-    [planningHexData, worldCountryData]
+    () =>
+      shouldComputeHexCoverageDiagnostics
+        ? buildUkHexCoverageDiagnostics(worldCountryData, planningHexData)
+        : EMPTY_UK_HEX_COVERAGE_DIAGNOSTICS,
+    [planningHexData, shouldComputeHexCoverageDiagnostics, worldCountryData]
   );
 
   const hexCoverageGapData = useMemo(
     () =>
-      buildHexCoverageGapFeatures(
-        ukHexCoverageDiagnostics.missing_hex_ids.slice(0, 4000),
-        maxPlanningHexNumber + 1
-      ),
-    [maxPlanningHexNumber, ukHexCoverageDiagnostics.missing_hex_ids]
+      shouldComputeHexCoverageDiagnostics
+        ? buildHexCoverageGapFeatures(
+            ukHexCoverageDiagnostics.missing_hex_ids.slice(0, 4000),
+            maxPlanningHexNumber + 1
+          )
+        : fc(),
+    [
+      maxPlanningHexNumber,
+      shouldComputeHexCoverageDiagnostics,
+      ukHexCoverageDiagnostics.missing_hex_ids,
+    ]
   );
 
   const networkData = useMemo(
     () =>
-      buildNetworkGeojsonData({
-        scenario: props.scenario,
-        linkMode: props.linkMode,
-        visibleCountryIso2: props.visibleCountryIso2,
-        focusRegion,
-        resolveRegionGeometry,
-      }),
+      perfMeasure("map.build_network_geojson", () =>
+        buildNetworkGeojsonData({
+          scenario: props.scenario,
+          linkMode: props.linkMode,
+          visibleCountryIso2: props.visibleCountryIso2,
+          focusRegion,
+          resolveRegionGeometry,
+        })
+      ),
     [
       props.linkMode,
       props.scenario,
@@ -473,6 +681,39 @@ export default function MapView(props: {
       resolveRegionGeometry,
     ]
   );
+
+  const demandOverlayData = useMemo(
+    () =>
+      perfMeasure("map.build_demand_overlay_geojson", () =>
+        buildDemandOverlayGeojson(props.demandOverlayPayload, props.demandOverlayType)
+      ),
+    [props.demandOverlayPayload, props.demandOverlayType]
+  );
+  const demandOverlayFeatureCount = demandOverlayData.cells.features.length;
+  const demandOverlayBaseActive = props.interactionMode !== "build" && props.demandOverlayEnabled;
+  const showDemandCells = demandOverlayBaseActive && props.demandOverlayPayload?.available === true;
+  const demandOverlayAnyVisible = showDemandCells;
+
+  useEffect(() => {
+    const payloadRows = props.demandOverlayPayload?.cell_data?.length ?? 0;
+    const payloadTotal = props.demandOverlayPayload?.cell_data_total ?? 0;
+    const payloadMappable = props.demandOverlayPayload?.cell_data_mappable ?? 0;
+    const payloadAvailable = props.demandOverlayPayload?.available === true;
+    console.info(
+      `[demand-overlay-ui] overlay=${props.demandOverlayType} enabled=${props.demandOverlayEnabled} available=${payloadAvailable} payload_total=${payloadTotal} payload_mappable=${payloadMappable} payload_rows=${payloadRows} geojson_features=${demandOverlayFeatureCount} show=${showDemandCells}`
+    );
+  }, [
+    demandOverlayFeatureCount,
+    props.demandOverlayEnabled,
+    props.demandOverlayPayload,
+    props.demandOverlayType,
+    showDemandCells,
+  ]);
+
+  useEffect(() => {
+    if (showDemandCells) return;
+    setSelectedDemandCell(null);
+  }, [showDemandCells]);
 
   const serviceById = useMemo(() => buildServiceById(props.scenario), [props.scenario]);
 
@@ -726,13 +967,17 @@ export default function MapView(props: {
   useEffect(() => {
     vehicleByIdRef.current = vehicleData.byId;
     if (selectedVehicleId && !vehicleData.byId.has(selectedVehicleId)) {
-      setSelectedVehicleId(null);
+      clearVehicleSelection();
     }
-  }, [selectedVehicleId, vehicleData.byId]);
+  }, [clearVehicleSelection, selectedVehicleId, vehicleData.byId]);
 
   const selectedVehicle = useMemo(
     () => (selectedVehicleId ? vehicleData.byId.get(selectedVehicleId) ?? null : null),
     [selectedVehicleId, vehicleData.byId]
+  );
+  const selectedDemandOverlayLabel = useMemo(
+    () => demandOverlayLabel(props.demandOverlayType),
+    [props.demandOverlayType]
   );
 
   const loadBasemapCollection = useCallback(async (url: string): Promise<GeoCollection> => {
@@ -754,74 +999,102 @@ export default function MapView(props: {
   }, []);
 
   const refreshBuildPreview = useCallback(() => {
-    const map = mapRef.current;
-    if (!map || !loadedRef.current || !map.getSource(SRC_BUILD_PREVIEW)) return;
-    const current = propsRef.current;
-    const preview = buildBuildPreviewOverlay({
-      interactionMode: current.interactionMode,
-      buildAction: current.buildAction,
-      previewAnchorPoint: current.previewAnchorPoint,
-      previewColor: current.previewColor,
-      hoverPoint: hoverPointRef.current,
-      crsType: current.scenario?.meta?.crs?.type,
-    });
-    setData(map, SRC_BUILD_PREVIEW, preview.geojson);
-    setVisibility(
-      map,
-      "build-preview-line",
-      preview.showPreviewLine && preview.geojson.features.length > 0
-    );
-    setVisibility(
-      map,
-      "build-preview-point",
-      preview.showPreviewPoint && preview.geojson.features.length > 0
+    buildPerfMeasure(
+      "map.build_preview_source_update",
+      () => {
+        const map = mapRef.current;
+        if (!map || !loadedRef.current || !map.getSource(SRC_BUILD_PREVIEW)) return;
+        const current = propsRef.current;
+        const preview = buildBuildPreviewOverlay({
+          interactionMode: current.interactionMode,
+          buildAction: current.buildAction,
+          previewAnchorPoint: current.previewAnchorPoint,
+          previewColor: current.previewColor,
+          hoverPoint: hoverPointRef.current,
+          crsType: current.scenario?.meta?.crs?.type,
+        });
+        setData(map, SRC_BUILD_PREVIEW, preview.geojson);
+        setVisibility(
+          map,
+          "build-preview-line",
+          preview.showPreviewLine && preview.geojson.features.length > 0
+        );
+        setVisibility(
+          map,
+          "build-preview-point",
+          preview.showPreviewPoint && preview.geojson.features.length > 0
+        );
+      },
+      {
+        interactionMode: propsRef.current.interactionMode,
+        buildAction: propsRef.current.buildAction,
+      },
+      { minDurationMs: 0, throttleMs: 120 }
     );
   }, []);
 
   const applyInteractionFilters = useCallback(() => {
-    const map = mapRef.current;
-    if (!map || !loadedRef.current) return;
-    const current = propsRef.current;
-    const selectedLineId = current.selectedLineId?.trim() ? current.selectedLineId : "__none__";
-    const selectedStopId = current.selectedStopId?.trim() ? current.selectedStopId : "__none__";
-    const activeLineId = current.activeLineId?.trim() ? current.activeLineId : "__none__";
-    const hoverStopId = hoverStopIdRef.current?.trim() ? hoverStopIdRef.current : "__none__";
-    const selectedVehicleId = selectedVehicleIdRef.current?.trim() ? selectedVehicleIdRef.current : "__none__";
-    const selectedLineStops =
-      selectedLineId === "__none__"
-        ? []
-        : current.scenario?.world.services
-            .filter((service) => serviceLineId(service) === selectedLineId)
-            .flatMap((service) => service.stop_sequence) ?? [];
+    buildPerfMeasure(
+      "map.selected_line_refresh",
+      () => {
+        const map = mapRef.current;
+        if (!map || !loadedRef.current) return;
+        const current = propsRef.current;
+        const selectedLineId = current.selectedLineId?.trim() ? current.selectedLineId : "__none__";
+        const selectedStopId = current.selectedStopId?.trim() ? current.selectedStopId : "__none__";
+        const activeLineId = current.activeLineId?.trim() ? current.activeLineId : "__none__";
+        const hoverStopId = hoverStopIdRef.current?.trim() ? hoverStopIdRef.current : "__none__";
+        const selectedVehicleId = selectedVehicleIdRef.current?.trim() ? selectedVehicleIdRef.current : "__none__";
+        const selectedDemandCellId =
+          selectedDemandCellIdRef.current?.trim() ? selectedDemandCellIdRef.current : "__none__";
+        const selectedLineStops =
+          selectedLineId === "__none__"
+            ? []
+            : current.scenario?.world.services
+                .filter((service) => serviceLineId(service) === selectedLineId)
+                .flatMap((service) => service.stop_sequence) ?? [];
 
-    const selectedLineFilter = ["==", ["get", "line_id"], selectedLineId];
-    const selectedStopFilter = ["==", ["get", "id"], selectedStopId];
-    const hoverStopFilter = ["==", ["get", "id"], hoverStopId];
-    const activeLineFilter = ["==", ["get", "line_id"], activeLineId];
-    const selectedVehicleFilter = ["==", ["get", "vehicle_id"], selectedVehicleId];
-    const dimFilter =
-      selectedLineId === "__none__"
-        ? EMPTY_LINE_FILTER
-        : (["!=", ["get", "line_id"], selectedLineId] as const);
-    const selectedLineStopFilter =
-      selectedLineStops.length > 0
-        ? (["in", ["get", "id"], ["literal", selectedLineStops]] as const)
-        : EMPTY_STOP_FILTER;
+        const selectedLineFilter = ["==", ["get", "line_id"], selectedLineId];
+        const selectedStopFilter = ["==", ["get", "id"], selectedStopId];
+        const hoverStopFilter = ["==", ["get", "id"], hoverStopId];
+        const activeLineFilter = ["==", ["get", "line_id"], activeLineId];
+        const selectedVehicleFilter = ["==", ["get", "vehicle_id"], selectedVehicleId];
+        const dimFilter =
+          selectedLineId === "__none__"
+            ? EMPTY_LINE_FILTER
+            : (["!=", ["get", "line_id"], selectedLineId] as const);
+        const selectedLineStopFilter =
+          selectedLineStops.length > 0
+            ? (["in", ["get", "id"], ["literal", selectedLineStops]] as const)
+            : EMPTY_STOP_FILTER;
 
-    if (map.getLayer("links-selected-glow")) map.setFilter("links-selected-glow", selectedLineFilter as never);
-    if (map.getLayer("links-selected-casing")) map.setFilter("links-selected-casing", selectedLineFilter as never);
-    if (map.getLayer("links-selected")) map.setFilter("links-selected", selectedLineFilter as never);
-    if (map.getLayer("links-selection-dim")) map.setFilter("links-selection-dim", dimFilter as never);
-    if (map.getLayer("links-active")) map.setFilter("links-active", activeLineFilter as never);
-    if (map.getLayer("stops-selected-halo")) map.setFilter("stops-selected-halo", selectedStopFilter as never);
-    if (map.getLayer("stops-selected")) map.setFilter("stops-selected", selectedStopFilter as never);
-    if (map.getLayer("stops-build-hover-ring")) map.setFilter("stops-build-hover-ring", hoverStopFilter as never);
-    if (map.getLayer("stops-selected-line-ring")) {
-      map.setFilter("stops-selected-line-ring", selectedLineStopFilter as never);
-    }
-    if (map.getLayer("vehicles-selected-halo")) {
-      map.setFilter("vehicles-selected-halo", selectedVehicleFilter as never);
-    }
+        if (map.getLayer("links-selected-glow")) map.setFilter("links-selected-glow", selectedLineFilter as never);
+        if (map.getLayer("links-selected-casing")) map.setFilter("links-selected-casing", selectedLineFilter as never);
+        if (map.getLayer("links-selected")) map.setFilter("links-selected", selectedLineFilter as never);
+        if (map.getLayer("links-selection-dim")) map.setFilter("links-selection-dim", dimFilter as never);
+        if (map.getLayer("links-active")) map.setFilter("links-active", activeLineFilter as never);
+        if (map.getLayer("stops-selected-halo")) map.setFilter("stops-selected-halo", selectedStopFilter as never);
+        if (map.getLayer("stops-selected")) map.setFilter("stops-selected", selectedStopFilter as never);
+        if (map.getLayer("stops-build-hover-ring")) map.setFilter("stops-build-hover-ring", hoverStopFilter as never);
+        if (map.getLayer("stops-selected-line-ring")) {
+          map.setFilter("stops-selected-line-ring", selectedLineStopFilter as never);
+        }
+        if (map.getLayer("vehicles-selected-halo")) {
+          map.setFilter("vehicles-selected-halo", selectedVehicleFilter as never);
+        }
+        if (map.getLayer("demand-cell-selected-outline")) {
+          map.setFilter(
+            "demand-cell-selected-outline",
+            ["==", ["get", "cell_id"], selectedDemandCellId] as never
+          );
+        }
+      },
+      {
+        interactionMode: propsRef.current.interactionMode,
+        buildAction: propsRef.current.buildAction,
+      },
+      { minDurationMs: 0, throttleMs: 120 }
+    );
   }, []);
 
   const readHexInspectDatum = useCallback(
@@ -836,7 +1109,13 @@ export default function MapView(props: {
         typeof assignmentStateRaw === "string" && assignmentStateRaw.trim().length > 0
           ? assignmentStateRaw.trim()
           : "other_assigned";
-      const hexNumberRaw = Number(feature?.properties?.hex_num ?? NaN);
+      // Prefer the backend-authoritative canonical hex number over the
+      // frontend-synthesized hex_num to ensure parity with manual_regions.json.
+      const canonicalRaw = Number(feature?.properties?.hex_canonical_number ?? NaN);
+      const hexNumRaw = Number(feature?.properties?.hex_num ?? NaN);
+      const hexNumberRaw = Number.isFinite(canonicalRaw) && canonicalRaw > 0
+        ? canonicalRaw
+        : hexNumRaw;
       return {
         hexNumber: Number.isFinite(hexNumberRaw) ? Math.trunc(hexNumberRaw) : null,
         hexId: hexIdRaw.trim(),
@@ -849,6 +1128,48 @@ export default function MapView(props: {
         unassigned: Number(feature?.properties?.hex_unassigned ?? 0) === 1,
         unlocked: Number(feature?.properties?.unlocked ?? 0) === 1,
         resolved: Number(feature?.properties?.hex_resolved ?? 0) === 1,
+      };
+    },
+    []
+  );
+
+  const readDemandCellInspectDatum = useCallback(
+    (feature: { properties?: Record<string, unknown> } | undefined): DemandCellInspectDatum | null => {
+      const cellIdRaw = feature?.properties?.cell_id;
+      if (typeof cellIdRaw !== "string" || !cellIdRaw.trim()) return null;
+      const readNumber = (field: string) => {
+        const value = Number(feature?.properties?.[field] ?? NaN);
+        return Number.isFinite(value) ? value : 0;
+      };
+      const planningRegionRaw = feature?.properties?.planning_region_id;
+      const fallbackReasonRaw = feature?.properties?.fallback_reason;
+      return {
+        cellId: cellIdRaw.trim(),
+        planningRegionId:
+          typeof planningRegionRaw === "string" && planningRegionRaw.trim().length > 0
+            ? planningRegionRaw.trim()
+            : null,
+        areaM2: readNumber("area_m2"),
+        residentsNight: readNumber("residents_night"),
+        jobsDay: readNumber("jobs_day"),
+        centralityScore: readNumber("centrality_score"),
+        dataQualityScore: readNumber("data_quality_score"),
+        activityMixResidential: readNumber("activity_mix_residential"),
+        activityMixOffice: readNumber("activity_mix_office"),
+        activityMixRetail: readNumber("activity_mix_retail"),
+        activityMixRecreation: readNumber("activity_mix_recreation"),
+        activityMixIndustrial: readNumber("activity_mix_industrial"),
+        activityMixEducation: readNumber("activity_mix_education"),
+        activityMixHealth: readNumber("activity_mix_health"),
+        rawWeightResidential: readNumber("raw_weight_residential"),
+        rawWeightEmployment: readNumber("raw_weight_employment"),
+        allocatedResidentialMass: readNumber("allocated_residential_mass"),
+        allocatedEmploymentMass: readNumber("allocated_employment_mass"),
+        totalAllocation: readNumber("total_allocation"),
+        fallbackReason:
+          typeof fallbackReasonRaw === "string" && fallbackReasonRaw.trim().length > 0
+            ? fallbackReasonRaw.trim()
+            : null,
       };
     },
     []
@@ -877,6 +1198,7 @@ export default function MapView(props: {
       maxZoom: 17,
       maxPitch: 0,
       renderWorldCopies: false,
+      attributionControl: false,
     });
     mapRef.current = map;
     const vectorStyleLoadGuard = window.setTimeout(() => {
@@ -891,7 +1213,7 @@ export default function MapView(props: {
         error: "Vector style still loading.",
       });
     }, 30000);
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
+
     map.on("error", (event) => {
       const raw = String((event as { error?: unknown }).error ?? "Map rendering error");
       emitBootProgress({
@@ -956,7 +1278,12 @@ export default function MapView(props: {
         // Keep ferry placement permissive in compatibility mode.
         return null;
       };
-      const emitPointAction = (lng: number, lat: number) => {
+      const emitPointAction = (lng: number, lat: number, screenPoint?: { x: number; y: number }) => {
+        buildPerfEvent("map.build_point_emit.start", {
+          interactionMode: propsRef.current.interactionMode,
+          buildAction: propsRef.current.buildAction,
+          hasScreenPoint: Boolean(screenPoint),
+        });
         const current = propsRef.current;
         const buildAction = current.buildAction ?? "select";
         const buildingPoint =
@@ -967,9 +1294,13 @@ export default function MapView(props: {
         if (buildingPoint) {
           const blockedRegion = lockedRegionLookupRef.current({ lng, lat });
           if (blockedRegion) {
-            if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-            setHint(`Unlock ${blockedRegion} before building here.`);
-            hintTimerRef.current = window.setTimeout(() => setHint(null), 2200);
+            buildPerfEvent("map.build_point_emit.blocked_locked_region", {
+              blockedRegion,
+              buildAction,
+            });
+            if (screenPoint) {
+              showPlacementHint(`Unlock ${blockedRegion} before building here.`, screenPoint, 2000);
+            }
             return;
           }
           const modeHint = modeConstraintHintAt(lng, lat);
@@ -980,7 +1311,7 @@ export default function MapView(props: {
           }
         }
         const converted = lngLatToXY(lng, lat, propsRef.current.scenario?.meta?.crs?.type);
-        const point = converted
+        const actionPoint = converted
           ? {
               lng,
               lat,
@@ -988,9 +1319,18 @@ export default function MapView(props: {
               y: converted.y,
             }
           : null;
-        if (point) propsRef.current.onMapPointAction?.(point);
+        if (actionPoint) propsRef.current.onMapPointAction?.(actionPoint);
+        buildPerfEvent("map.build_point_emit.done", {
+          emitted: Boolean(actionPoint),
+          buildAction,
+        });
       };
-      const emitStopAction = (stopId: string, lng: number, lat: number) => {
+      const emitStopAction = (stopId: string, lng: number, lat: number, screenPoint?: { x: number; y: number }) => {
+        buildPerfEvent("map.build_stop_emit.start", {
+          stopId,
+          interactionMode: propsRef.current.interactionMode,
+          buildAction: propsRef.current.buildAction,
+        });
         const mappedStop = stopPointByIdRef.current.get(stopId);
         const targetLng = mappedStop?.lng ?? lng;
         const targetLat = mappedStop?.lat ?? lat;
@@ -1004,9 +1344,14 @@ export default function MapView(props: {
         if (buildingPoint) {
           const blockedRegion = lockedRegionLookupRef.current({ lng: targetLng, lat: targetLat });
           if (blockedRegion) {
-            if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
-            setHint(`Unlock ${blockedRegion} before building here.`);
-            hintTimerRef.current = window.setTimeout(() => setHint(null), 2200);
+            buildPerfEvent("map.build_stop_emit.blocked_locked_region", {
+              stopId,
+              blockedRegion,
+              buildAction,
+            });
+            if (screenPoint) {
+              showPlacementHint(`Unlock ${blockedRegion} before building here.`, screenPoint, 2000);
+            }
             return;
           }
           const modeHint = modeConstraintHintAt(targetLng, targetLat);
@@ -1026,6 +1371,7 @@ export default function MapView(props: {
               y: mappedStop.y,
             },
           });
+          buildPerfEvent("map.build_stop_emit.done", { stopId, snapped: true, buildAction });
           return;
         }
         const converted = lngLatToXY(lng, lat, propsRef.current.scenario?.meta?.crs?.type);
@@ -1039,8 +1385,9 @@ export default function MapView(props: {
             y: converted.y,
           },
         });
+        buildPerfEvent("map.build_stop_emit.done", { stopId, snapped: false, buildAction });
       };
-      const interactiveNetworkLayers = ["stops-hit", "links-hit", "vehicles-hit"];
+      const interactiveNetworkLayers = ["stops-hit", "links-hit", "vehicles-hit", "demand-cell-hit"];
       const setHoveredHexIfChanged = (next: HexInspectDatum | null) => {
         const nextKey = next ? `${next.hexId}::${next.hexNumber ?? "none"}` : null;
         if (hoveredHexIdRef.current === nextKey) return;
@@ -1085,6 +1432,8 @@ export default function MapView(props: {
         suppressNextMapClickRef.current = true;
         const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
         const regionId = feature?.properties?.region_id;
+        const unlocked = Number(feature?.properties?.unlocked ?? 0) === 1;
+        if (unlocked) return;
         if (typeof regionId === "string" && regionId.length > 0) propsRef.current.onSelectCounty(regionId);
       });
       map.on("click", "world-country-fill", (event) => {
@@ -1113,10 +1462,12 @@ export default function MapView(props: {
       const stopClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
         if (authoringModeRef.current) return;
         suppressNextMapClickRef.current = true;
+        setSelectedDemandCell(null);
+        clearVehicleSelection();
         const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
         const stopId = feature?.properties?.id;
         if (typeof stopId !== "string" || stopId.length === 0) return;
-        emitStopAction(stopId, event.lngLat.lng, event.lngLat.lat);
+        emitStopAction(stopId, event.lngLat.lng, event.lngLat.lat, { x: event.point.x, y: event.point.y });
       };
       const lineClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
         if (authoringModeRef.current) return;
@@ -1132,6 +1483,8 @@ export default function MapView(props: {
           return;
         }
         const current = propsRef.current;
+        setSelectedDemandCell(null);
+        clearVehicleSelection();
         const buildAction = current.buildAction ?? "select";
         if (
           current.interactionMode === "build" &&
@@ -1159,24 +1512,37 @@ export default function MapView(props: {
         )[0] as { properties?: Record<string, unknown> } | undefined;
         const stopId = stopFeature?.properties?.id;
         if (typeof stopId === "string" && stopId.length > 0) {
-          setSelectedVehicleId(null);
-          emitStopAction(stopId, event.lngLat.lng, event.lngLat.lat);
+          clearVehicleSelection();
+          emitStopAction(stopId, event.lngLat.lng, event.lngLat.lat, { x: event.point.x, y: event.point.y });
           applyInteractionFilters();
           return;
         }
         const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
         const vehicleId = feature?.properties?.vehicle_id;
         if (typeof vehicleId !== "string" || vehicleId.length === 0) return;
-        setSelectedVehicleId(vehicleId);
-        propsRef.current.onClearSelection?.();
         const snapshot = vehicleByIdRef.current.get(vehicleId);
-        if (snapshot) {
-          map.easeTo({
-            center: [snapshot.lng, snapshot.lat],
-            duration: 220,
-            essential: true,
-          });
-        }
+        if (!snapshot) return;
+        setSelectedDemandCell(null);
+        propsRef.current.onClearSelection?.();
+        selectVehicleSnapshot(snapshot);
+        map.easeTo({
+          center: [snapshot.lng, snapshot.lat],
+          duration: 220,
+          essential: true,
+        });
+        applyInteractionFilters();
+      };
+      const demandCellClickHandler = (event: maplibregl.MapLayerMouseEvent) => {
+        if (authoringModeRef.current) return;
+        const current = propsRef.current;
+        if (current.interactionMode === "build") return;
+        suppressNextMapClickRef.current = true;
+        const feature = event.features?.[0] as { properties?: Record<string, unknown> } | undefined;
+        const datum = readDemandCellInspectDatum(feature);
+        if (!datum) return;
+        setSelectedDemandCell(datum);
+        clearVehicleSelection();
+        current.onClearSelection?.();
         applyInteractionFilters();
       };
       for (const layerId of ["stops-hit"]) {
@@ -1187,6 +1553,9 @@ export default function MapView(props: {
       }
       for (const layerId of ["vehicles-hit"]) {
         map.on("click", layerId, vehicleClickHandler);
+      }
+      for (const layerId of ["demand-cell-hit"]) {
+        map.on("click", layerId, demandCellClickHandler);
       }
       map.on("click", (event) => {
         if (suppressNextMapClickRef.current) {
@@ -1206,7 +1575,7 @@ export default function MapView(props: {
           } else {
             setSelectedHex(null);
           }
-          setSelectedVehicleId(null);
+          clearVehicleSelection();
           return;
         }
         const buildAction = current.buildAction ?? "select";
@@ -1219,14 +1588,9 @@ export default function MapView(props: {
             const hoveredStopId = hoverStopIdRef.current;
             const hoveredStop = hoveredStopId ? stopPointByIdRef.current.get(hoveredStopId) ?? null : null;
             if (hoveredStop && current.onStopAction) {
-              current.onStopAction({
-                stopId: hoveredStopId!,
-                point: {
-                  lng: hoveredStop.lng,
-                  lat: hoveredStop.lat,
-                  x: hoveredStop.x,
-                  y: hoveredStop.y,
-                },
+              emitStopAction(hoveredStopId!, hoveredStop.lng, hoveredStop.lat, {
+                x: event.point.x,
+                y: event.point.y,
               });
               return;
             }
@@ -1241,19 +1605,14 @@ export default function MapView(props: {
             if (typeof forgivingStopId === "string" && forgivingStopId.length > 0 && current.onStopAction) {
               const snapped = stopPointByIdRef.current.get(forgivingStopId);
               if (snapped) {
-                current.onStopAction({
-                  stopId: forgivingStopId,
-                  point: {
-                    lng: snapped.lng,
-                    lat: snapped.lat,
-                    x: snapped.x,
-                    y: snapped.y,
-                  },
+                emitStopAction(forgivingStopId, snapped.lng, snapped.lat, {
+                  x: event.point.x,
+                  y: event.point.y,
                 });
                 return;
               }
             }
-            emitPointAction(event.lngLat.lng, event.lngLat.lat);
+            emitPointAction(event.lngLat.lng, event.lngLat.lat, { x: event.point.x, y: event.point.y });
             return;
           }
           if (buildAction === "select") {
@@ -1261,7 +1620,8 @@ export default function MapView(props: {
           }
           return;
         }
-        setSelectedVehicleId(null);
+        clearVehicleSelection();
+        setSelectedDemandCell(null);
         current.onClearSelection?.();
       });
       map.on("mousemove", (event) => {
@@ -1337,13 +1697,29 @@ export default function MapView(props: {
                 cursorHintText = distanceLabel;
               }
             } else {
-              cursorHintText = "Click a station to lock line start";
+              cursorHintText =
+                buildAction === "add_station_to_line"
+                  ? "Select terminus to begin extension"
+                  : "Click a station to lock line start";
             }
+          }
+          const blockedRegion = hoverPointRef.current
+            ? lockedRegionLookupRef.current({ lng: hoverPointRef.current.lng, lat: hoverPointRef.current.lat })
+            : null;
+          if (blockedRegion) {
+            map.getCanvas().style.cursor = "not-allowed";
+            setCursorHint(`Locked region: ${blockedRegion}`, { x: event.point.x, y: event.point.y });
+            refreshBuildPreview();
+            applyInteractionFilters();
+            return;
           }
           const modeHint = hoverPointRef.current
             ? modeConstraintHintAt(hoverPointRef.current.lng, hoverPointRef.current.lat)
             : null;
-          setHint(modeHint);
+          if (modeHint) {
+            cursorHintText = cursorHintText ? `${cursorHintText} · ${modeHint}` : modeHint;
+          }
+          map.getCanvas().style.cursor = snapped ? "pointer" : "crosshair";
           setCursorHint(cursorHintText, { x: event.point.x, y: event.point.y });
           refreshBuildPreview();
           applyInteractionFilters();
@@ -1411,6 +1787,7 @@ export default function MapView(props: {
         "stops-hit",
         "links-hit",
         "vehicles-hit",
+        "demand-cell-hit",
       ]) {
         map.on("mouseenter", layerId, () => {
           if (
@@ -1437,6 +1814,7 @@ export default function MapView(props: {
       loadedRef.current = false;
       setStyleReady(false);
       if (hintTimerRef.current) window.clearTimeout(hintTimerRef.current);
+      if (placementHintTimerRef.current) window.clearTimeout(placementHintTimerRef.current);
       for (const item of labelMarkersRef.current) item.marker.remove();
       labelMarkersRef.current = [];
       map.remove();
@@ -1444,12 +1822,15 @@ export default function MapView(props: {
     };
   }, [
     applyInteractionFilters,
+    clearVehicleSelection,
     emitBootProgress,
     forceCompatibilityBasemap,
     props.mapRuntimeConfig?.style_url,
     props.startCenter,
     refreshBuildPreview,
+    selectVehicleSnapshot,
     vectorStyleUrl,
+    showPlacementHint,
   ]);
 
   useEffect(() => {
@@ -1482,14 +1863,15 @@ export default function MapView(props: {
     const vehicle = vehicleByIdRef.current.get(props.focusVehicleId);
     if (!vehicle) return;
     lastFocusedVehicleTokenRef.current = token;
-    setSelectedVehicleId(props.focusVehicleId);
+    setSelectedDemandCell(null);
+    selectVehicleSnapshot(vehicle);
     map.easeTo({
       center: [vehicle.lng, vehicle.lat],
       duration: 300,
       essential: true,
     });
     applyInteractionFilters();
-  }, [applyInteractionFilters, props.focusVehicleId, props.focusVehicleToken, vehicleData.byId]);
+  }, [applyInteractionFilters, props.focusVehicleId, props.focusVehicleToken, selectVehicleSnapshot, vehicleData.byId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1526,6 +1908,7 @@ export default function MapView(props: {
       cursorHintRef.current.style.display = "none";
     }
     setHint(null);
+    setPlacementHint(null);
     refreshBuildPreview();
     applyInteractionFilters();
   }, [applyInteractionFilters, props.buildAction, props.interactionMode, refreshBuildPreview]);
@@ -1663,55 +2046,100 @@ export default function MapView(props: {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !loadedRef.current || !styleReady) return;
-    ensureMapLayers(map);
-    setData(map, SRC_WORLD, worldCountryData);
-    setData(map, SRC_WORLD_LABELS, worldCountryLabelData);
-    setData(map, SRC_REGIONS, regionFeatures);
-    setData(map, SRC_REGION_HEXES, planningHexData);
-    setData(map, SRC_HEX_COVERAGE_GAPS, hexCoverageGapData);
-    setData(map, SRC_MAJOR_ROADS, majorRoadData);
-    setData(map, SRC_LINKS, networkData.links);
-    setData(map, SRC_TRANSFERS, networkData.transfers);
-    setData(map, SRC_STOPS, networkData.stops);
-    setData(map, SRC_ZONES, networkData.zones);
-    setVisibility(map, "world-ocean-fill", true);
-    setVisibility(map, "links-major", props.showLinks);
-    setVisibility(map, "links-trunk", props.showLinks);
-    setVisibility(map, "links-focus", props.showLinks);
-    setVisibility(map, "transfers-focus", props.showLinks);
-    setVisibility(map, "transfers-focus-label", props.showLinks);
-    setVisibility(map, "links-selected-glow", props.showLinks);
-    setVisibility(map, "links-selected-casing", props.showLinks);
-    setVisibility(map, "links-selected", props.showLinks);
-    setVisibility(map, "links-selection-dim", props.showLinks);
-    setVisibility(map, "links-active", props.showLinks);
-    setVisibility(map, "links-hit", props.showLinks);
-    setVisibility(map, "stops-major", props.showStations);
-    setVisibility(map, "stops-focus", props.showStations);
-    setVisibility(map, "stops-focus-symbol", props.showStations);
-    setVisibility(map, "stops-focus-badge", props.showStations);
-    setVisibility(map, "stops-build-hover-ring", props.showStations);
-    setVisibility(map, "stops-selected-halo", props.showStations);
-    setVisibility(map, "stops-selected", props.showStations);
-    setVisibility(map, "stops-selected-line-ring", props.showStations);
-    setVisibility(map, "stops-hit", props.showStations);
-    setVisibility(map, "stops-shape", props.showShapeStops);
-    setVisibility(map, "zone-centroids", props.showZoneCentroids);
-    refreshBuildPreview();
-    applyInteractionFilters();
-    if (!bootReadyEmittedRef.current) {
-      bootReadyEmittedRef.current = true;
-      emitBootProgress({
-        stage: "ready",
-        progress: 1,
-        message: "Map and transit layers ready.",
+    const shouldLogBuildPerf = props.interactionMode === "build";
+    const applySourcesAndVisibility = () => {
+      ensureMapLayers(map);
+      const setDataTimed = (
+        sourceId: string,
+        label: string,
+        data: GeoCollection | GeoJsonFeatureCollection
+      ) => {
+        const started = performance.now();
+        setData(map, sourceId, data);
+        const elapsedMs = performance.now() - started;
+        const featureCount =
+          data && typeof data === "object" && Array.isArray((data as { features?: unknown[] }).features)
+            ? (data as { features: unknown[] }).features.length
+            : null;
+        if (shouldLogBuildPerf && elapsedMs >= 2) {
+          buildPerfEvent(`map.${label}`, {
+            sourceId,
+            featureCount,
+            elapsedMs: Number(elapsedMs.toFixed(2)),
+          });
+        }
+      };
+      setDataTimed(SRC_WORLD, "world_source_update", worldCountryData);
+      setDataTimed(SRC_WORLD_LABELS, "world_label_source_update", worldCountryLabelData);
+      setDataTimed(SRC_REGIONS, "region_source_update", regionDisplayFeatures);
+      setDataTimed(SRC_REGION_HEXES, "region_hex_source_update", planningHexData);
+      setDataTimed(SRC_HEX_COVERAGE_GAPS, "hex_gap_source_update", hexCoverageGapData);
+      setDataTimed(SRC_MAJOR_ROADS, "major_roads_source_update", majorRoadData);
+      setDataTimed(SRC_LINKS, "draft_line_source_update", networkData.links);
+      setDataTimed(SRC_TRANSFERS, "transfer_source_update", networkData.transfers);
+      setDataTimed(SRC_STOPS, "station_overlay_refresh", networkData.stops);
+      setDataTimed(SRC_ZONES, "zone_source_update", networkData.zones);
+      setVisibility(map, "world-ocean-fill", true);
+      setVisibility(map, "links-major", props.showLinks);
+      setVisibility(map, "links-trunk", props.showLinks);
+      setVisibility(map, "links-focus", props.showLinks);
+      setVisibility(map, "transfers-focus", props.showLinks);
+      setVisibility(map, "transfers-focus-label", props.showLinks);
+      setVisibility(map, "links-selected-glow", props.showLinks);
+      setVisibility(map, "links-selected-casing", props.showLinks);
+      setVisibility(map, "links-selected", props.showLinks);
+      setVisibility(map, "links-selection-dim", props.showLinks);
+      setVisibility(map, "links-active", props.showLinks);
+      setVisibility(map, "links-hit", props.showLinks);
+      setVisibility(map, "stops-major", props.showStations);
+      setVisibility(map, "stops-focus", props.showStations);
+      setVisibility(map, "stops-focus-symbol", props.showStations);
+      setVisibility(map, "stops-focus-badge", props.showStations);
+      setVisibility(map, "stops-build-hover-ring", props.showStations);
+      setVisibility(map, "stops-selected-halo", props.showStations);
+      setVisibility(map, "stops-selected", props.showStations);
+      setVisibility(map, "stops-selected-line-ring", props.showStations);
+      setVisibility(map, "stops-hit", props.showStations);
+      setVisibility(map, "stops-shape", props.showShapeStops);
+      setVisibility(map, "zone-centroids", props.showZoneCentroids);
+      refreshBuildPreview();
+      applyInteractionFilters();
+      if (!bootReadyEmittedRef.current) {
+        bootReadyEmittedRef.current = true;
+        emitBootProgress({
+          stage: "ready",
+          progress: 1,
+          message: "Map and transit layers ready.",
+        });
+      }
+    };
+    if (shouldLogBuildPerf) {
+      buildPerfEvent("map.build_mode_sources_refresh.requested", {
+        buildAction: props.buildAction,
+        lineFeatureCount: networkData.links.features.length,
+        stationFeatureCount: networkData.stops.features.length,
+        transferFeatureCount: networkData.transfers.features.length,
       });
+      buildPerfMeasure(
+        "map.build_mode_sources_refresh",
+        applySourcesAndVisibility,
+        {
+          buildAction: props.buildAction,
+          showLinks: props.showLinks,
+          showStations: props.showStations,
+        },
+        { minDurationMs: 0, throttleMs: 100 }
+      );
+    } else {
+      applySourcesAndVisibility();
     }
   }, [
     applyInteractionFilters,
     emitBootProgress,
+    props.buildAction,
+    props.interactionMode,
     styleReady,
-    regionFeatures,
+    regionDisplayFeatures,
     planningHexData,
     hexCoverageGapData,
     majorRoadData,
@@ -1729,6 +2157,28 @@ export default function MapView(props: {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !loadedRef.current || !styleReady) return;
+    ensureMapLayers(map);
+    setData(map, SRC_DEMAND_CELLS, demandOverlayData.cells);
+    setVisibility(map, "demand-cell-fill", showDemandCells);
+    setVisibility(map, "demand-cell-outline", showDemandCells);
+    setVisibility(map, "demand-cell-selected-outline", showDemandCells);
+    setVisibility(map, "demand-cell-hit", showDemandCells);
+    console.info(
+      `[demand-overlay-map] features_set=${demandOverlayFeatureCount} source=${SRC_DEMAND_CELLS} show=${showDemandCells}`
+    );
+    applyInteractionFilters();
+  }, [
+    applyInteractionFilters,
+    demandOverlayData,
+    demandOverlayFeatureCount,
+    showDemandCells,
+    styleReady,
+  ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !styleReady) return;
+    const authoringEnabled = allowHexAuthoring && authoringMode;
     const hexLayers = [
       "planning-hex-fill",
       "planning-hex-outline",
@@ -1741,7 +2191,7 @@ export default function MapView(props: {
       "planning-hex-hit",
     ];
     for (const layerId of hexLayers) {
-      setVisibility(map, layerId, authoringMode);
+      setVisibility(map, layerId, authoringEnabled);
     }
     if (map.getLayer("planning-hex-selected-outline")) {
       map.setFilter(
@@ -1756,96 +2206,129 @@ export default function MapView(props: {
       );
     }
     if (map.getLayer("region-fill")) {
+      map.setPaintProperty(
+        "region-fill",
+        "fill-color",
+        (demandOverlayAnyVisible
+          ? [
+              "case",
+              ["==", ["get", "unlocked"], 1],
+              "#e3edf8",
+              "#4a5561",
+            ]
+          : [
+              "case",
+              ["==", ["get", "unlocked"], 1],
+              "#e8f1fb",
+              "#4f5966",
+            ]) as never
+      );
       const normalFillOpacity = [
         "interpolate",
         ["linear"],
         ["zoom"],
         4,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.14,
-          ["==", ["get", "unlocked"], 1],
-          0.06,
-          0.12,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.05, 0.36],
         8,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.1,
-          ["==", ["get", "unlocked"], 1],
-          0.045,
-          0.085,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.038, 0.31],
         11.5,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.07,
-          ["==", ["get", "unlocked"], 1],
-          0.03,
-          0.055,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.026, 0.26],
         14,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.05,
-          ["==", ["get", "unlocked"], 1],
-          0.02,
-          0.04,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.02, 0.22],
+      ];
+      const demandFillOpacity = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        4,
+        ["case", ["==", ["get", "unlocked"], 1], 0.03, 0.29],
+        8,
+        ["case", ["==", ["get", "unlocked"], 1], 0.024, 0.25],
+        11.5,
+        ["case", ["==", ["get", "unlocked"], 1], 0.02, 0.21],
+        14,
+        ["case", ["==", ["get", "unlocked"], 1], 0.016, 0.18],
       ];
       const authoringFillOpacity = [
         "interpolate",
         ["linear"],
         ["zoom"],
         4,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.07,
-          ["==", ["get", "unlocked"], 1],
-          0.025,
-          0.06,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.025, 0.08],
         8,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.05,
-          ["==", ["get", "unlocked"], 1],
-          0.018,
-          0.04,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.018, 0.06],
         11.5,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.032,
-          ["==", ["get", "unlocked"], 1],
-          0.012,
-          0.022,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.012, 0.042],
         14,
-        [
-          "case",
-          ["==", ["get", "focus"], 1],
-          0.02,
-          ["==", ["get", "unlocked"], 1],
-          0.008,
-          0.015,
-        ],
+        ["case", ["==", ["get", "unlocked"], 1], 0.008, 0.03],
       ];
       map.setPaintProperty(
         "region-fill",
         "fill-opacity",
-        (authoringMode ? authoringFillOpacity : normalFillOpacity) as never
+        (authoringEnabled
+          ? authoringFillOpacity
+          : demandOverlayAnyVisible
+            ? demandFillOpacity
+            : normalFillOpacity) as never
       );
     }
+    if (map.getLayer("region-outline")) {
+      const defaultOutlineOpacity = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        4,
+        ["case", ["==", ["get", "unlocked"], 1], 0.3, 0.8],
+        8.5,
+        ["case", ["==", ["get", "unlocked"], 1], 0.4, 0.88],
+        11.5,
+        ["case", ["==", ["get", "unlocked"], 1], 0.5, 0.96],
+      ];
+      const demandOutlineOpacity = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        4,
+        ["case", ["==", ["get", "unlocked"], 1], 0.56, 0.84],
+        8.5,
+        ["case", ["==", ["get", "unlocked"], 1], 0.72, 0.9],
+        11.5,
+        ["case", ["==", ["get", "unlocked"], 1], 0.86, 0.97],
+      ];
+      map.setPaintProperty(
+        "region-outline",
+        "line-color",
+        (demandOverlayAnyVisible
+          ? [
+              "case",
+              ["==", ["get", "unlocked"], 1],
+              "#586f84",
+              "#2a3642",
+            ]
+          : [
+              "case",
+              ["==", ["get", "unlocked"], 1],
+              "#6e849a",
+              "#2f3945",
+            ]) as never
+      );
+      map.setPaintProperty(
+        "region-outline",
+        "line-width",
+        (demandOverlayAnyVisible
+          ? ["interpolate", ["linear"], ["zoom"], 4, 1.0, 8.5, 1.35, 11.5, 2.05]
+          : ["interpolate", ["linear"], ["zoom"], 4, 0.9, 8.5, 1.2, 11.5, 1.9]) as never
+      );
+      map.setPaintProperty(
+        "region-outline",
+        "line-opacity",
+        (demandOverlayAnyVisible ? demandOutlineOpacity : defaultOutlineOpacity) as never
+      );
+    }
+    setVisibility(map, "region-unlocked-outline", demandOverlayAnyVisible);
+    setVisibility(map, "region-focus-outline", false);
 
-    if (!authoringMode) {
+    if (!authoringEnabled) {
       hoveredHexIdRef.current = null;
       setHoveredHex(null);
       setVisibleHexCount(0);
@@ -1869,7 +2352,14 @@ export default function MapView(props: {
       map.off("moveend", refreshVisibleHexCount);
       map.off("zoomend", refreshVisibleHexCount);
     };
-  }, [authoringMode, hoveredHex?.hexId, selectedHex?.hexId, styleReady]);
+  }, [
+    allowHexAuthoring,
+    authoringMode,
+    demandOverlayAnyVisible,
+    hoveredHex?.hexId,
+    selectedHex?.hexId,
+    styleReady,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1902,19 +2392,14 @@ export default function MapView(props: {
     for (const item of labelMarkersRef.current) item.marker.remove();
     labelMarkersRef.current = [];
     if (usesVectorBasemap) return;
-    const visibleLabels = regionLabelData.filter(
-      (label) =>
-        label.regionId === props.focusRegionId ||
-        label.regionId === props.selectedRegionId ||
-        unlockedRegionIds.has(label.regionId)
-    );
+    const visibleLabels = regionLabelData.filter((label) => unlockedRegionIds.has(label.regionId));
     labelMarkersRef.current = visibleLabels.map((label) => {
       const element = document.createElement("div");
       element.className = "region-label-marker";
       element.textContent = label.name;
-      element.style.color = label.focus ? "#315f8d" : "#5b6e84";
-      element.style.fontSize = label.focus ? "15px" : "12px";
-      element.style.fontWeight = label.focus ? "700" : "600";
+      element.style.color = "#5b6e84";
+      element.style.fontSize = "12px";
+      element.style.fontWeight = "600";
       element.style.textShadow = "0 0 3px rgba(255,255,255,0.95), 0 0 8px rgba(255,255,255,0.95)";
       element.style.pointerEvents = "none";
       element.style.whiteSpace = "nowrap";
@@ -1939,8 +2424,6 @@ export default function MapView(props: {
     };
   }, [
     regionLabelData,
-    props.focusRegionId,
-    props.selectedRegionId,
     unlockedRegionIds,
     usesVectorBasemap,
   ]);
@@ -1952,65 +2435,66 @@ export default function MapView(props: {
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
       <div ref={cursorHintRef} className="map-cursor-hint" style={{ display: "none" }} />
-      <div
-        style={{
-          position: "absolute",
-          right: 18,
-          top: 132,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          alignItems: "flex-end",
-          zIndex: 9000,
-          pointerEvents: "auto",
-        }}
-      >
-        <button
-          type="button"
-          onClick={() =>
-            setAuthoringMode((value) => {
-              const next = !value;
-              authoringModeRef.current = next;
-              if (!next) {
-                hoveredHexIdRef.current = null;
-                setHoveredHex(null);
-                setSelectedHex(null);
-                setVisibleHexCount(0);
-              }
-              return next;
-            })
-          }
+      {allowHexAuthoring ? (
+        <div
           style={{
-            appearance: "none",
-            border: authoringMode ? "1px solid #1d5ea8" : "1px solid #8aa7c5",
-            background: authoringMode ? "rgba(210,231,255,0.98)" : "rgba(244,250,255,0.98)",
-            color: authoringMode ? "#123e70" : "#2f4f6f",
-            borderRadius: 12,
-            fontSize: 12,
-            fontWeight: 800,
-            letterSpacing: 0.24,
-            padding: "9px 12px",
-            cursor: "pointer",
-            boxShadow: "0 12px 30px rgba(17,45,78,0.24)",
+            position: "absolute",
+            right: 18,
+            top: 132,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            alignItems: "flex-end",
+            zIndex: 9000,
+            pointerEvents: "auto",
           }}
         >
-          {authoringMode ? "Hex Authoring: ON (Alt+H)" : "Hex Authoring: OFF (Alt+H)"}
-        </button>
-        {authoringMode ? (
-          <div
+          <button
+            type="button"
+            onClick={() =>
+              setAuthoringMode((value) => {
+                const next = !value;
+                authoringModeRef.current = next;
+                if (!next) {
+                  hoveredHexIdRef.current = null;
+                  setHoveredHex(null);
+                  setSelectedHex(null);
+                  setVisibleHexCount(0);
+                }
+                return next;
+              })
+            }
             style={{
-              minWidth: 260,
-              maxWidth: 340,
-              padding: "10px 12px",
+              appearance: "none",
+              border: authoringMode ? "1px solid #1d5ea8" : "1px solid #8aa7c5",
+              background: authoringMode ? "rgba(210,231,255,0.98)" : "rgba(244,250,255,0.98)",
+              color: authoringMode ? "#123e70" : "#2f4f6f",
               borderRadius: 12,
-              border: "1px solid #c7d4e1",
-              background: "rgba(250,253,255,0.96)",
-              color: "#31485f",
-              boxShadow: "0 14px 30px rgba(20,44,71,0.12)",
               fontSize: 12,
-              lineHeight: 1.4,
+              fontWeight: 800,
+              letterSpacing: 0.24,
+              padding: "9px 12px",
+              cursor: "pointer",
+              boxShadow: "0 12px 30px rgba(17,45,78,0.24)",
             }}
           >
+            {authoringMode ? "Hex Authoring: ON (Alt+H)" : "Hex Authoring: OFF (Alt+H)"}
+          </button>
+          {authoringMode ? (
+            <div
+              style={{
+                minWidth: 260,
+                maxWidth: 340,
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #c7d4e1",
+                background: "rgba(250,253,255,0.96)",
+                color: "#31485f",
+                boxShadow: "0 14px 30px rgba(20,44,71,0.12)",
+                fontSize: 12,
+                lineHeight: 1.4,
+              }}
+            >
             <div style={{ fontWeight: 700, marginBottom: 4 }}>Hex Reference</div>
             <div
               style={{
@@ -2243,9 +2727,10 @@ export default function MapView(props: {
                 </div>
               </div>
             ) : null}
-          </div>
-        ) : null}
-      </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {hint && (
         <div
           style={{
@@ -2266,61 +2751,116 @@ export default function MapView(props: {
           {hint}
         </div>
       )}
-      {selectedVehicle ? (
-        <aside className="editor-drawer-sheet vehicle-inspector-sheet">
+      {placementHint ? (
+        <div
+          style={{
+            position: "absolute",
+            left: placementHint.x + 14,
+            top: placementHint.y + 16,
+            padding: "7px 10px",
+            borderRadius: 10,
+            background: "rgba(15, 25, 38, 0.94)",
+            border: "1px solid rgba(138, 163, 196, 0.72)",
+            color: "#f1f6ff",
+            fontSize: 12,
+            fontWeight: 700,
+            pointerEvents: "none",
+            boxShadow: "0 14px 30px rgba(8, 15, 26, 0.38)",
+            maxWidth: 260,
+            zIndex: 85,
+          }}
+        >
+          {placementHint.message}
+        </div>
+      ) : null}
+      {selectedDemandCell ? (
+        <aside className="editor-drawer-sheet demand-cell-inspector-sheet">
           <div className="editor-drawer-head">
             <div>
-              <p>Vehicle</p>
-              <h4>
-                {vehicleTypeLabel(selectedVehicle.mode)} #{selectedVehicle.vehicleOrdinal}
-              </h4>
-              <span className="vehicle-direction-badge">{selectedVehicle.destinationLabel}</span>
+              <p>Demand Cell</p>
+              <h4>{selectedDemandOverlayLabel}</h4>
+              <span className="vehicle-direction-badge">{selectedDemandCell.cellId}</span>
             </div>
             <button
               onClick={() => {
-                setSelectedVehicleId(null);
+                setSelectedDemandCell(null);
                 applyInteractionFilters();
               }}
             >
               Close
             </button>
           </div>
-          <div className="vehicle-inspector-line">{selectedVehicle.lineName}</div>
+          <div className="vehicle-inspector-line">
+            Planning Region: {selectedDemandCell.planningRegionId ?? "unmapped"}
+          </div>
           <div className="inspector-stat-row">
             <div className="inspector-stat">
-              <small>Vehicle Capacity</small>
-              <strong>{Math.round(selectedVehicle.vehicleCapacity).toLocaleString()} pax</strong>
+              <small>Allocated Residential</small>
+              <strong>{formatDemandMetric(selectedDemandCell.allocatedResidentialMass)}</strong>
             </div>
             <div className="inspector-stat">
-              <small>On Board</small>
-              <strong>
-                {selectedVehicle.passengersOnBoard >= 1
-                  ? Math.round(selectedVehicle.passengersOnBoard).toLocaleString()
-                  : selectedVehicle.passengersOnBoard > 0
-                    ? "<1"
-                    : "0"}{" "}
-                pax
-              </strong>
+              <small>Allocated Employment</small>
+              <strong>{formatDemandMetric(selectedDemandCell.allocatedEmploymentMass)}</strong>
             </div>
             <div className="inspector-stat">
-              <small>Rolling Stock</small>
-              <strong>{selectedVehicle.stockTierId ?? "standard"}</strong>
+              <small>Total Allocation</small>
+              <strong>{formatDemandMetric(selectedDemandCell.totalAllocation)}</strong>
             </div>
           </div>
-          {props.onScrapVehicle ? (
-            <div className="editor-drawer-footer">
-              <button
-                className="danger-button"
-                onClick={() => {
-                  props.onScrapVehicle?.(selectedVehicle.vehicleId);
-                  setSelectedVehicleId(null);
-                  applyInteractionFilters();
-                }}
-              >
-                Scrap Vehicle
-              </button>
+          <div className="inspector-stat-row">
+            <div className="inspector-stat">
+              <small>Raw Residential Weight</small>
+              <strong>{formatDemandMetric(selectedDemandCell.rawWeightResidential, 4)}</strong>
             </div>
-          ) : null}
+            <div className="inspector-stat">
+              <small>Raw Employment Weight</small>
+              <strong>{formatDemandMetric(selectedDemandCell.rawWeightEmployment, 4)}</strong>
+            </div>
+            <div className="inspector-stat">
+              <small>Fallback</small>
+              <strong>{selectedDemandCell.fallbackReason ?? "none"}</strong>
+            </div>
+          </div>
+          <div className="inspector-stat-row">
+            <div className="inspector-stat">
+              <small>Area (m²)</small>
+              <strong>{formatDemandMetric(selectedDemandCell.areaM2, 0)}</strong>
+            </div>
+            <div className="inspector-stat">
+              <small>Residents Signal</small>
+              <strong>{formatDemandMetric(selectedDemandCell.residentsNight)}</strong>
+            </div>
+            <div className="inspector-stat">
+              <small>Jobs Signal</small>
+              <strong>{formatDemandMetric(selectedDemandCell.jobsDay)}</strong>
+            </div>
+          </div>
+          <div className="inspector-stat-row">
+            <div className="inspector-stat">
+              <small>Quality</small>
+              <strong>{formatDemandMetric(selectedDemandCell.dataQualityScore, 3)}</strong>
+            </div>
+            <div className="inspector-stat">
+              <small>Centrality</small>
+              <strong>{formatDemandMetric(selectedDemandCell.centralityScore, 3)}</strong>
+            </div>
+            <div className="inspector-stat">
+              <small>Mix (R/O/Rt/Le/Ind/Edu/Health)</small>
+              <strong>
+                {[
+                  selectedDemandCell.activityMixResidential,
+                  selectedDemandCell.activityMixOffice,
+                  selectedDemandCell.activityMixRetail,
+                  selectedDemandCell.activityMixRecreation,
+                  selectedDemandCell.activityMixIndustrial,
+                  selectedDemandCell.activityMixEducation,
+                  selectedDemandCell.activityMixHealth,
+                ]
+                  .map((value) => formatDemandMetric(value, 2))
+                  .join(" / ")}
+              </strong>
+            </div>
+          </div>
         </aside>
       ) : null}
     </div>

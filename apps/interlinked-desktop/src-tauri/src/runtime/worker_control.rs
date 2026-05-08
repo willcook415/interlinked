@@ -52,6 +52,8 @@ pub(crate) fn emit_runtime_control_snapshot(
     snapshot.clock.speed = normalize_speed(manifest.clock_state.speed);
     snapshot.clock.tick_seconds = manifest.clock_state.tick_seconds;
     snapshot.clock_revision = clock_revision;
+    snapshot.economy =
+        default_runtime_snapshot_for_manifest(project_path, manifest, clock_revision).economy;
     snapshot.captured_at_epoch_ms = now_epoch_ms();
     snapshot.telemetry.queue_depth = queue_depth;
     snapshot.telemetry.snapshot_age_ms = 0;
@@ -191,6 +193,13 @@ pub(crate) fn start_runtime_loop_internal(
             .lock()
             .map_err(|_| "runtime_strategic_snapshots mutex poisoned".to_string())?;
         snapshots.clear();
+    }
+    {
+        let mut cache = state
+            .runtime_strategic_demand_cache
+            .lock()
+            .map_err(|_| "runtime_strategic_demand_cache mutex poisoned".to_string())?;
+        cache.remove(project_path);
     }
     {
         let mut materialization = state

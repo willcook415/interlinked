@@ -27,7 +27,6 @@ import {
   uninstallCountryPack as uninstallCountryPackRequest,
 } from "../../api/desktopApi";
 import {
-  clockFreshnessFromSnapshot,
   sameEconomy,
   sameRuntimeTrains,
   sameServiceLoads,
@@ -165,20 +164,6 @@ export function useSessionLifecycle({
     async (projectPath: string) => {
       const snapshot = await getRuntimeSnapshot(projectPath).catch(() => null);
       if (!snapshot) return;
-
-      const nextFreshness = clockFreshnessFromSnapshot(
-        snapshot.clock,
-        snapshot.telemetry?.tick_index,
-        snapshot.clock_revision,
-        snapshot.captured_at_epoch_ms
-      );
-      if (nextFreshness) {
-        params.latestClockTickRef.current = nextFreshness.tickSeconds;
-        params.latestSnapshotTickRef.current = nextFreshness.tickIndex;
-        params.latestSnapshotCapturedRef.current = nextFreshness.capturedAtEpochMs;
-      }
-      params.latestStrategicSnapshotTickRef.current = finiteNumber(snapshot.telemetry?.tick_index, 0);
-      params.latestStrategicSnapshotCapturedRef.current = finiteNumber(snapshot.captured_at_epoch_ms, 0);
       params.setRuntimeTelemetry(snapshot.telemetry ?? null);
       const capturedAt = finiteNumber(snapshot.captured_at_epoch_ms, 0);
       params.setSnapshotLatencyMs(capturedAt > 0 ? Math.max(Date.now() - capturedAt, 0) : null);

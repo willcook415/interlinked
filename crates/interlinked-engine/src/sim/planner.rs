@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use super::choice::logit_shares;
 use super::graph;
@@ -19,27 +21,28 @@ use super::types::{
     CorridorPlanningMetrics, CorridorReference, DemandDiagnostics, DemandTimeSliceLabel,
     Diagnostics, EconomicDiagnostics, EconomicRankingEntry, EventDemandModifier, FareFlowSummary,
     FareModel, FinancialPerformanceMetrics, FlowConsistencyCheck, Kpis, LatentOdDemand,
-    LineOrServicePlanningMetrics, LinkLoad, ModalDemandDiagnostics, ModalRankingEntry,
-    ModeChoiceContext, ModeChoiceResult, ModeGeneralizedCostBreakdown, ModeGeneralizedCostByMode,
-    ModeShareValue, NetworkFinancialSummary, OdPatternMetric, OnTimeStatus,
-    OperationalIncidentType, OperationalRankingEntry, OperationsReliabilityConfig, OutputMeta,
-    PassengerCohortFlow, PlanningDebugSummary, PlanningOverlayConfig, PurposeDemandValue,
-    PurposeModeShareValue, PurposeScoreValue, PurposeTemporalDemandTotals, RecommendedServiceClass,
-    SampleOdPaths, SamplePathOption, SeasonalProfile, ServiceDayModeShareSummary, ServiceDayType,
+    LifecycleConservationSummary, LineOrServicePlanningMetrics, LinkLoad, ModalDemandDiagnostics,
+    ModalRankingEntry, ModeChoiceContext, ModeChoiceResult, ModeGeneralizedCostBreakdown,
+    ModeGeneralizedCostByMode, ModeShareValue, NetworkFinancialSummary, OdPatternMetric,
+    OnTimeStatus, OperationalIncidentType, OperationalRankingEntry, OperationsReliabilityConfig,
+    OutputMeta, PassengerCohortFlow, PlannerPassengerTrace, PlannerServiceStopTrace,
+    PlanningDebugSummary, PlanningOverlayConfig, PurposeDemandValue, PurposeModeShareValue,
+    PurposeScoreValue, PurposeTemporalDemandTotals, RecommendedServiceClass, SampleOdPaths,
+    SamplePathOption, SeasonalProfile, ServiceDayModeShareSummary, ServiceDayType,
     ServiceFinancialMetrics, ServiceGapRankings, ServiceLoadLayerData, ServiceOperationState,
     ServiceReliabilityDiagnostics, ServiceRoleClassification, ServiceScoreEntry,
     ServiceTransitCaptureContext, ServiceVehicleLoadAggregate, SettlementClass, SimulationOutput,
     SimulationSettings, SocialNecessityClassification, SpecialAttractorType,
     StationFinancialContext, StationFlowAggregate, StationPlanningMetrics, StationScoreEntry,
     StationTransitCaptureContext, StopFlow, StopFlowReference, StopFlowState, StopOperationState,
-    SyntheticEconomyConfig, TemporalCorridorPressurePoint, TemporalDemandDiagnostics,
-    TemporalDemandSlice, TemporalPlanningSnapshot, TemporalRankingEntry, TemporalServiceGapPoint,
-    TemporalServicePressurePoint, TemporalStationPressurePoint, TimeSliceDemandTotals,
-    TimeSliceModeShareSummary, TransferOperationMetrics, TravelMode, TripPurpose, VehicleLoadState,
-    WaitingByDestination, ZoneArchetype, ZoneDemandAttractionLayerData, ZoneDemandLayerData,
-    ZoneDemandProductionLayerData, ZoneDemandProfile, ZoneEconomicGeographyLayerData,
-    ZoneFlowReference, ZoneModeShareMetrics, ZonePlanningMetrics, ZoneScoreEntry,
-    ZoneServiceGapLayerData,
+    StrategicPlannerTimingDiagnostics, SyntheticEconomyConfig, TemporalCorridorPressurePoint,
+    TemporalDemandDiagnostics, TemporalDemandSlice, TemporalPlanningSnapshot, TemporalRankingEntry,
+    TemporalServiceGapPoint, TemporalServicePressurePoint, TemporalStationPressurePoint,
+    TimeSliceDemandTotals, TimeSliceModeShareSummary, TransferOperationMetrics, TravelMode,
+    TripPurpose, VehicleLoadState, WaitingByDestination, ZoneArchetype,
+    ZoneDemandAttractionLayerData, ZoneDemandLayerData, ZoneDemandProductionLayerData,
+    ZoneDemandProfile, ZoneEconomicGeographyLayerData, ZoneFlowReference, ZoneModeShareMetrics,
+    ZonePlanningMetrics, ZoneScoreEntry, ZoneServiceGapLayerData,
 };
 use crate::model::{DemandCell, Scenario, Service, Stop, World, Zone};
 
@@ -65,8 +68,20 @@ use zone_geography::{
     settlement_rank, zone_attractor_multiplier,
 };
 
+const RT_PLANNER_LOG_INTERVAL: u64 = 10;
+const RT_PLANNER_SLOW_TOTAL_MS: f64 = 250.0;
+static PLANNER_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn service_is_active_for_sim(svc: &Service) -> bool {
     if matches!(svc.service_enabled, Some(false)) {
+        return false;
+    }
+    let units_owned = service_units_owned_for_sim(svc);
+    if units_owned == 0 {
+        return false;
+    }
+    let units_assigned = service_units_assigned_for_sim(svc, units_owned);
+    if units_assigned == 0 {
         return false;
     }
     if let Some(tph) = svc.operating_tph {
@@ -77,12 +92,95 @@ fn service_is_active_for_sim(svc: &Service) -> bool {
     if !svc.headway_s.is_finite() || svc.headway_s <= 0.0 || svc.headway_s >= 86_399.0 {
         return false;
     }
-    if let Some(units) = svc.stock_units_assigned {
-        if units == 0 {
-            return false;
-        }
-    }
     true
+}
+
+fn service_units_owned_for_sim(svc: &Service) -> usize {
+    svc.stock_units_owned
+        .or_else(|| {
+            svc.rolling_stock_profile
+                .as_ref()
+                .and_then(|profile| profile.units_owned)
+        })
+        .unwrap_or(0) as usize
+}
+
+fn service_units_assigned_for_sim(svc: &Service, units_owned: usize) -> usize {
+    let raw_assigned = svc
+        .stock_units_assigned
+        .or_else(|| {
+            svc.rolling_stock_profile
+                .as_ref()
+                .and_then(|profile| profile.units_owned)
+        })
+        .or(svc.stock_units_owned)
+        .unwrap_or(0) as usize;
+    let clamped = raw_assigned.min(units_owned);
+    if service_mode_is_metro_for_sim(svc) && units_owned > 0 && clamped == 0 {
+        units_owned
+    } else {
+        clamped
+    }
+}
+
+fn service_mode_is_metro_for_sim(svc: &Service) -> bool {
+    let mode = svc.mode.trim().to_ascii_lowercase();
+    matches!(
+        mode.as_str(),
+        "metro" | "subway" | "underground" | "rapid_transit"
+    ) || mode.contains("metro")
+}
+
+pub(super) fn path_is_boardable_transit(path: &BuiltPath) -> bool {
+    matches!(
+        classify_boardable_transit(path),
+        BoardableTransitClassification::Boardable
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BoardableTransitClassification {
+    Boardable,
+    MissingBoardOrAlight,
+    UnpairedBoardAlight,
+}
+
+pub(super) fn classify_boardable_transit(path: &BuiltPath) -> BoardableTransitClassification {
+    if path.board_events.is_empty() || path.alight_events.is_empty() {
+        return BoardableTransitClassification::MissingBoardOrAlight;
+    }
+    if path.board_events.len() != path.alight_events.len() {
+        return BoardableTransitClassification::UnpairedBoardAlight;
+    }
+    BoardableTransitClassification::Boardable
+}
+
+fn transit_candidate_search_cap(base_k: usize) -> usize {
+    base_k.saturating_mul(8).max(16).min(64)
+}
+
+pub(super) fn collect_transit_path_candidates(
+    graph: &graph::Graph,
+    start: usize,
+    goal: usize,
+    requested_k: usize,
+) -> (Vec<BuiltPath>, Vec<BuiltPath>) {
+    let base_k = requested_k.max(1);
+    let max_k = transit_candidate_search_cap(base_k);
+    let mut search_k = base_k;
+    loop {
+        let raw_paths = dedupe_paths(k_shortest_paths(graph, start, goal, search_k));
+        let mut boardable_paths = raw_paths
+            .iter()
+            .filter(|path| path_is_boardable_transit(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if boardable_paths.len() >= base_k || raw_paths.len() < search_k || search_k >= max_k {
+            boardable_paths.truncate(base_k);
+            return (raw_paths, boardable_paths);
+        }
+        search_k = search_k.saturating_mul(2).min(max_k);
+    }
 }
 
 pub fn run_simulation(s: &Scenario) -> Result<SimulationOutput, String> {
@@ -150,20 +248,36 @@ fn run_simulation_internal(
     temporal_context: Option<TemporalDemandSlice>,
     include_temporal_bundle: bool,
 ) -> Result<SimulationOutput, String> {
+    let planner_call = PLANNER_CALL_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    let planner_started = Instant::now();
+    let stage_materialize_started = Instant::now();
     let s_eff = materialize_planner_effective_scenario(s);
+    let stage_materialize_ms = stage_materialize_started.elapsed().as_secs_f64() * 1000.0;
     let s = &s_eff;
+    let stage_validate_index_started = Instant::now();
     validate(s)?;
     let pending_od = state_in.map(|st| &st.pending_od_trips);
     let (stop_index, zone_index) = index_maps(&s.world);
+    let stage_validate_index_ms = stage_validate_index_started.elapsed().as_secs_f64() * 1000.0;
+    let stage_graph_started = Instant::now();
     let graph = build_graph(s, &stop_index, &zone_index)?;
+    let stage_graph_ms = stage_graph_started.elapsed().as_secs_f64() * 1000.0;
+    let graph_node_count = graph.adj.len();
+    let graph_edge_count = graph.adj.iter().map(|edges| edges.len()).sum::<usize>();
     let sim_clock_s = state_in.map(|st| st.t_s).unwrap_or(12.0 * 3600.0);
     let coverage_mode = if include_temporal_bundle {
         LatentDemandCoverage::CanonicalSlicesForDay
     } else {
         LatentDemandCoverage::SingleContext
     };
+    let stage_latent_started = Instant::now();
     let mut latent_build =
         build_latent_demand_foundation(s, &graph, sim_clock_s, temporal_context, coverage_mode)?;
+    let stage_latent_ms = stage_latent_started.elapsed().as_secs_f64() * 1000.0;
+    let stage_pending_od_started = Instant::now();
+    let mut injected_pending_od_rows = 0usize;
 
     // Inject any explicit OD events into the active slice. These are authoritative latent trips
     // introduced by the stateful stepping layer.
@@ -204,9 +318,12 @@ fn run_simulation_internal(
                 active_event_ids: latent_build.active_context.active_event_ids.clone(),
                 latent_passengers: latent,
             });
+            injected_pending_od_rows = injected_pending_od_rows.saturating_add(1);
         }
     }
+    let stage_pending_od_ms = stage_pending_od_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_mode_choice_started = Instant::now();
     let mode_choice_build = apply_mode_choice_capture(
         s,
         settings,
@@ -216,7 +333,9 @@ fn run_simulation_internal(
         &latent_build.active_context,
         &latent_build.active_latent,
     )?;
+    let stage_mode_choice_ms = stage_mode_choice_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_assignment_started = Instant::now();
     let assignment::AssignmentKernelOutputs {
         link_loads,
         final_board_loads,
@@ -248,6 +367,18 @@ fn run_simulation_internal(
         share_boardings_served,
         share_demand_overflow_dropped,
         share_trips_served,
+        assignment_od_rows_with_transit_latent,
+        assignment_od_rows_with_attempted,
+        assignment_attempted_pax_total,
+        assignment_candidate_paths_raw_total,
+        assignment_candidate_paths_boardable_total,
+        assignment_rejected_no_board_or_alight_total,
+        assignment_rejected_unpaired_board_alight_total,
+        assignment_iter_path_cache_hits,
+        assignment_iter_path_cache_misses,
+        assignment_kpi_path_cache_hits,
+        assignment_kpi_path_cache_misses,
+        service_stop_traces,
     } = run_assignment_kernel(
         s,
         settings,
@@ -256,6 +387,115 @@ fn run_simulation_internal(
         &zone_index,
         &mode_choice_build,
     )?;
+    let stage_assignment_ms = stage_assignment_started.elapsed().as_secs_f64() * 1000.0;
+
+    let demand_cells_nonzero_activity = s
+        .world
+        .demand_cells
+        .iter()
+        .filter(|cell| cell.residents_night > 0.0 || cell.jobs_day > 0.0)
+        .count();
+    let zones_nonzero_activity = s
+        .world
+        .zones
+        .iter()
+        .filter(|zone| zone.population > 0.0 || zone.jobs > 0.0)
+        .count();
+    let latent_pax_total = latent_build
+        .active_latent
+        .iter()
+        .map(|od| od.latent_passengers.max(0.0))
+        .sum::<f64>();
+    let mode_choice_rows_with_transit_capture = mode_choice_build
+        .rows
+        .iter()
+        .filter(|row| row.transit_captured > 0.0)
+        .count();
+    let mode_choice_transit_captured_pax = mode_choice_build
+        .rows
+        .iter()
+        .map(|row| row.transit_captured.max(0.0))
+        .sum::<f64>();
+    let mode_choice_candidate_paths_raw_total = mode_choice_build
+        .rows
+        .iter()
+        .map(|row| row.candidate_paths_raw)
+        .sum::<usize>();
+    let mode_choice_candidate_paths_boardable_total = mode_choice_build
+        .rows
+        .iter()
+        .map(|row| row.candidate_paths_boardable)
+        .sum::<usize>();
+    let mode_choice_rejected_no_board_or_alight_total = mode_choice_build
+        .rows
+        .iter()
+        .map(|row| row.rejected_no_board_or_alight)
+        .sum::<usize>();
+    let mode_choice_rejected_unpaired_board_alight_total = mode_choice_build
+        .rows
+        .iter()
+        .map(|row| row.rejected_unpaired_board_alight)
+        .sum::<usize>();
+    let passenger_cohort_rows_total = passenger_cohorts.len();
+    let passenger_cohort_attempted_pax_total = passenger_cohorts
+        .iter()
+        .map(|cohort| cohort.attempted_pax.max(0.0))
+        .sum::<f64>();
+    let (first_zero_stage, first_zero_reason) = if latent_pax_total <= 0.0 {
+        (
+            Some("latent_demand".to_string()),
+            Some("active_slice_latent_zero".to_string()),
+        )
+    } else if mode_choice_transit_captured_pax <= 0.0 {
+        (
+            Some("mode_capture".to_string()),
+            Some("transit_captured_zero".to_string()),
+        )
+    } else if mode_choice_candidate_paths_boardable_total <= 0 {
+        (
+            Some("mode_choice_path_filter".to_string()),
+            Some("no_boardable_transit_paths".to_string()),
+        )
+    } else if assignment_attempted_pax_total <= 0.0 {
+        (
+            Some("assignment_attempted".to_string()),
+            Some("attempted_network_zero".to_string()),
+        )
+    } else if passenger_cohort_attempted_pax_total <= 0.0 {
+        (
+            Some("cohort_materialization".to_string()),
+            Some("passenger_cohorts_zero".to_string()),
+        )
+    } else {
+        (None, None)
+    };
+    let planner_passenger_trace = PlannerPassengerTrace {
+        demand_cells_total: s.world.demand_cells.len(),
+        demand_cells_nonzero_activity,
+        zones_total: s.world.zones.len(),
+        zones_nonzero_activity,
+        latent_rows_total: latent_build.active_latent.len(),
+        latent_pax_total: latent_pax_total.max(0.0),
+        mode_choice_rows_total: mode_choice_build.rows.len(),
+        mode_choice_rows_with_transit_capture,
+        mode_choice_transit_captured_pax: mode_choice_transit_captured_pax.max(0.0),
+        mode_choice_candidate_paths_raw_total,
+        mode_choice_candidate_paths_boardable_total,
+        mode_choice_rejected_no_board_or_alight_total,
+        mode_choice_rejected_unpaired_board_alight_total,
+        assignment_od_rows_with_transit_latent,
+        assignment_od_rows_with_attempted,
+        assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
+        assignment_candidate_paths_raw_total,
+        assignment_candidate_paths_boardable_total,
+        assignment_rejected_no_board_or_alight_total,
+        assignment_rejected_unpaired_board_alight_total,
+        passenger_cohort_rows_total,
+        passenger_cohort_attempted_pax_total: passenger_cohort_attempted_pax_total.max(0.0),
+        first_zero_stage,
+        first_zero_reason,
+        service_stop_traces,
+    };
 
     let mean = |sum: f64| {
         if total_trips_served > 0.0 {
@@ -266,6 +506,7 @@ fn run_simulation_internal(
     };
 
     if settings.lightweight_outputs {
+        let stage_lightweight_outputs_started = Instant::now();
         let mut totals_by_slice: BTreeMap<DemandTimeSliceLabel, TimeSliceDemandTotals> =
             BTreeMap::new();
         for od in &latent_build.active_latent {
@@ -458,6 +699,102 @@ fn run_simulation_internal(
             strongest_anchor_flows: Vec::new(),
             consistency_checks,
         };
+        let stage_lightweight_outputs_ms =
+            stage_lightweight_outputs_started.elapsed().as_secs_f64() * 1000.0;
+        let planner_total_ms = planner_started.elapsed().as_secs_f64() * 1000.0;
+        let should_log = planner_call.is_multiple_of(RT_PLANNER_LOG_INTERVAL)
+            || planner_total_ms > RT_PLANNER_SLOW_TOTAL_MS
+            || stage_assignment_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5
+            || stage_mode_choice_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5;
+        if should_log {
+            eprintln!(
+                "[rt-planner] call={} mode=lightweight total_ms={:.2} materialize_ms={:.2} validate_index_ms={:.2} graph_ms={:.2} latent_ms={:.2} pending_od_ms={:.2} mode_choice_ms={:.2} assignment_ms={:.2} lightweight_outputs_ms={:.2} include_temporal_bundle={} injected_pending_od_rows={} zones={} stops={} links={} services={} demand_cells={} graph_nodes={} graph_edges={} transfer_edges={} access_edges={} egress_edges={} active_latent_rows={} mode_choice_rows={} assigned_od_rows={} board_load_rows={} cohort_rows={} mode_paths_raw_total={} mode_paths_boardable_total={} assignment_paths_raw_total={} assignment_paths_boardable_total={} assignment_cache_iter_hits={} assignment_cache_iter_misses={} assignment_cache_kpi_hits={} assignment_cache_kpi_misses={} assignment_attempted_pax_total={:.6} first_zero_stage={} first_zero_reason={}",
+                planner_call,
+                planner_total_ms.max(0.0),
+                stage_materialize_ms.max(0.0),
+                stage_validate_index_ms.max(0.0),
+                stage_graph_ms.max(0.0),
+                stage_latent_ms.max(0.0),
+                stage_pending_od_ms.max(0.0),
+                stage_mode_choice_ms.max(0.0),
+                stage_assignment_ms.max(0.0),
+                stage_lightweight_outputs_ms.max(0.0),
+                include_temporal_bundle,
+                injected_pending_od_rows,
+                s.world.zones.len(),
+                s.world.stops.len(),
+                s.world.links.len(),
+                s.world.services.len(),
+                s.world.demand_cells.len(),
+                graph_node_count,
+                graph_edge_count,
+                graph.transfer_edges,
+                graph.access_edges,
+                graph.egress_edges,
+                latent_build.active_latent.len(),
+                mode_choice_build.rows.len(),
+                assigned_od_flows.len(),
+                final_board_loads.len(),
+                passenger_cohorts.len(),
+                mode_choice_candidate_paths_raw_total,
+                mode_choice_candidate_paths_boardable_total,
+                assignment_candidate_paths_raw_total,
+                assignment_candidate_paths_boardable_total,
+                assignment_iter_path_cache_hits,
+                assignment_iter_path_cache_misses,
+                assignment_kpi_path_cache_hits,
+                assignment_kpi_path_cache_misses,
+                assignment_attempted_pax_total.max(0.0),
+                planner_passenger_trace
+                    .first_zero_stage
+                    .as_deref()
+                    .unwrap_or("none"),
+                planner_passenger_trace
+                    .first_zero_reason
+                    .as_deref()
+                    .unwrap_or("none"),
+            );
+        }
+        let strategic_planner_timing = StrategicPlannerTimingDiagnostics {
+            source_label: "engine_strategic_planner".to_string(),
+            output_mode: "lightweight".to_string(),
+            total_ms: planner_total_ms.max(0.0),
+            materialize_effective_scenario_ms: stage_materialize_ms.max(0.0),
+            validate_index_ms: stage_validate_index_ms.max(0.0),
+            graph_build_ms: stage_graph_ms.max(0.0),
+            latent_demand_ms: stage_latent_ms.max(0.0),
+            pending_od_ms: stage_pending_od_ms.max(0.0),
+            mode_choice_ms: stage_mode_choice_ms.max(0.0),
+            assignment_ms: stage_assignment_ms.max(0.0),
+            lightweight_outputs_ms: stage_lightweight_outputs_ms.max(0.0),
+            include_temporal_bundle,
+            injected_pending_od_rows,
+            zones: s.world.zones.len(),
+            stops: s.world.stops.len(),
+            links: s.world.links.len(),
+            services: s.world.services.len(),
+            demand_cells: s.world.demand_cells.len(),
+            graph_nodes: graph_node_count,
+            graph_edges: graph_edge_count,
+            transfer_edges: graph.transfer_edges,
+            access_edges: graph.access_edges,
+            egress_edges: graph.egress_edges,
+            active_latent_rows: latent_build.active_latent.len(),
+            mode_choice_rows: mode_choice_build.rows.len(),
+            assigned_od_rows: assigned_od_flows.len(),
+            board_load_rows: final_board_loads.len(),
+            passenger_cohort_rows: passenger_cohorts.len(),
+            mode_choice_candidate_paths_raw_total,
+            mode_choice_candidate_paths_boardable_total,
+            assignment_candidate_paths_raw_total,
+            assignment_candidate_paths_boardable_total,
+            assignment_iter_path_cache_hits,
+            assignment_iter_path_cache_misses,
+            assignment_kpi_path_cache_hits,
+            assignment_kpi_path_cache_misses,
+            assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
+            ..StrategicPlannerTimingDiagnostics::default()
+        };
 
         return Ok(SimulationOutput {
             meta: OutputMeta {
@@ -492,6 +829,8 @@ fn run_simulation_internal(
             stop_flows,
             passenger_cohorts,
             fare_flow,
+            lifecycle_conservation: LifecycleConservationSummary::default(),
+            strategic_planner_timing,
             zone_demand_profiles: latent_build.zone_profiles.clone(),
             latent_od_demand: latent_build.all_latent.clone(),
             assigned_od_flows: assigned_od_flows.clone(),
@@ -544,10 +883,12 @@ fn run_simulation_internal(
                 msa_iterations: iters_run,
                 msa_final_max_rel_change: last_max_rel_change,
                 sample_paths,
+                planner_passenger_trace: planner_passenger_trace.clone(),
             },
         });
     }
 
+    let stage_full_layers_started = Instant::now();
     let profile_by_zone = latent_build
         .zone_profiles
         .iter()
@@ -871,6 +1212,8 @@ fn run_simulation_internal(
     }
     service_load_layer.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
+    let stage_full_layers_ms = stage_full_layers_started.elapsed().as_secs_f64() * 1000.0;
+    let stage_operations_started = Instant::now();
     let mut operations_outputs = build_operations_outputs(
         s,
         &latent_build.active_context,
@@ -880,7 +1223,9 @@ fn run_simulation_internal(
         &vehicle_load_states,
         &mode_choice_build.results,
     );
+    let stage_operations_ms = stage_operations_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_modal_started = Instant::now();
     let modal_outputs = build_modal_outputs(
         s,
         &latent_build.zone_profiles,
@@ -891,7 +1236,9 @@ fn run_simulation_internal(
         &service_load_layer,
         &latent_build.active_context,
     );
+    let stage_modal_ms = stage_modal_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_phase3_started = Instant::now();
     let mut phase3 = phase3::build_phase3_planning_outputs(
         s,
         &graph,
@@ -908,7 +1255,9 @@ fn run_simulation_internal(
         &modal_outputs,
         &operations_outputs,
     );
+    let stage_phase3_ms = stage_phase3_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_economics_started = Instant::now();
     let economics_outputs = build_economics_outputs(
         s,
         &latent_build.active_context,
@@ -926,7 +1275,9 @@ fn run_simulation_internal(
         &latent_build.zone_profiles,
         &latent_build.economy_config,
     );
+    let stage_economics_ms = stage_economics_started.elapsed().as_secs_f64() * 1000.0;
 
+    let stage_demand_diagnostics_started = Instant::now();
     let mut totals_by_slice: BTreeMap<DemandTimeSliceLabel, TimeSliceDemandTotals> =
         BTreeMap::new();
     for od in &latent_build.all_latent {
@@ -1197,6 +1548,9 @@ fn run_simulation_internal(
         consistency_checks,
     };
 
+    let stage_demand_diagnostics_ms =
+        stage_demand_diagnostics_started.elapsed().as_secs_f64() * 1000.0;
+    let stage_temporal_started = Instant::now();
     let temporal_bundle = build_temporal_bundle_outputs(
         s,
         settings,
@@ -1209,6 +1563,7 @@ fn run_simulation_internal(
         &economics_outputs,
         &operations_outputs,
     )?;
+    let stage_temporal_ms = stage_temporal_started.elapsed().as_secs_f64() * 1000.0;
     let active_temporal_slice = temporal_bundle.active_temporal_slice;
     let temporal_planning_snapshots = temporal_bundle.temporal_planning_snapshots;
     let temporal_demand_diagnostics = temporal_bundle.temporal_demand_diagnostics;
@@ -1216,6 +1571,115 @@ fn run_simulation_internal(
     let economic_diagnostics = temporal_bundle.economic_diagnostics;
     let service_reliability_diagnostics = temporal_bundle.service_reliability_diagnostics;
     operations_outputs.service_reliability_diagnostics = service_reliability_diagnostics.clone();
+    let planner_total_ms = planner_started.elapsed().as_secs_f64() * 1000.0;
+    let should_log = planner_call.is_multiple_of(RT_PLANNER_LOG_INTERVAL)
+        || planner_total_ms > RT_PLANNER_SLOW_TOTAL_MS
+        || stage_assignment_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5
+        || stage_mode_choice_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5
+        || stage_full_layers_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5
+        || stage_demand_diagnostics_ms > RT_PLANNER_SLOW_TOTAL_MS * 0.5;
+    if should_log {
+        eprintln!(
+            "[rt-planner] call={} mode=full total_ms={:.2} materialize_ms={:.2} validate_index_ms={:.2} graph_ms={:.2} latent_ms={:.2} pending_od_ms={:.2} mode_choice_ms={:.2} assignment_ms={:.2} full_layers_ms={:.2} operations_ms={:.2} modal_ms={:.2} phase3_ms={:.2} economics_ms={:.2} demand_diagnostics_ms={:.2} temporal_bundle_ms={:.2} include_temporal_bundle={} injected_pending_od_rows={} zones={} stops={} links={} services={} demand_cells={} graph_nodes={} graph_edges={} transfer_edges={} access_edges={} egress_edges={} active_latent_rows={} mode_choice_rows={} assigned_od_rows={} board_load_rows={} cohort_rows={} mode_paths_raw_total={} mode_paths_boardable_total={} assignment_paths_raw_total={} assignment_paths_boardable_total={} assignment_cache_iter_hits={} assignment_cache_iter_misses={} assignment_cache_kpi_hits={} assignment_cache_kpi_misses={} assignment_attempted_pax_total={:.6} first_zero_stage={} first_zero_reason={} temporal_snapshots={}",
+            planner_call,
+            planner_total_ms.max(0.0),
+            stage_materialize_ms.max(0.0),
+            stage_validate_index_ms.max(0.0),
+            stage_graph_ms.max(0.0),
+            stage_latent_ms.max(0.0),
+            stage_pending_od_ms.max(0.0),
+            stage_mode_choice_ms.max(0.0),
+            stage_assignment_ms.max(0.0),
+            stage_full_layers_ms.max(0.0),
+            stage_operations_ms.max(0.0),
+            stage_modal_ms.max(0.0),
+            stage_phase3_ms.max(0.0),
+            stage_economics_ms.max(0.0),
+            stage_demand_diagnostics_ms.max(0.0),
+            stage_temporal_ms.max(0.0),
+            include_temporal_bundle,
+            injected_pending_od_rows,
+            s.world.zones.len(),
+            s.world.stops.len(),
+            s.world.links.len(),
+            s.world.services.len(),
+            s.world.demand_cells.len(),
+            graph_node_count,
+            graph_edge_count,
+            graph.transfer_edges,
+            graph.access_edges,
+            graph.egress_edges,
+            latent_build.active_latent.len(),
+            mode_choice_build.rows.len(),
+            assigned_od_flows.len(),
+            final_board_loads.len(),
+            passenger_cohorts.len(),
+            mode_choice_candidate_paths_raw_total,
+            mode_choice_candidate_paths_boardable_total,
+            assignment_candidate_paths_raw_total,
+            assignment_candidate_paths_boardable_total,
+            assignment_iter_path_cache_hits,
+            assignment_iter_path_cache_misses,
+            assignment_kpi_path_cache_hits,
+            assignment_kpi_path_cache_misses,
+            assignment_attempted_pax_total.max(0.0),
+            planner_passenger_trace
+                .first_zero_stage
+                .as_deref()
+                .unwrap_or("none"),
+            planner_passenger_trace
+                .first_zero_reason
+                .as_deref()
+                .unwrap_or("none"),
+            temporal_planning_snapshots.len(),
+        );
+    }
+    let strategic_planner_timing = StrategicPlannerTimingDiagnostics {
+        source_label: "engine_strategic_planner".to_string(),
+        output_mode: "full".to_string(),
+        total_ms: planner_total_ms.max(0.0),
+        materialize_effective_scenario_ms: stage_materialize_ms.max(0.0),
+        validate_index_ms: stage_validate_index_ms.max(0.0),
+        graph_build_ms: stage_graph_ms.max(0.0),
+        latent_demand_ms: stage_latent_ms.max(0.0),
+        pending_od_ms: stage_pending_od_ms.max(0.0),
+        mode_choice_ms: stage_mode_choice_ms.max(0.0),
+        assignment_ms: stage_assignment_ms.max(0.0),
+        full_layers_ms: stage_full_layers_ms.max(0.0),
+        operations_ms: stage_operations_ms.max(0.0),
+        modal_outputs_ms: stage_modal_ms.max(0.0),
+        phase3_outputs_ms: stage_phase3_ms.max(0.0),
+        economics_outputs_ms: stage_economics_ms.max(0.0),
+        demand_diagnostics_ms: stage_demand_diagnostics_ms.max(0.0),
+        temporal_bundle_ms: stage_temporal_ms.max(0.0),
+        include_temporal_bundle,
+        injected_pending_od_rows,
+        zones: s.world.zones.len(),
+        stops: s.world.stops.len(),
+        links: s.world.links.len(),
+        services: s.world.services.len(),
+        demand_cells: s.world.demand_cells.len(),
+        graph_nodes: graph_node_count,
+        graph_edges: graph_edge_count,
+        transfer_edges: graph.transfer_edges,
+        access_edges: graph.access_edges,
+        egress_edges: graph.egress_edges,
+        active_latent_rows: latent_build.active_latent.len(),
+        mode_choice_rows: mode_choice_build.rows.len(),
+        assigned_od_rows: assigned_od_flows.len(),
+        board_load_rows: final_board_loads.len(),
+        passenger_cohort_rows: passenger_cohorts.len(),
+        mode_choice_candidate_paths_raw_total,
+        mode_choice_candidate_paths_boardable_total,
+        assignment_candidate_paths_raw_total,
+        assignment_candidate_paths_boardable_total,
+        assignment_iter_path_cache_hits,
+        assignment_iter_path_cache_misses,
+        assignment_kpi_path_cache_hits,
+        assignment_kpi_path_cache_misses,
+        assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
+        ..StrategicPlannerTimingDiagnostics::default()
+    };
 
     Ok(SimulationOutput {
         meta: OutputMeta {
@@ -1256,6 +1720,8 @@ fn run_simulation_internal(
         stop_flows,
         passenger_cohorts,
         fare_flow,
+        lifecycle_conservation: LifecycleConservationSummary::default(),
+        strategic_planner_timing,
         zone_demand_profiles: latent_build.zone_profiles,
         latent_od_demand: latent_build.all_latent,
         assigned_od_flows,
@@ -1309,6 +1775,7 @@ fn run_simulation_internal(
             msa_iterations: iters_run,
             msa_final_max_rel_change: last_max_rel_change,
             sample_paths,
+            planner_passenger_trace,
         },
     })
 }
@@ -1332,6 +1799,10 @@ struct ActiveModeChoiceOd {
     latent: ActiveLatentOd,
     transit_captured: f64,
     suppressed_or_no_trip: f64,
+    candidate_paths_raw: usize,
+    candidate_paths_boardable: usize,
+    rejected_no_board_or_alight: usize,
+    rejected_unpaired_board_alight: usize,
 }
 
 #[derive(Debug, Clone, Default)]

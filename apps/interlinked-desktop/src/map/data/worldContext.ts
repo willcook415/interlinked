@@ -1,6 +1,7 @@
 import {
   POLYGON_TO_CELLS_FLAGS,
   cellToBoundary,
+  cellsToMultiPolygon,
   isValidCell,
   latLngToCell,
   polygonToCells,
@@ -194,11 +195,9 @@ export function buildWorldCountryLabelData(
 
 export function buildCountyFeatures(args: {
   regions: RegionStatus[];
-  focusRegionId: string | null;
-  selectedRegionId: string | null;
   resolveRegionGeometry: (region: RegionStatus | null) => GeoJsonGeometry | null;
 }): GeoCollection {
-  const { regions, focusRegionId, selectedRegionId, resolveRegionGeometry } = args;
+  const { regions, resolveRegionGeometry } = args;
   const features: GeoFeature[] = [];
   for (const region of regions) {
     const geometry = resolveRegionGeometry(region);
@@ -210,8 +209,6 @@ export function buildCountyFeatures(args: {
           region_id: region.region_id,
           name: region.name,
           unlocked: region.unlocked ? 1 : 0,
-          focus: region.region_id === focusRegionId ? 1 : 0,
-          selected: region.region_id === selectedRegionId ? 1 : 0,
         },
       });
       continue;
@@ -233,8 +230,6 @@ export function buildCountyFeatures(args: {
         region_id: region.region_id,
         name: region.name,
         unlocked: region.unlocked ? 1 : 0,
-        focus: region.region_id === focusRegionId ? 1 : 0,
-        selected: region.region_id === selectedRegionId ? 1 : 0,
       },
     });
   }
@@ -311,10 +306,10 @@ export function buildPlanningHexFeatures(args: {
 
     const polygons =
       feature.geometry.type === "Polygon"
-        ? [feature.geometry.coordinates]
+        ? [feature.geometry.coordinates as number[][][]]
         : feature.geometry.type === "MultiPolygon"
-        ? feature.geometry.coordinates
-        : [];
+        ? (feature.geometry.coordinates as number[][][][])
+        : ([] as number[][][][]);
     if (polygons.length === 0) continue;
 
     const regionCell =
@@ -322,7 +317,8 @@ export function buildPlanningHexFeatures(args: {
         ? region.h3_cell_id.toLowerCase()
         : null;
 
-    for (const polygon of polygons) {
+    for (let i = 0; i < polygons.length; i++) {
+      const polygon = polygons[i];
       const geometry: GeoJsonGeometry = {
         type: "Polygon",
         coordinates: polygon as number[][][],
@@ -341,6 +337,22 @@ export function buildPlanningHexFeatures(args: {
           : `poly:${regionId}:${String(++fallbackCounter).padStart(4, "0")}`;
       const hexResolved = isValidCell(cellId) ? 1 : 0;
 
+      let polygonCanonical: number | null = null;
+      if (
+        Array.isArray(region?.constituent_hex_numbers) &&
+        typeof region.constituent_hex_numbers[i] === "number" &&
+        Number.isFinite(region.constituent_hex_numbers[i]) &&
+        region.constituent_hex_numbers[i] > 0
+      ) {
+        polygonCanonical = region.constituent_hex_numbers[i];
+      } else if (
+        typeof region?.canonical_hex_number === "number" &&
+        Number.isFinite(region.canonical_hex_number) &&
+        region.canonical_hex_number > 0
+      ) {
+        polygonCanonical = region.canonical_hex_number;
+      }
+
       features.push({
         type: "Feature",
         geometry,
@@ -354,6 +366,7 @@ export function buildPlanningHexFeatures(args: {
           hex_manual_assigned: isManualAssigned,
           hex_id: cellId,
           hex_resolved: hexResolved,
+          hex_canonical_number: polygonCanonical,
         },
       });
     }
@@ -597,4 +610,69 @@ export function buildCountyBoundsData(args: {
       };
     })
     .filter((value): value is CountyBoundsDatum => Boolean(value));
+}
+
+export function buildRegionDisplayFeatures(
+  regionFeatures: GeoCollection,
+  planningHexData: GeoCollection,
+  regions: RegionStatus[]
+): GeoCollection {
+  const regionsById = regionById(regions);
+  const hexesByRegion = new Map<string, string[]>();
+
+  for (const feature of planningHexData.features) {
+    const regionId = String(feature.properties?.region_id ?? "").trim();
+    const hexId = String(feature.properties?.hex_id ?? "").trim();
+    if (regionId && hexId && hexId !== "__none__" && isValidCell(hexId)) {
+      let list = hexesByRegion.get(regionId);
+      if (!list) {
+        list = [];
+        hexesByRegion.set(regionId, list);
+      }
+      list.push(hexId);
+    }
+  }
+
+  const outputFeatures: GeoFeature[] = [];
+
+  for (const feature of regionFeatures.features) {
+    const regionId = String(feature.properties?.region_id ?? "").trim();
+    const region = regionsById.get(regionId);
+    if (!region) {
+      outputFeatures.push(feature);
+      continue;
+    }
+
+    const sourceCode = (region.source_code ?? "").trim().toLowerCase();
+    const isManual =
+      sourceCode.startsWith("manual_region_definition") ||
+      sourceCode === "manual_region_unassigned_hex" ||
+      sourceCode.startsWith("manual_region_");
+
+    if (isManual) {
+      const cells = hexesByRegion.get(regionId);
+      if (cells && cells.length > 0) {
+        try {
+          const multiPoly = cellsToMultiPolygon(cells, true);
+          if (multiPoly && multiPoly.length > 0) {
+            outputFeatures.push({
+              ...feature,
+              geometry: {
+                type: "MultiPolygon",
+                coordinates: multiPoly as number[][][][],
+              },
+            });
+            continue;
+          }
+        } catch (err) {
+          console.warn(`Failed to dissolve manual region ${regionId}`, err);
+        }
+      }
+    }
+
+    // fallback mapping
+    outputFeatures.push(feature);
+  }
+
+  return fc(outputFeatures);
 }

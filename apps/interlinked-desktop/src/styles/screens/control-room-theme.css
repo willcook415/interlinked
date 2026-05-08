@@ -384,6 +384,7 @@ small,
 .command-palette,
 .financial-dashboard-sheet,
 .line-delete-dialog,
+.build-exit-dialog,
 .country-info-drawer {
   border-radius: var(--il-radius-lg);
   border: 1px solid var(--il-edge-dark);
@@ -408,6 +409,7 @@ small,
 .financial-dashboard-sheet,
 .alerts-sheet,
 .line-delete-dialog,
+.build-exit-dialog,
 .country-info-drawer {
   overflow: hidden;
 }
@@ -428,6 +430,7 @@ small,
 .financial-dashboard-sheet::before,
 .alerts-sheet::before,
 .line-delete-dialog::before,
+.build-exit-dialog::before,
 .country-info-drawer::before {
   content: "";
   position: absolute;
@@ -460,6 +463,7 @@ small,
 .financial-dashboard-sheet > *,
 .alerts-sheet > *,
 .line-delete-dialog > *,
+.build-exit-dialog > *,
 .country-info-drawer > * {
   position: relative;
   z-index: 1;
@@ -538,6 +542,7 @@ small,
 .missions-drawer button,
 .fleet-menu button,
 .line-delete-dialog button,
+.build-exit-dialog button,
 .status-toast button,
 .onboarding-card button,
 .app-crash-card button,
@@ -569,7 +574,8 @@ small,
 .financial-dashboard-overlay,
 .app-status-overlay,
 .session-boot-overlay,
-.line-delete-overlay {
+.line-delete-overlay,
+.build-exit-overlay {
   background: rgba(7, 13, 22, 0.62);
   backdrop-filter: blur(6px);
 }
@@ -594,9 +600,9 @@ small,
 }
 
 .country-info-strip .pill {
-  border-color: rgba(133, 163, 200, 0.7);
-  background: rgba(21, 45, 71, 0.78);
-  color: #e4efff;
+  border-color: rgba(145, 175, 210, 0.82);
+  background: rgba(16, 40, 66, 0.9);
+  color: #eff6ff;
 }
 
 .country-section,
@@ -620,9 +626,80 @@ small,
   background: rgba(255, 255, 255, 0.05);
 }
 
+.country-section-candidates {
+  border-color: rgba(186, 145, 88, 0.82);
+  background: rgba(88, 60, 25, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(214, 166, 100, 0.2);
+}
+
+.country-section-unlocked {
+  border-color: rgba(107, 156, 214, 0.8);
+  background: linear-gradient(180deg, rgba(24, 55, 88, 0.96), rgba(33, 70, 108, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(136, 180, 227, 0.24);
+}
+
+.country-section-other-locked {
+  border-color: rgba(109, 133, 166, 0.56);
+  background: rgba(21, 35, 53, 0.36);
+}
+
+.country-section-intro .hint-line {
+  margin: 0;
+}
+
+.selected-county-card {
+  border-color: rgba(86, 126, 173, 0.86);
+  background: linear-gradient(180deg, rgba(24, 53, 84, 0.96), rgba(33, 68, 106, 0.96));
+}
+
+.selected-county-card.is-locked {
+  border-color: rgba(170, 131, 72, 0.9);
+  background: linear-gradient(180deg, rgba(56, 40, 20, 0.96), rgba(73, 53, 28, 0.96));
+}
+
+.selected-county-card.is-unlocked {
+  border-color: rgba(95, 143, 196, 0.88);
+  background: linear-gradient(180deg, rgba(24, 53, 84, 0.96), rgba(33, 68, 106, 0.96));
+}
+
+.selected-county-card.is-locked .selected-county-head strong,
+.selected-county-card.is-unlocked .selected-county-head strong,
+.selected-county-card.is-locked .selected-county-head p,
+.selected-county-card.is-unlocked .selected-county-head p {
+  color: #f3f8ff;
+}
+
+.selected-county-card .hint-line {
+  color: rgba(219, 232, 248, 0.95);
+}
+
+.selected-county-card .region-status-tag {
+  color: #eff6ff;
+  border-color: rgba(138, 171, 208, 0.9);
+  background: rgba(35, 63, 95, 0.92);
+}
+
+.selected-county-card.is-locked .region-status-tag {
+  color: #fff0d6;
+  border-color: rgba(184, 144, 82, 0.9);
+  background: rgba(58, 40, 15, 0.88);
+}
+
 .county-row.active {
-  border-color: rgba(108, 156, 219, 0.9);
-  background: rgba(35, 71, 118, 0.42);
+  border-color: rgba(186, 145, 88, 0.92);
+  background: rgba(92, 61, 26, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(212, 163, 101, 0.28);
+}
+
+.country-section-candidates .county-row.active {
+  border-color: rgba(102, 153, 215, 0.96);
+  background: rgba(46, 91, 145, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(126, 176, 235, 0.38);
+}
+
+.country-section-candidates .county-row.active span,
+.country-section-candidates .county-row.active small {
+  color: #f3f8ff !important;
 }
 
 .selected-county-grid p,
@@ -630,16 +707,97 @@ small,
 .country-section-head h5,
 .country-section-head span,
 .county-row small {
-  color: rgba(204, 220, 242, 0.88);
+  color: rgba(214, 228, 247, 0.94);
 }
 
 .selected-county-head strong,
 .county-row span {
-  color: #edf5ff;
+  color: #f4f8ff;
 }
 
 .country-section .hint-line {
-  color: rgba(196, 213, 236, 0.88);
+  color: rgba(205, 220, 240, 0.92);
+}
+
+.country-section-unlocked .country-section-head h5,
+.country-section-unlocked .country-section-head span,
+.country-section-unlocked .county-row span,
+.country-section-unlocked .county-row small,
+.country-section-unlocked .hint-line {
+  color: #f3f8ff;
+}
+
+.country-section-unlocked .county-row.is-unlocked {
+  border-color: rgba(104, 152, 209, 0.82);
+  background: rgba(22, 52, 84, 0.9);
+}
+
+.country-section-unlocked .county-row.active {
+  border-color: rgba(156, 199, 246, 0.96);
+  background: rgba(69, 115, 165, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(177, 213, 248, 0.42);
+}
+
+.country-section-unlocked .county-row.active span,
+.country-section-unlocked .county-row.active small {
+  color: #f5faff !important;
+}
+
+.country-section-candidates .country-section-head h5 {
+  color: #ffe1b3;
+}
+
+.country-section-candidates .country-section-head span {
+  color: #f2c78a;
+}
+
+.country-section-candidates .county-row small {
+  color: #ffd08f;
+  font-weight: 800;
+}
+
+.country-section-other-locked .county-row small {
+  color: #9fcbff;
+  font-weight: 800;
+}
+
+.country-section-other-locked .county-row.active {
+  border-color: rgba(102, 153, 215, 0.96);
+  background: rgba(46, 91, 145, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(126, 176, 235, 0.38);
+}
+
+.country-section-other-locked .county-row.active span,
+.country-section-other-locked .county-row.active small {
+  color: #f3f8ff !important;
+}
+
+.selected-county-grid p {
+  border-color: rgba(112, 149, 191, 0.8);
+  background: rgba(20, 42, 67, 0.92);
+  color: #f5faff;
+}
+
+.selected-county-card.is-locked .selected-county-grid p {
+  border-color: rgba(176, 139, 81, 0.86);
+  background: rgba(73, 55, 30, 0.9);
+  color: #fff3de;
+}
+
+.country-list-controls input,
+.country-list-controls select {
+  border-color: rgba(133, 164, 198, 0.62);
+  background: rgba(19, 38, 59, 0.82);
+  color: #e7f2ff;
+}
+
+.country-list-controls input::placeholder {
+  color: rgba(187, 206, 232, 0.82);
+}
+
+.country-list-viewport {
+  border-color: rgba(116, 142, 175, 0.62);
+  background: linear-gradient(180deg, rgba(25, 41, 61, 0.64), rgba(18, 31, 48, 0.72));
 }
 
 .build-workspace,
@@ -653,7 +811,6 @@ small,
 .line-inspector-sheet,
 .station-inspector-sheet,
 .editor-drawer-sheet,
-.country-info-drawer,
 .financial-dashboard-sheet,
 .alerts-sheet,
 .settings-sheet,
@@ -679,17 +836,29 @@ small,
 .build-line-breakdown,
 .build-line-row,
 .build-mode-tile,
+.build-mode-tile.disabled,
 .build-action-stack button,
 .build-line-actions button,
+.build-impact-grid > div,
+.build-impact-meta > span,
 .inspector-tab-row button,
+.inspector-tab-row button.is-disabled,
 .build-workspace-footer button,
 .build-line-focus,
+.build-passive-draft-note,
+.build-cost-summary > div,
+.build-cost-receipt,
+.build-cost-line.is-recurring,
 .line-draw-status,
 .line-color-field,
 .line-color-hex,
 .inspector-read-field,
 .inspector-stat,
 .inspector-section,
+.draft-route-control-card,
+.draft-route-metrics > span,
+.draft-route-mode-indicator,
+.draft-impact-receipt,
 .station-capacity-hero,
 .rolling-order-card,
 .rolling-vehicle-row,
@@ -702,6 +871,7 @@ small,
 .interchange-suggestion-row,
 .transfer-link-row,
 .tube-remove-stop,
+.tube-stop-remove-inline,
 .alert-card,
 .alerts-empty,
 .fleet-menu-row,
@@ -771,6 +941,9 @@ small,
 .schedule-band-row label,
 .schedule-band-metrics span,
 .field-caption,
+.draft-route-control-card p,
+.draft-impact-line small,
+.tube-stop-role,
 .tube-label p,
 .hint-line {
   color: rgba(198, 214, 236, 0.84);

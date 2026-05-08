@@ -20,8 +20,15 @@ body {
 }
 
 body.il-noneditable-surface #root {
+  overflow: hidden;
+  overscroll-behavior: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+body.il-noneditable-surface {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body.il-noneditable-surface input,

@@ -187,6 +187,8 @@ export function useRuntimePolling({
     let staleFastSnapshotsRejected = 0;
     let latestFastClockRevision = 0;
     let lastFastSnapshotIntervalMs: number | null = null;
+    let lastReceivedLog: { bucket: number; running: boolean; speed: number } | null = null;
+    let lastAcceptedLog: { bucket: number; running: boolean; speed: number } | null = null;
 
     const publishTemporalDiagnostics = (next: {
       intervalMs: number | null;
@@ -222,6 +224,31 @@ export function useRuntimePolling({
           snapshot.captured_at_epoch_ms
         );
         if (!nextFreshness) return;
+        const receivedRunning = Boolean(snapshot.clock?.running);
+        const receivedSpeed = Number.isFinite(snapshot.clock?.speed)
+          ? (snapshot.clock?.speed ?? 1)
+          : 1;
+        const receivedBucket = Math.floor(Math.max(nextFreshness.tickSeconds, 0));
+        if (
+          !lastReceivedLog ||
+          lastReceivedLog.bucket !== receivedBucket ||
+          lastReceivedLog.running !== receivedRunning ||
+          lastReceivedLog.speed !== receivedSpeed
+        ) {
+          console.info("[time-debug] fast_snapshot_received", {
+            tickSeconds: nextFreshness.tickSeconds,
+            tickIndex: nextFreshness.tickIndex,
+            clockRevision: nextFreshness.clockRevision,
+            running: receivedRunning,
+            speed: receivedSpeed,
+            capturedAtEpochMs: nextFreshness.capturedAtEpochMs,
+          });
+          lastReceivedLog = {
+            bucket: receivedBucket,
+            running: receivedRunning,
+            speed: receivedSpeed,
+          };
+        }
         const previousFreshness: ClockFreshness = {
           tickSeconds: latestClockTickRef.current,
           tickIndex: latestSnapshotTickRef.current,
@@ -251,6 +278,19 @@ export function useRuntimePolling({
             });
           }
           staleFastSnapshotsRejected += 1;
+          if (
+            staleFastSnapshotsRejected <= 3 ||
+            staleFastSnapshotsRejected % 20 === 0
+          ) {
+            console.warn("[time-debug] fast_snapshot_rejected", {
+              reason: "stale_freshness",
+              staleFastSnapshotsRejected,
+              previous: previousFreshness,
+              incoming: nextFreshness,
+              incomingRunning: receivedRunning,
+              incomingSpeed: receivedSpeed,
+            });
+          }
           publishTemporalDiagnostics({
             intervalMs: lastFastSnapshotIntervalMs,
             staleRejected: staleFastSnapshotsRejected,
@@ -300,6 +340,26 @@ export function useRuntimePolling({
           sameRuntimeLineOps(prev, nextLineOps) ? prev : nextLineOps
         );
         setClock((prev) => (sameClock(prev, snapshot.clock ?? null) ? prev : snapshot.clock ?? null));
+        const acceptedBucket = Math.floor(Math.max(nextFreshness.tickSeconds, 0));
+        if (
+          !lastAcceptedLog ||
+          lastAcceptedLog.bucket !== acceptedBucket ||
+          lastAcceptedLog.running !== receivedRunning ||
+          lastAcceptedLog.speed !== receivedSpeed
+        ) {
+          console.info("[time-debug] fast_snapshot_accepted", {
+            tickSeconds: nextFreshness.tickSeconds,
+            tickIndex: nextFreshness.tickIndex,
+            clockRevision: nextFreshness.clockRevision,
+            running: receivedRunning,
+            speed: receivedSpeed,
+          });
+          lastAcceptedLog = {
+            bucket: acceptedBucket,
+            running: receivedRunning,
+            speed: receivedSpeed,
+          };
+        }
         publishTemporalDiagnostics({
           intervalMs: lastFastSnapshotIntervalMs,
           staleRejected: staleFastSnapshotsRejected,

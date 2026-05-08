@@ -249,6 +249,7 @@ pub(crate) fn synthesize_city_demand(
             centrality_score: d.centrality,
             data_quality_score: 0.72,
             country_iso2: country.clone(),
+            allocation_diagnostics: None,
         });
     }
     (zones, demand_cells)
@@ -462,6 +463,7 @@ pub(crate) fn synthesize_country_demand(
                 centrality_score: d.centrality,
                 data_quality_score: quality,
                 country_iso2: Some(iso.clone()),
+                allocation_diagnostics: None,
             });
         }
     }
@@ -764,6 +766,7 @@ pub(crate) fn inspection_output_for_project(
     project_path: &str,
     scenario: &Scenario,
 ) -> Result<SimulationOutput, String> {
+    let started = std::time::Instant::now();
     let apply_game_runtime_overrides = read_manifest(Path::new(project_path))
         .map(|manifest| manifest.session_kind == SessionKind::Game)
         .unwrap_or(false);
@@ -774,9 +777,30 @@ pub(crate) fn inspection_output_for_project(
             .map_err(|_| "game mutex poisoned".to_string())?;
         if let Some(game_state) = guard.as_ref() {
             if let Some(output) = game_state.last_output.clone() {
-                if !output.meta.results_version.ends_with("-lite") {
-                    return Ok(output);
-                }
+                eprintln!(
+                    "[rt-inspect] output_source=game_last_output project={} elapsed_ms={:.2} results_version={} is_lightweight={} board_load_rows={} cohort_rows={} assigned_od_rows={} mode_choice_rows={}",
+                    project_path,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    output.meta.results_version,
+                    output.meta.results_version.ends_with("-lite"),
+                    output.board_loads.len(),
+                    output.passenger_cohorts.len(),
+                    output.assigned_od_flows.len(),
+                    output.mode_choice_results.len(),
+                );
+                return Ok(output);
+            }
+
+            if apply_game_runtime_overrides {
+                // Game sessions intentionally run lightweight runtime ticks.
+                // If we have no output yet (fresh load before first tick), do not block station/line
+                // selection with an expensive synchronous strategic recompute.
+                eprintln!(
+                    "[rt-inspect] output_source=game_not_ready project={} elapsed_ms={:.2} reason=no_last_output",
+                    project_path,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                );
+                return Err("inspection output not ready".to_string());
             }
             let mut clone = game_state.clone();
             clone.run_cfg.lightweight_outputs = false;
@@ -798,10 +822,34 @@ pub(crate) fn inspection_output_for_project(
                     force_strategic_refresh: true,
                 },
             )?;
-            return clone.last_output.ok_or_else(|| {
+            let output = clone.last_output.ok_or_else(|| {
                 "inspection analysis did not produce simulation output".to_string()
-            });
+            })?;
+            eprintln!(
+                "[rt-inspect] output_source=game_clone_recompute project={} elapsed_ms={:.2} apply_game_runtime_overrides={} results_version={} board_load_rows={} cohort_rows={} assigned_od_rows={} mode_choice_rows={}",
+                project_path,
+                started.elapsed().as_secs_f64() * 1000.0,
+                apply_game_runtime_overrides,
+                output.meta.results_version,
+                output.board_loads.len(),
+                output.passenger_cohorts.len(),
+                output.assigned_od_flows.len(),
+                output.mode_choice_results.len(),
+            );
+            return Ok(output);
         }
     }
-    run_ephemeral_inspection_output(scenario, apply_game_runtime_overrides)
+    let output = run_ephemeral_inspection_output(scenario, apply_game_runtime_overrides)?;
+    eprintln!(
+        "[rt-inspect] output_source=ephemeral_recompute project={} elapsed_ms={:.2} apply_game_runtime_overrides={} results_version={} board_load_rows={} cohort_rows={} assigned_od_rows={} mode_choice_rows={}",
+        project_path,
+        started.elapsed().as_secs_f64() * 1000.0,
+        apply_game_runtime_overrides,
+        output.meta.results_version,
+        output.board_loads.len(),
+        output.passenger_cohorts.len(),
+        output.assigned_od_flows.len(),
+        output.mode_choice_results.len(),
+    );
+    Ok(output)
 }

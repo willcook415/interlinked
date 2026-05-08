@@ -10,6 +10,7 @@ import {
 import type {
   AppRoute,
   LineOpsRuntimeView,
+  RuntimePerfTelemetry,
   ScenarioLite,
   SimulationClock,
   StationRuntimeView,
@@ -97,6 +98,7 @@ type UseShellStatusOrchestrationArgs = {
   lineSummaries: LineSummaryLike[];
   runtimeLineOps: LineOpsRuntimeView[];
   runtimeStations: StationRuntimeView[];
+  runtimeTelemetry: RuntimePerfTelemetry | null;
   currentBalanceBase: number | null;
   builderError: string | null;
   demandWarning: string | null;
@@ -226,6 +228,7 @@ export function useShellStatusOrchestration(args: UseShellStatusOrchestrationArg
     lineSummaries: args.lineSummaries,
     runtimeLineOps: args.runtimeLineOps,
     runtimeStations: args.runtimeStations,
+    runtimeTelemetry: args.runtimeTelemetry,
     currentBalanceBase: args.currentBalanceBase,
     builderError: args.builderError,
     demandWarning: args.demandWarning,

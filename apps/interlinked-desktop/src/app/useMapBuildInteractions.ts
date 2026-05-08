@@ -1,5 +1,6 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
 import type { BuildAction, BuilderSelection, MapWorldPoint } from "../build/types";
+import { buildPerfEvent } from "../perf/buildPerf";
 
 export type FocusStopRequest = {
   stopId: string;
@@ -26,6 +27,11 @@ export function useMapBuildInteractions(args: {
 
   const handleStopAction = useCallback(
     (payload: { stopId: string; point: MapWorldPoint }) => {
+      buildPerfEvent("build.ui.map_stop_click", {
+        stopId: payload.stopId,
+        workspaceMode: build.workspaceMode,
+        buildAction: build.buildAction,
+      });
       const placingInBuildMode =
         build.workspaceMode === "build" &&
         (build.buildAction === "place_station" ||
@@ -43,6 +49,11 @@ export function useMapBuildInteractions(args: {
 
   const handleLineAction = useCallback(
     (payload: { lineId: string }) => {
+      buildPerfEvent("build.ui.map_line_click", {
+        lineId: payload.lineId,
+        workspaceMode: build.workspaceMode,
+        buildAction: build.buildAction,
+      });
       const drawingLineInBuildMode =
         build.workspaceMode === "build" &&
         (build.buildAction === "start_line" ||
@@ -59,6 +70,10 @@ export function useMapBuildInteractions(args: {
 
   const handleMapPointAction = useCallback(
     (point: MapWorldPoint) => {
+      buildPerfEvent("build.ui.map_point_click", {
+        workspaceMode: build.workspaceMode,
+        buildAction: build.buildAction,
+      });
       if (build.workspaceMode !== "build") return;
       build.handleBuildPoint(point);
     },
@@ -66,12 +81,17 @@ export function useMapBuildInteractions(args: {
   );
 
   const handleMapClearSelection = useCallback(() => {
+    buildPerfEvent("build.ui.map_clear_selection", {
+      workspaceMode: build.workspaceMode,
+      buildAction: build.buildAction,
+    });
     if (build.workspaceMode === "build" && build.buildAction !== "select") return;
     build.setSelection(null);
   }, [build]);
 
   const focusStationById = useCallback(
     (stopId: string) => {
+      buildPerfEvent("build.ui.focus_station_by_id", { stopId });
       build.selectStop(stopId);
       setFocusStopRequest((previous) => ({
         stopId,

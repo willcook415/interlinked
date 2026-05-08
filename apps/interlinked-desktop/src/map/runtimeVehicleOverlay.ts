@@ -1,4 +1,5 @@
 import type {
+  CounterProvenance,
   ScenarioLite,
   ServiceLite,
   SimulationClock,
@@ -40,6 +41,8 @@ export type VehicleSnapshot = {
   lng: number;
   lat: number;
   displayColor: string;
+  provenance?: CounterProvenance | string | null;
+  passengerCounterProvenance?: CounterProvenance | string | null;
 };
 
 export type VehicleRouteSeed = {
@@ -452,6 +455,8 @@ export function buildVehicleData(args: {
         lng: coord.lng,
         lat: coord.lat,
         displayColor,
+        provenance: train.provenance ?? "animation_only",
+        passengerCounterProvenance: train.passenger_counter_provenance ?? train.provenance ?? "animation_only",
       };
       byId.set(snapshot.vehicleId, snapshot);
     }
@@ -497,6 +502,8 @@ export function buildVehicleData(args: {
         lng: point[0],
         lat: point[1],
         displayColor: seed.displayColor,
+        provenance: "animation_only",
+        passengerCounterProvenance: "animation_only",
       };
 
       byId.set(vehicleId, snapshot);

@@ -36,7 +36,10 @@ const BOOT_STAGE_RANK: Record<SessionBootState["stage"], number> = {
   error: 7,
 };
 
-const RUNTIME_CHECKPOINT_TIMEOUT_MS = 12_000;
+// Cold-start session opens can take significantly longer due to first-time surface
+// wire parsing (which is cached on subsequent opens). The timeout must be generous
+// enough to avoid false "runtime did not become ready" errors on legitimate first boot.
+const RUNTIME_CHECKPOINT_TIMEOUT_MS = 90_000;
 
 function inSessionRoute(route: AppRoute): boolean {
   return route === "session_game" || route === "session_scenario";
@@ -58,6 +61,29 @@ function createLifecycleError(
     recoverable,
     occurredAtEpochMs: Date.now(),
   };
+}
+
+function isRuntimeCheckpointTimeoutError(error: SessionLifecycleError | null): boolean {
+  if (!error) return false;
+  if (error.source === "runtime_snapshot") return true;
+  if (error.source !== "runtime_control") return false;
+  return (
+    error.message ===
+      "Runtime control and telemetry did not become ready. Retry loading the session." ||
+    error.message ===
+      "Runtime control did not become ready. Retry loading the session."
+  );
+}
+
+function shouldClearRuntimeCheckpointTimeoutError(
+  snapshot: SessionLifecycleSnapshot,
+  nextCheckpoints: SessionLifecycleCheckpoints
+): boolean {
+  if (snapshot.sessionKind !== "game") return false;
+  if (!nextCheckpoints.runtimeControlReady || !nextCheckpoints.firstFastSnapshotReady) {
+    return false;
+  }
+  return isRuntimeCheckpointTimeoutError(snapshot.lastError);
 }
 
 function nextBootState(
@@ -277,12 +303,18 @@ export function useSessionLifecycleController(args: {
   const markRuntimeControlReady = useCallback(() => {
     setSnapshot((previous) => {
       if (previous.checkpoints.runtimeControlReady) return previous;
+      const nextCheckpoints: SessionLifecycleCheckpoints = {
+        ...previous.checkpoints,
+        runtimeControlReady: true,
+      };
+      const clearRuntimeTimeoutError = shouldClearRuntimeCheckpointTimeoutError(
+        previous,
+        nextCheckpoints
+      );
       return reconcile({
         ...previous,
-        checkpoints: {
-          ...previous.checkpoints,
-          runtimeControlReady: true,
-        },
+        checkpoints: nextCheckpoints,
+        lastError: clearRuntimeTimeoutError ? null : previous.lastError,
       });
     });
   }, []);
@@ -290,12 +322,18 @@ export function useSessionLifecycleController(args: {
   const markFirstFastSnapshotReady = useCallback(() => {
     setSnapshot((previous) => {
       if (previous.checkpoints.firstFastSnapshotReady) return previous;
+      const nextCheckpoints: SessionLifecycleCheckpoints = {
+        ...previous.checkpoints,
+        firstFastSnapshotReady: true,
+      };
+      const clearRuntimeTimeoutError = shouldClearRuntimeCheckpointTimeoutError(
+        previous,
+        nextCheckpoints
+      );
       return reconcile({
         ...previous,
-        checkpoints: {
-          ...previous.checkpoints,
-          firstFastSnapshotReady: true,
-        },
+        checkpoints: nextCheckpoints,
+        lastError: clearRuntimeTimeoutError ? null : previous.lastError,
       });
     });
   }, []);

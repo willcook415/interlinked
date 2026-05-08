@@ -5,6 +5,7 @@ import type {
   AlertItem,
   AppRoute,
   LineOpsRuntimeView,
+  RuntimePerfTelemetry,
   ScenarioLite,
   StationRuntimeView,
 } from "../types";
@@ -64,12 +65,48 @@ type UseIssueRegistryArgs = {
   lineSummaries: LineSummaryLike[];
   runtimeLineOps: LineOpsRuntimeView[];
   runtimeStations: StationRuntimeView[];
+  runtimeTelemetry: RuntimePerfTelemetry | null;
   currentBalanceBase: number | null;
   builderError: string | null;
   demandWarning: string | null;
   runtimeError: string | null;
   lifecycleError: SessionLifecycleError | null;
 };
+
+const TRANSIENT_SIGNAL_ACTIVATION_DELAY_MS = 1200;
+
+function isTransientDerivedBlockingSignal(signal: IssueDetectionSignal): boolean {
+  return (
+    signal.id === "budget-negative" ||
+    signal.id.startsWith("line-denied:") ||
+    signal.id.startsWith("station-capacity:")
+  );
+}
+
+function isTransientDerivedBlockingIssue(issue: IssueRecord): boolean {
+  return (
+    issue.id === "budget-negative" ||
+    issue.id.startsWith("line-denied:") ||
+    issue.id.startsWith("station-capacity:")
+  );
+}
+
+function shouldSuppressRuntimeOpsSignalsDuringStartup(
+  telemetry: RuntimePerfTelemetry | null
+): boolean {
+  const telemetryRecord = telemetry as
+    | (RuntimePerfTelemetry & {
+        engine_strategic_refresh_executed?: boolean;
+        engine_strategic_refresh_reason?: string | null;
+      })
+    | null;
+  const reason = telemetryRecord?.engine_strategic_refresh_reason ?? "";
+  return (
+    telemetryRecord?.engine_strategic_refresh_executed === true &&
+    reason.includes("MissingCache") &&
+    (telemetry?.tick_index ?? 0) <= 2
+  );
+}
 
 function issueSeverityRank(value: IssueSeverity): number {
   if (value === "critical") return 0;
@@ -201,58 +238,83 @@ export function useIssueRegistry(args: UseIssueRegistryArgs) {
       });
     }
 
-    const lineNameById = new Map(
-      args.lineSummaries.map((line) => [line.lineId, line.name.trim() ? line.name : "Untitled Line"])
+    const suppressRuntimeOpsSignals = shouldSuppressRuntimeOpsSignalsDuringStartup(
+      args.runtimeTelemetry
     );
-    const stressedLines = [...args.runtimeLineOps]
-      .filter((line) => (line.denied_boardings_per_hour ?? 0) >= 30)
-      .sort((left, right) => (right.denied_boardings_per_hour ?? 0) - (left.denied_boardings_per_hour ?? 0))
-      .slice(0, 3);
-    for (const line of stressedLines) {
-      const denied = Math.round(line.denied_boardings_per_hour ?? 0);
-      const lineName = lineNameById.get(line.line_id) ?? line.line_id;
-      signals.push({
-        id: `line-denied:${line.line_id}`,
-        source: "runtime",
-        severity: denied >= 120 ? "critical" : "warning",
-        title: `${lineName} is denying boardings`,
-        detail: `${denied.toLocaleString()} denied boardings/hr. Increase service or capacity.`,
-        target: { kind: "line", id: line.line_id },
-        actions: [{ id: `line-denied-open:${line.line_id}`, label: "Open line", intent: "inspect" }],
-        persistence: "session",
-      });
-    }
-
-    if (args.activeScenario) {
-      const stopById = new Map(args.activeScenario.world.stops.map((stop) => [stop.id, stop]));
-      const hotStations = [...args.runtimeStations]
-        .map((station) => {
-          const capacity = Math.max(station.capacity_pax ?? 0, 0);
-          const ratio = capacity > 0 ? Math.max(station.current_inside_pax ?? 0, 0) / capacity : 0;
-          return { station, ratio };
-        })
-        .filter((entry) => entry.ratio >= 0.9)
-        .sort((left, right) => right.ratio - left.ratio)
-        .slice(0, 2);
-      for (const entry of hotStations) {
-        const stop = stopById.get(entry.station.stop_id);
-        const stopName = stopDisplayName(stop ?? { id: entry.station.stop_id, x: 0, y: 0 });
+    if (!suppressRuntimeOpsSignals) {
+      const lineNameById = new Map(
+        args.lineSummaries.map((line) => [
+          line.lineId,
+          line.name.trim() ? line.name : "Untitled Line",
+        ])
+      );
+      const stressedLines = [...args.runtimeLineOps]
+        .filter((line) => (line.denied_boardings_per_hour ?? 0) >= 30)
+        .sort(
+          (left, right) =>
+            (right.denied_boardings_per_hour ?? 0) -
+            (left.denied_boardings_per_hour ?? 0)
+        )
+        .slice(0, 3);
+      for (const line of stressedLines) {
+        const denied = Math.round(line.denied_boardings_per_hour ?? 0);
+        const lineName = lineNameById.get(line.line_id) ?? line.line_id;
         signals.push({
-          id: `station-capacity:${entry.station.stop_id}`,
+          id: `line-denied:${line.line_id}`,
           source: "runtime",
-          severity: entry.ratio >= 1 ? "critical" : "warning",
-          title: `${stopName} nearing capacity`,
-          detail: `${Math.round(entry.ratio * 100)}% full. Consider more service or station expansion.`,
-          target: { kind: "stop", id: entry.station.stop_id },
+          severity: denied >= 120 ? "critical" : "warning",
+          title: `${lineName} is denying boardings`,
+          detail: `${denied.toLocaleString()} denied boardings/hr. Increase service or capacity.`,
+          target: { kind: "line", id: line.line_id },
           actions: [
             {
-              id: `station-capacity-open:${entry.station.stop_id}`,
-              label: "Open station",
+              id: `line-denied-open:${line.line_id}`,
+              label: "Open line",
               intent: "inspect",
             },
           ],
           persistence: "session",
         });
+      }
+    }
+
+    if (args.activeScenario) {
+      const stopById = new Map(args.activeScenario.world.stops.map((stop) => [stop.id, stop]));
+      if (!suppressRuntimeOpsSignals) {
+        const hotStations = [...args.runtimeStations]
+          .map((station) => {
+            const capacity = Math.max(station.capacity_pax ?? 0, 0);
+            const ratio =
+              capacity > 0
+                ? Math.max(station.current_inside_pax ?? 0, 0) / capacity
+                : 0;
+            return { station, ratio };
+          })
+          .filter((entry) => entry.ratio >= 0.9)
+          .sort((left, right) => right.ratio - left.ratio)
+          .slice(0, 2);
+        for (const entry of hotStations) {
+          const stop = stopById.get(entry.station.stop_id);
+          const stopName = stopDisplayName(
+            stop ?? { id: entry.station.stop_id, x: 0, y: 0 }
+          );
+          signals.push({
+            id: `station-capacity:${entry.station.stop_id}`,
+            source: "runtime",
+            severity: entry.ratio >= 1 ? "critical" : "warning",
+            title: `${stopName} nearing capacity`,
+            detail: `${Math.round(entry.ratio * 100)}% full. Consider more service or station expansion.`,
+            target: { kind: "stop", id: entry.station.stop_id },
+            actions: [
+              {
+                id: `station-capacity-open:${entry.station.stop_id}`,
+                label: "Open station",
+                intent: "inspect",
+              },
+            ],
+            persistence: "session",
+          });
+        }
       }
     }
 
@@ -266,6 +328,7 @@ export function useIssueRegistry(args: UseIssueRegistryArgs) {
     args.lineSummaries,
     args.route,
     args.runtimeError,
+    args.runtimeTelemetry,
     args.runtimeLineOps,
     args.runtimeStations,
   ]);
@@ -279,12 +342,17 @@ export function useIssueRegistry(args: UseIssueRegistryArgs) {
       for (const signal of detectedSignals) {
         detectedIds.add(signal.id);
         const existing = next[signal.id];
+        const transientDerivedBlocking = isTransientDerivedBlockingSignal(signal);
+        const shouldDelayActivation =
+          transientDerivedBlocking &&
+          (signal.severity === "critical" || signal.severity === "blocking");
         if (!existing) {
+          const initialState: IssueState = shouldDelayActivation ? "detected" : "active";
           next[signal.id] = {
             id: signal.id,
             source: signal.source,
             severity: signal.severity,
-            state: "active",
+            state: initialState,
             title: signal.title,
             detail: signal.detail,
             target: signal.target ?? null,
@@ -296,14 +364,20 @@ export function useIssueRegistry(args: UseIssueRegistryArgs) {
           };
           continue;
         }
-        const nextState =
-          existing.state === "acknowledged"
-            ? "acknowledged"
-            : existing.state === "archived"
-              ? "active"
-              : existing.state === "resolved"
-                ? "active"
-                : "active";
+        let nextState: IssueState = "active";
+        let nextDetectedAt = existing.detectedAtEpochMs;
+        if (existing.state === "acknowledged") {
+          nextState = "acknowledged";
+        } else if (shouldDelayActivation) {
+          const resetDetectionWindow =
+            existing.state === "resolved" || existing.state === "archived";
+          if (resetDetectionWindow) {
+            nextDetectedAt = now;
+          }
+          const ageMs = now - nextDetectedAt;
+          nextState =
+            ageMs >= TRANSIENT_SIGNAL_ACTIVATION_DELAY_MS ? "active" : "detected";
+        }
         next[signal.id] = {
           ...existing,
           source: signal.source,
@@ -314,14 +388,32 @@ export function useIssueRegistry(args: UseIssueRegistryArgs) {
           target: signal.target ?? null,
           actions: signal.actions ?? [],
           persistence: signal.persistence,
+          detectedAtEpochMs: nextDetectedAt,
           updatedAtEpochMs: now,
-          resolvedAtEpochMs: nextState === "active" || nextState === "acknowledged" ? null : existing.resolvedAtEpochMs ?? null,
+          resolvedAtEpochMs:
+            nextState === "active" ||
+            nextState === "acknowledged" ||
+            nextState === "detected"
+              ? null
+              : existing.resolvedAtEpochMs ?? null,
         };
       }
 
       for (const issueId of Object.keys(next)) {
         if (detectedIds.has(issueId)) continue;
         const issue = next[issueId];
+        if (
+          issue.state === "detected" &&
+          isTransientDerivedBlockingIssue(issue) &&
+          now - issue.detectedAtEpochMs < TRANSIENT_SIGNAL_ACTIVATION_DELAY_MS
+        ) {
+          console.info("[issue-registry] suppressed_transient_issue", {
+            issueId: issue.id,
+            title: issue.title,
+            detail: issue.detail,
+            ageMs: now - issue.detectedAtEpochMs,
+          });
+        }
         if (issue.state === "active" || issue.state === "acknowledged" || issue.state === "detected") {
           next[issueId] = {
             ...issue,

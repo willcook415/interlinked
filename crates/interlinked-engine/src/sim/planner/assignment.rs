@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 pub(super) struct AssignmentKernelOutputs {
     pub(super) link_loads: Vec<LinkLoad>,
@@ -31,6 +32,18 @@ pub(super) struct AssignmentKernelOutputs {
     pub(super) share_boardings_served: f64,
     pub(super) share_demand_overflow_dropped: f64,
     pub(super) share_trips_served: f64,
+    pub(super) assignment_od_rows_with_transit_latent: usize,
+    pub(super) assignment_od_rows_with_attempted: usize,
+    pub(super) assignment_attempted_pax_total: f64,
+    pub(super) assignment_candidate_paths_raw_total: usize,
+    pub(super) assignment_candidate_paths_boardable_total: usize,
+    pub(super) assignment_rejected_no_board_or_alight_total: usize,
+    pub(super) assignment_rejected_unpaired_board_alight_total: usize,
+    pub(super) assignment_iter_path_cache_hits: usize,
+    pub(super) assignment_iter_path_cache_misses: usize,
+    pub(super) assignment_kpi_path_cache_hits: usize,
+    pub(super) assignment_kpi_path_cache_misses: usize,
+    pub(super) service_stop_traces: Vec<PlannerServiceStopTrace>,
 }
 
 pub(super) fn run_assignment_kernel(
@@ -98,6 +111,23 @@ pub(super) fn run_assignment_kernel(
         board_events: Vec<(String, String)>,
         alight_events: Vec<(String, String)>,
     }
+    #[derive(Debug, Clone, Default)]
+    struct AssignmentTransitPathCacheEntry {
+        boardable_paths_with_fare: Vec<BuiltPath>,
+        route_shares: Vec<f64>,
+        expected_fare_base: f64,
+    }
+    #[derive(Debug, Clone, Default)]
+    struct AssignmentKpiPathCacheEntry {
+        raw_paths: Vec<BuiltPath>,
+        boardable_paths_with_fare: Vec<BuiltPath>,
+        route_shares: Vec<f64>,
+        expected_fare_base: f64,
+    }
+    let mut assignment_iter_path_cache_hits = 0usize;
+    let mut assignment_iter_path_cache_misses = 0usize;
+    let mut assignment_kpi_path_cache_hits = 0usize;
+    let mut assignment_kpi_path_cache_misses = 0usize;
 
     for iter in 1..=max_iters {
         // Copy previous iteration flows
@@ -116,6 +146,9 @@ pub(super) fn run_assignment_kernel(
             &prev_link_passengers,
             &prev_extra_wait,
         )?;
+        let mut iter_path_cache = HashMap::<(usize, usize), AssignmentTransitPathCacheEntry>::new();
+        let mut iter_cache_hits = 0usize;
+        let mut iter_cache_misses = 0usize;
 
         for oi in 0..zone_count {
             let origin_node = graph.svc_index.zone_nodes_start + oi;
@@ -127,27 +160,47 @@ pub(super) fn run_assignment_kernel(
                 }
 
                 let dest_node = graph.svc_index.zone_nodes_start + zone_count + od.destination_idx;
-                let paths = dedupe_paths(k_shortest_paths(
-                    &graph,
-                    origin_node,
-                    dest_node,
-                    settings.k_paths,
-                ));
+                let od_key = (od.origin_idx, od.destination_idx);
+                let cache_entry = if let Some(entry) = iter_path_cache.get(&od_key) {
+                    iter_cache_hits = iter_cache_hits.saturating_add(1);
+                    entry
+                } else {
+                    iter_cache_misses = iter_cache_misses.saturating_add(1);
+                    let (_raw_paths, boardable_paths) = super::collect_transit_path_candidates(
+                        &graph,
+                        origin_node,
+                        dest_node,
+                        settings.k_paths,
+                    );
+                    let paths = apply_fare_to_paths(boardable_paths, &s.params);
+                    let shares = if paths.is_empty() {
+                        Vec::new()
+                    } else {
+                        logit_shares(&paths, settings.route_choice_theta)
+                    };
+                    let expected_fare = paths
+                        .iter()
+                        .zip(shares.iter())
+                        .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
+                        .sum::<f64>();
+                    iter_path_cache
+                        .entry(od_key)
+                        .or_insert(AssignmentTransitPathCacheEntry {
+                            boardable_paths_with_fare: paths,
+                            route_shares: shares,
+                            expected_fare_base: expected_fare.max(0.0),
+                        })
+                };
+                let paths = &cache_entry.boardable_paths_with_fare;
                 if paths.is_empty() {
                     continue;
                 }
-
-                let mut paths = apply_fare_to_paths(paths, &s.params);
-                let shares = logit_shares(&paths, settings.route_choice_theta);
-                let expected_fare = paths
-                    .iter()
-                    .zip(shares.iter())
-                    .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
-                    .sum::<f64>();
+                let shares = &cache_entry.route_shares;
+                let expected_fare = cache_entry.expected_fare_base.max(0.0);
                 let elasticity_mult = fare_elasticity_multiplier(&s.params, expected_fare);
                 let od_effective = od_row.transit_captured * elasticity_mult;
 
-                for (p, sh) in paths.iter_mut().zip(shares.iter()) {
+                for (p, sh) in paths.iter().zip(shares.iter()) {
                     let flow = od_effective * sh;
                     if flow <= 0.0 {
                         continue;
@@ -173,6 +226,10 @@ pub(super) fn run_assignment_kernel(
                 }
             }
         }
+        assignment_iter_path_cache_hits =
+            assignment_iter_path_cache_hits.saturating_add(iter_cache_hits);
+        assignment_iter_path_cache_misses =
+            assignment_iter_path_cache_misses.saturating_add(iter_cache_misses);
         // Resolve service occupancy + station throughput/queue constraints.
         if s.params.capacity_enabled {
             let mut new_extra_wait: HashMap<(String, String), f64> = HashMap::new();
@@ -448,6 +505,30 @@ pub(super) fn run_assignment_kernel(
     let mut fare_flow = FareFlowSummary::default();
     let mut assigned_od_flows: Vec<AssignedOdFlow> = Vec::new();
     let mut arrivals_completed_by_stop: HashMap<String, f64> = HashMap::new();
+    let mut assignment_od_rows_with_transit_latent = 0usize;
+    let mut assignment_od_rows_with_attempted = 0usize;
+    let mut assignment_attempted_pax_total = 0.0_f64;
+    let mut assignment_candidate_paths_raw_total = 0usize;
+    let mut assignment_candidate_paths_boardable_total = 0usize;
+    let mut assignment_rejected_no_board_or_alight_total = 0usize;
+    let mut assignment_rejected_unpaired_board_alight_total = 0usize;
+    let mut service_stop_traces = HashMap::<(String, String), PlannerServiceStopTrace>::new();
+    for svc in &s.world.services {
+        if !service_is_active_for_sim(svc) {
+            continue;
+        }
+        for stop_id in &svc.stop_sequence {
+            service_stop_traces
+                .entry((svc.id.clone(), stop_id.clone()))
+                .or_insert_with(|| PlannerServiceStopTrace {
+                    service_id: svc.id.clone(),
+                    line_id: svc.line_id.clone(),
+                    stop_id: stop_id.clone(),
+                    ..PlannerServiceStopTrace::default()
+                });
+        }
+    }
+    let mut kpi_path_cache = HashMap::<(usize, usize), AssignmentKpiPathCacheEntry>::new();
 
     for od_row in &mode_choice_build.rows {
         let od = &od_row.latent;
@@ -458,10 +539,108 @@ pub(super) fn run_assignment_kernel(
             continue;
         }
         let transit_latent = od_row.transit_captured.max(0.0);
+        if transit_latent > 0.0 {
+            assignment_od_rows_with_transit_latent =
+                assignment_od_rows_with_transit_latent.saturating_add(1);
+        }
 
-        let raw_paths = k_shortest_paths(&final_graph, origin_node, dest_node, settings.k_paths);
+        let od_key = (od.origin_idx, od.destination_idx);
+        let cache_entry = if let Some(entry) = kpi_path_cache.get(&od_key) {
+            assignment_kpi_path_cache_hits = assignment_kpi_path_cache_hits.saturating_add(1);
+            entry
+        } else {
+            assignment_kpi_path_cache_misses = assignment_kpi_path_cache_misses.saturating_add(1);
+            let (raw_paths, boardable_paths) = super::collect_transit_path_candidates(
+                &final_graph,
+                origin_node,
+                dest_node,
+                settings.k_paths,
+            );
+            let paths = apply_fare_to_paths(boardable_paths, &s.params);
+            let shares = if paths.is_empty() {
+                Vec::new()
+            } else {
+                logit_shares(&paths, settings.route_choice_theta)
+            };
+            let expected_fare = paths
+                .iter()
+                .zip(shares.iter())
+                .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
+                .sum::<f64>();
+            kpi_path_cache
+                .entry(od_key)
+                .or_insert(AssignmentKpiPathCacheEntry {
+                    raw_paths,
+                    boardable_paths_with_fare: paths,
+                    route_shares: shares,
+                    expected_fare_base: expected_fare.max(0.0),
+                })
+        };
+        let raw_paths = &cache_entry.raw_paths;
+        assignment_candidate_paths_raw_total =
+            assignment_candidate_paths_raw_total.saturating_add(raw_paths.len());
+        for path in raw_paths {
+            let class = super::classify_boardable_transit(path);
+            let mut unique_board_keys = HashSet::<(String, String)>::new();
+            for (service_id, board_stop_id) in &path.board_events {
+                unique_board_keys.insert((service_id.clone(), board_stop_id.clone()));
+            }
+            for (service_id, board_stop_id) in unique_board_keys {
+                let entry = service_stop_traces
+                    .entry((service_id.clone(), board_stop_id.clone()))
+                    .or_insert_with(|| PlannerServiceStopTrace {
+                        service_id: service_id.clone(),
+                        stop_id: board_stop_id.clone(),
+                        ..PlannerServiceStopTrace::default()
+                    });
+                entry.raw_candidate_paths = entry.raw_candidate_paths.saturating_add(1);
+                match class {
+                    super::BoardableTransitClassification::MissingBoardOrAlight => {
+                        entry.rejected_no_board_or_alight_paths =
+                            entry.rejected_no_board_or_alight_paths.saturating_add(1);
+                    }
+                    super::BoardableTransitClassification::UnpairedBoardAlight => {
+                        entry.rejected_unpaired_board_alight_paths =
+                            entry.rejected_unpaired_board_alight_paths.saturating_add(1);
+                    }
+                    super::BoardableTransitClassification::Boardable => {}
+                }
+            }
+            match class {
+                super::BoardableTransitClassification::MissingBoardOrAlight => {
+                    assignment_rejected_no_board_or_alight_total =
+                        assignment_rejected_no_board_or_alight_total.saturating_add(1);
+                }
+                super::BoardableTransitClassification::UnpairedBoardAlight => {
+                    assignment_rejected_unpaired_board_alight_total =
+                        assignment_rejected_unpaired_board_alight_total.saturating_add(1);
+                }
+                super::BoardableTransitClassification::Boardable => {}
+            }
+        }
         let k_paths_raw = raw_paths.len();
-        let mut paths = apply_fare_to_paths(dedupe_paths(raw_paths), &s.params);
+        let paths = &cache_entry.boardable_paths_with_fare;
+        for path in paths {
+            if !super::path_is_boardable_transit(path) {
+                continue;
+            }
+            assignment_candidate_paths_boardable_total =
+                assignment_candidate_paths_boardable_total.saturating_add(1);
+            let mut unique_board_keys = HashSet::<(String, String)>::new();
+            for (service_id, board_stop_id) in &path.board_events {
+                unique_board_keys.insert((service_id.clone(), board_stop_id.clone()));
+            }
+            for (service_id, board_stop_id) in unique_board_keys {
+                let entry = service_stop_traces
+                    .entry((service_id.clone(), board_stop_id.clone()))
+                    .or_insert_with(|| PlannerServiceStopTrace {
+                        service_id: service_id.clone(),
+                        stop_id: board_stop_id.clone(),
+                        ..PlannerServiceStopTrace::default()
+                    });
+                entry.boardable_candidate_paths = entry.boardable_candidate_paths.saturating_add(1);
+            }
+        }
         let k_paths_after_dedupe = paths.len();
 
         let mut chosen_paths: Vec<AssignedPathSummary> = Vec::new();
@@ -484,14 +663,14 @@ pub(super) fn run_assignment_kernel(
             continue;
         }
 
-        let shares = logit_shares(&paths, settings.route_choice_theta);
-        let expected_fare = paths
-            .iter()
-            .zip(shares.iter())
-            .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
-            .sum::<f64>();
+        let shares = &cache_entry.route_shares;
+        let expected_fare = cache_entry.expected_fare_base.max(0.0);
         let elasticity_mult = fare_elasticity_multiplier(&s.params, expected_fare);
         let attempted_network = transit_latent * elasticity_mult;
+        if attempted_network > 0.0 {
+            assignment_od_rows_with_attempted = assignment_od_rows_with_attempted.saturating_add(1);
+        }
+        assignment_attempted_pax_total += attempted_network.max(0.0);
         let suppressed =
             (transit_latent - attempted_network).max(0.0) + od_row.suppressed_or_no_trip.max(0.0);
         total_trips_attempted += attempted_network;
@@ -526,7 +705,7 @@ pub(super) fn run_assignment_kernel(
             });
         }
 
-        for (p, sh) in paths.iter_mut().zip(shares.iter()) {
+        for (p, sh) in paths.iter().zip(shares.iter()) {
             let attempted = attempted_network * sh.max(0.0);
             if attempted <= 0.0 {
                 continue;
@@ -778,6 +957,15 @@ pub(super) fn run_assignment_kernel(
     }
     let mut residual_by_board = HashMap::<(String, String), f64>::new();
     for ((service_id, board_stop_id, _dest_stop_id), cohort) in &cohort_by_leg {
+        let trace_entry = service_stop_traces
+            .entry((service_id.clone(), board_stop_id.clone()))
+            .or_insert_with(|| PlannerServiceStopTrace {
+                service_id: service_id.clone(),
+                stop_id: board_stop_id.clone(),
+                ..PlannerServiceStopTrace::default()
+            });
+        trace_entry.planner_attempted_pax += cohort.attempted.max(0.0);
+        trace_entry.planner_assigned_pax += cohort.boarded.max(0.0);
         let residual = (cohort.attempted - cohort.boarded).max(0.0);
         if residual <= 0.0 {
             continue;
@@ -819,6 +1007,7 @@ pub(super) fn run_assignment_kernel(
                     attempted_pax: attempted,
                     boarded_pax: boarded,
                     alighted_pax: alighted,
+                    fare_delta_base: 0.0,
                     queue_end_pax: queue_end,
                 })
             },
@@ -838,6 +1027,27 @@ pub(super) fn run_assignment_kernel(
         fare_flow.completed_journeys_pax = fare_flow.completed_journeys_pax.max(0.0);
         fare_flow.recognized_revenue_base = fare_flow.recognized_revenue_base.max(0.0);
     }
+    for trace in service_stop_traces.values_mut() {
+        trace.reason_code = if trace.raw_candidate_paths == 0 {
+            Some("no_raw_candidate_paths_touch_service_stop".to_string())
+        } else if trace.boardable_candidate_paths == 0 {
+            Some("raw_paths_non_boardable_or_unpaired".to_string())
+        } else if trace.planner_attempted_pax <= 0.0 {
+            Some("mode_capture_or_elasticity_zero".to_string())
+        } else if trace.planner_assigned_pax <= 0.0 {
+            Some("capacity_or_dispatch_zero".to_string())
+        } else {
+            None
+        };
+    }
+    let mut service_stop_traces = service_stop_traces
+        .into_values()
+        .collect::<Vec<PlannerServiceStopTrace>>();
+    service_stop_traces.sort_by(|a, b| {
+        a.service_id
+            .cmp(&b.service_id)
+            .then_with(|| a.stop_id.cmp(&b.stop_id))
+    });
 
     #[derive(Default)]
     struct StopStateBuilder {
@@ -978,6 +1188,15 @@ pub(super) fn run_assignment_kernel(
         });
     }
     service_load_layer_light.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+    eprintln!(
+        "[rt-planner-cache] assignment mode_choice_rows={} unique_od_pairs_kpi={} iter_cache_hits={} iter_cache_misses={} kpi_cache_hits={} kpi_cache_misses={}",
+        mode_choice_build.rows.len(),
+        kpi_path_cache.len(),
+        assignment_iter_path_cache_hits,
+        assignment_iter_path_cache_misses,
+        assignment_kpi_path_cache_hits,
+        assignment_kpi_path_cache_misses,
+    );
 
     Ok(AssignmentKernelOutputs {
         link_loads,
@@ -1010,6 +1229,18 @@ pub(super) fn run_assignment_kernel(
         share_boardings_served,
         share_demand_overflow_dropped,
         share_trips_served,
+        assignment_od_rows_with_transit_latent,
+        assignment_od_rows_with_attempted,
+        assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
+        assignment_candidate_paths_raw_total,
+        assignment_candidate_paths_boardable_total,
+        assignment_rejected_no_board_or_alight_total,
+        assignment_rejected_unpaired_board_alight_total,
+        assignment_iter_path_cache_hits,
+        assignment_iter_path_cache_misses,
+        assignment_kpi_path_cache_hits,
+        assignment_kpi_path_cache_misses,
+        service_stop_traces,
     })
 }
 

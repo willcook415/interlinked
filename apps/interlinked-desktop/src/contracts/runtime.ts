@@ -1,5 +1,12 @@
 import type { SimulationClock, SimulationSpeed } from "./session";
 
+export type CounterProvenance =
+  | "authoritative_sim"
+  | "strategic_estimate"
+  | "runtime_projection"
+  | "animation_only"
+  | "debug_legacy";
+
 export type SimulationAdvanceEconomy = {
   current_balance_base: number;
   cumulative_revenue_base: number;
@@ -50,6 +57,39 @@ export type RuntimePerfTelemetry = {
   strategic_refresh_due?: boolean;
   strategic_refresh_interval_ticks?: number;
   runtime_views_materialized?: boolean;
+  lifecycle_diagnostics?: RuntimeLifecycleDiagnostics | null;
+  fare_source_diagnostic?: RuntimeFareSourceTelemetry | null;
+};
+
+export type RuntimeLifecycleDiagnostics = {
+  source_label?: string;
+  queue_start_pax?: number;
+  new_waiting_pax?: number;
+  boarded_pax?: number;
+  queue_overflow_dropped_pax?: number;
+  queue_end_pax?: number;
+  queue_balance_error?: number;
+  onboard_start_pax?: number;
+  onboard_end_pax?: number;
+  alighted_pax?: number;
+  onboard_balance_error?: number;
+  fare_recognized_pax?: number;
+  fare_recognized_base?: number;
+  missing_fare_basis_pax?: number;
+  has_queue_conservation_error?: boolean;
+  has_onboard_conservation_error?: boolean;
+  has_missing_fare_basis?: boolean;
+};
+
+export type RuntimeFareSourceTelemetry = {
+  selected_provenance?: CounterProvenance | string;
+  selected_source_label?: string;
+  selected_fare_delta_base?: number;
+  selected_passenger_count?: number;
+  used_authoritative_fare?: boolean;
+  used_strategic_fare_fallback?: boolean;
+  used_runtime_projection_fare_fallback?: boolean;
+  fallback_used?: boolean;
 };
 
 export type TrainRuntimeView = {
@@ -70,7 +110,8 @@ export type TrainRuntimeView = {
   y: number;
   at_stop_id?: string | null;
   in_motion: boolean;
-  provenance: string;
+  provenance?: CounterProvenance | string;
+  passenger_counter_provenance?: CounterProvenance | string;
 };
 
 export type StationRuntimeView = {
@@ -81,7 +122,8 @@ export type StationRuntimeView = {
   entries_per_hour: number;
   exits_per_hour: number;
   avg_wait_to_board_s: number;
-  provenance: string;
+  provenance?: CounterProvenance | string;
+  passenger_counter_provenance?: CounterProvenance | string;
 };
 
 export type LineOpsRuntimeView = {
@@ -93,7 +135,8 @@ export type LineOpsRuntimeView = {
   denied_boardings_per_hour: number;
   queue_end_pax?: number;
   mean_wait_s: number;
-  provenance: string;
+  provenance?: CounterProvenance | string;
+  passenger_counter_provenance?: CounterProvenance | string;
 };
 
 export type RuntimeSnapshot = {
@@ -112,6 +155,8 @@ export type RuntimeSnapshot = {
   line_ops?: LineOpsRuntimeView[];
   provenance_warnings?: string[];
   trains_authoritative?: boolean;
+  passenger_counter_provenance?: CounterProvenance | string;
+  fare_counter_provenance?: CounterProvenance | string;
 };
 
 export type RuntimeFastSnapshot = {
@@ -125,6 +170,7 @@ export type RuntimeFastSnapshot = {
   line_ops?: LineOpsRuntimeView[];
   provenance_warnings?: string[];
   trains_authoritative?: boolean;
+  passenger_counter_provenance?: CounterProvenance | string;
 };
 
 export type RuntimeStrategicSnapshot = {
@@ -140,6 +186,8 @@ export type RuntimeStrategicSnapshot = {
   telemetry: RuntimePerfTelemetry;
   provenance_warnings?: string[];
   trains_authoritative?: boolean;
+  passenger_counter_provenance?: CounterProvenance | string;
+  fare_counter_provenance?: CounterProvenance | string;
 };
 
 export type RuntimeLoopStatus = {
