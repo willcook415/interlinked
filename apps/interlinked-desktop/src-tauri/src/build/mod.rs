@@ -402,6 +402,8 @@ mod tests {
             passenger_cohorts: vec![],
             fare_flow: FareFlowSummary::default(),
             lifecycle_conservation: LifecycleConservationSummary::default(),
+            strategic_planner_timing:
+                interlinked_engine::sim::StrategicPlannerTimingDiagnostics::default(),
             zone_demand_profiles: vec![],
             latent_od_demand: vec![],
             assigned_od_flows: vec![],

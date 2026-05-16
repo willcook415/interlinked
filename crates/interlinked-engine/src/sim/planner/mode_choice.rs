@@ -21,6 +21,7 @@ pub(super) fn apply_mode_choice_capture(
     if active_latent.is_empty() || s.world.zones.is_empty() {
         return Ok(out);
     }
+    let _mode_choice_candidate_context = RouteCandidateContextId::base_graph();
     #[derive(Debug, Clone)]
     struct ModeChoiceTransitPathCacheEntry {
         raw_transit_paths: Vec<BuiltPath>,
@@ -32,6 +33,8 @@ pub(super) fn apply_mode_choice_capture(
 
     let zone_count = s.world.zones.len();
     let mut zero_boardable_debug_emitted = 0usize;
+    let mut zero_boardable_od_keys = std::collections::HashSet::<(usize, usize)>::new();
+    let debug_zero_boardable_logs = std::env::var_os("INTERLINKED_DEBUG_ZERO_BOARDABLE").is_some();
     let mut transit_path_cache = HashMap::<(usize, usize), ModeChoiceTransitPathCacheEntry>::new();
     let mut transit_path_cache_hits = 0usize;
     let mut transit_path_cache_misses = 0usize;
@@ -290,7 +293,11 @@ pub(super) fn apply_mode_choice_capture(
         let rejected_unpaired_board_alight = cache_entry.rejected_unpaired_board_alight;
         let transit_paths = &cache_entry.transit_paths;
         let candidate_paths_boardable = transit_paths.len();
-        if candidate_paths_raw > 0
+        if candidate_paths_raw > 0 && candidate_paths_boardable == 0 {
+            zero_boardable_od_keys.insert(od_key);
+        }
+        if debug_zero_boardable_logs
+            && candidate_paths_raw > 0
             && candidate_paths_boardable == 0
             && zero_boardable_debug_emitted < 6
         {
@@ -799,6 +806,15 @@ pub(super) fn apply_mode_choice_capture(
             transit_path_cache_misses,
         );
     }
+    let zero_boardable_unique_od_count = zero_boardable_od_keys.len();
+    out.path_cache_hits = transit_path_cache_hits;
+    out.path_cache_misses = transit_path_cache_misses;
+    out.zero_boardable_unique_od_count = zero_boardable_unique_od_count;
+    out.zero_boardable_log_suppressed_count = if debug_zero_boardable_logs {
+        zero_boardable_unique_od_count.saturating_sub(zero_boardable_debug_emitted)
+    } else {
+        zero_boardable_unique_od_count
+    };
 
     Ok(out)
 }

@@ -6,6 +6,7 @@ use crate::*;
 use interlinked_engine::model::{Link, Meta, Scenario, Service, Stop, World, Zone};
 use interlinked_engine::platform::{ScenarioDocument, SimulationService};
 use interlinked_engine::sim::types::StrategicPlannerTimingDiagnostics;
+use interlinked_engine::{run_simulation_with_settings, SimulationSettings};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
@@ -65,6 +66,67 @@ struct RuntimePerfReport {
     first_strategic_refresh_reason: Option<String>,
     first_strategic_planner_timing: Option<StrategicPlannerTimingDiagnostics>,
     stats: RuntimePerfStats,
+}
+
+#[derive(Debug)]
+struct MsaTopologyPerfReport {
+    scenario_name: &'static str,
+    stop_count: usize,
+    service_count: usize,
+    link_count: usize,
+    requested_iterations: usize,
+    assignment_iterations: usize,
+    total_ms: f64,
+    mode_choice_ms: f64,
+    assignment_ms: f64,
+    lightweight_outputs_ms: f64,
+    full_route_searches: usize,
+    structural_candidates: usize,
+    candidate_evaluations: usize,
+    potential_structure_reuse: usize,
+    repeated_assignment_od: usize,
+    topology_same: usize,
+    topology_changed: usize,
+    topology_unknown: usize,
+    route_contexts: usize,
+    route_cache_hits: usize,
+    route_cache_misses: usize,
+    route_search_total_ms: f64,
+    route_graph_search_ms: f64,
+    route_candidate_expansion_ms: f64,
+    route_path_reconstruction_ms: f64,
+    route_built_path_construction_ms: f64,
+    route_path_dedupe_ms: f64,
+    route_candidate_classification_ms: f64,
+    route_cost_eval_ms: f64,
+    route_cache_lookup_ms: f64,
+    route_cache_insert_ms: f64,
+    route_diagnostics_fingerprint_ms: f64,
+    route_other_ms: f64,
+    route_search_requests: usize,
+    initial_dijkstra_calls: usize,
+    expansion_dijkstra_calls: usize,
+    expansion_attempts: usize,
+    expansion_successes: usize,
+    expansion_no_path: usize,
+    expansion_duplicates: usize,
+    expansion_heap_exhausted: usize,
+    expansion_no_path_memo_hits: usize,
+    expansion_no_path_memo_inserts: usize,
+    expansion_skip_no_outgoing: usize,
+    expansion_skip_spur_banned: usize,
+    expansion_skip_target_banned: usize,
+    early_exit_k_le_1: usize,
+    dijkstra_relaxations: usize,
+    graph_search_invocations: usize,
+    built_paths: usize,
+    candidate_paths: usize,
+    rejected_candidates: usize,
+    total_path_links_seen: usize,
+    total_board_events_built: usize,
+    total_alight_events_built: usize,
+    max_candidates_per_od: usize,
+    lifecycle_clean: bool,
 }
 
 impl RuntimePerfStats {
@@ -228,6 +290,118 @@ fn synthetic_runtime_scenario(scale: RuntimePerfScenarioScale) -> Scenario {
             demand_cells: Vec::new(),
             demand_meta: None,
         },
+    }
+}
+
+fn synthetic_msa_topology_scenario() -> Scenario {
+    let scale = RuntimePerfScenarioScale {
+        name: "msa_multi_iter",
+        stop_count: 36,
+        line_count: 6,
+        cohorts_per_service: 10,
+        queue_pax_per_cohort: 32.0,
+        warmup_iterations: 0,
+        iterations: 1,
+    };
+    let mut scenario = synthetic_runtime_scenario(scale);
+    scenario.params.assignment_max_iters = 4;
+    scenario.params.assignment_convergence_rel = 0.0;
+    scenario.params.route_choice_k = 3;
+    scenario.params.trips_per_person = 2.5;
+    scenario.params.queue_max_extra_wait_s = 1800.0;
+
+    // Perf-only congestion setup: keep production defaults untouched, but make
+    // graph costs sensitive enough for MSA iterations to have something to test.
+    for link in &mut scenario.world.links {
+        link.capacity_per_hour = Some(80.0);
+    }
+    for service in &mut scenario.world.services {
+        service.vehicle_capacity = 42.0;
+        service.stock_units_owned = Some(1);
+        service.stock_units_assigned = Some(1);
+        service.operating_tph = Some(4.0);
+        service.headway_s = 900.0;
+    }
+    for zone in &mut scenario.world.zones {
+        zone.population = 25_000.0;
+        zone.jobs = 24_000.0;
+    }
+
+    scenario
+}
+
+fn run_msa_topology_perf_scenario() -> MsaTopologyPerfReport {
+    let scenario = synthetic_msa_topology_scenario();
+    let mut settings = SimulationSettings::from_params(&scenario.params);
+    settings.msa_max_iters = 4;
+    settings.convergence_rel = 0.0;
+    settings.k_paths = 3;
+    settings.lightweight_outputs = true;
+
+    let output = run_simulation_with_settings(&scenario, &settings, None)
+        .expect("MSA topology perf scenario should run");
+    let timing = &output.strategic_planner_timing;
+    let lifecycle = &output.lifecycle_conservation;
+
+    MsaTopologyPerfReport {
+        scenario_name: "msa_multi_iter",
+        stop_count: scenario.world.stops.len(),
+        service_count: scenario.world.services.len(),
+        link_count: scenario.world.links.len(),
+        requested_iterations: settings.msa_max_iters,
+        assignment_iterations: output.diagnostics.msa_iterations,
+        total_ms: timing.total_ms,
+        mode_choice_ms: timing.mode_choice_ms,
+        assignment_ms: timing.assignment_ms,
+        lightweight_outputs_ms: timing.lightweight_outputs_ms,
+        full_route_searches: timing.assignment_full_route_search_count,
+        structural_candidates: timing.assignment_structural_candidate_count,
+        candidate_evaluations: timing.assignment_candidate_evaluation_count,
+        potential_structure_reuse: timing.assignment_potential_structure_reuse_count,
+        repeated_assignment_od: timing.assignment_repeated_od_across_iterations,
+        topology_same: timing.assignment_topology_same_count,
+        topology_changed: timing.assignment_topology_changed_count,
+        topology_unknown: timing.assignment_topology_unknown_count,
+        route_contexts: timing.route_candidate_context_count,
+        route_cache_hits: timing.route_candidate_cache_hits,
+        route_cache_misses: timing.route_candidate_cache_misses,
+        route_search_total_ms: timing.assignment_route_search_total_ms,
+        route_graph_search_ms: timing.assignment_graph_search_ms,
+        route_candidate_expansion_ms: timing.assignment_candidate_expansion_ms,
+        route_path_reconstruction_ms: timing.assignment_path_reconstruction_ms,
+        route_built_path_construction_ms: timing.assignment_built_path_construction_ms,
+        route_path_dedupe_ms: timing.assignment_path_dedupe_ms,
+        route_candidate_classification_ms: timing.assignment_candidate_classification_ms,
+        route_cost_eval_ms: timing.assignment_cost_eval_ms,
+        route_cache_lookup_ms: timing.assignment_route_cache_lookup_ms,
+        route_cache_insert_ms: timing.assignment_cache_insert_ms,
+        route_diagnostics_fingerprint_ms: timing.assignment_diagnostics_fingerprint_ms,
+        route_other_ms: timing.assignment_other_route_search_ms,
+        route_search_requests: timing.assignment_route_search_request_count,
+        initial_dijkstra_calls: timing.assignment_initial_dijkstra_call_count,
+        expansion_dijkstra_calls: timing.assignment_expansion_dijkstra_call_count,
+        expansion_attempts: timing.assignment_expansion_attempt_count,
+        expansion_successes: timing.assignment_expansion_success_count,
+        expansion_no_path: timing.assignment_expansion_no_path_count,
+        expansion_duplicates: timing.assignment_expansion_duplicate_count,
+        expansion_heap_exhausted: timing.assignment_expansion_heap_exhausted_count,
+        expansion_no_path_memo_hits: timing.assignment_expansion_no_path_memo_hit_count,
+        expansion_no_path_memo_inserts: timing.assignment_expansion_no_path_memo_insert_count,
+        expansion_skip_no_outgoing: timing.assignment_expansion_skip_no_outgoing_count,
+        expansion_skip_spur_banned: timing.assignment_expansion_skip_spur_banned_count,
+        expansion_skip_target_banned: timing.assignment_expansion_skip_target_banned_count,
+        early_exit_k_le_1: timing.assignment_early_exit_k_le_1_count,
+        dijkstra_relaxations: timing.assignment_dijkstra_relaxation_count,
+        graph_search_invocations: timing.assignment_graph_search_invocation_count,
+        built_paths: timing.assignment_built_path_count,
+        candidate_paths: timing.assignment_route_candidate_path_count,
+        rejected_candidates: timing.assignment_route_candidate_rejected_count,
+        total_path_links_seen: timing.assignment_route_total_path_links_seen,
+        total_board_events_built: timing.assignment_route_total_board_events_built,
+        total_alight_events_built: timing.assignment_route_total_alight_events_built,
+        max_candidates_per_od: timing.assignment_route_max_candidate_count_per_od,
+        lifecycle_clean: lifecycle.queue_balance_error.abs() <= 1e-6
+            && lifecycle.onboard_balance_error.abs() <= 1e-6,
     }
 }
 
@@ -609,7 +783,7 @@ fn print_report(report: &RuntimePerfReport) {
             timing.temporal_bundle_ms,
         );
         eprintln!(
-            "[runtime-perf] scenario={} first_strategic_counts zones={} stops={} links={} services={} demand_cells={} graph_nodes={} graph_edges={} active_latent={} mode_choice_rows={} assigned_od={} board_loads={} cohorts={} mode_paths_raw={} mode_paths_boardable={} assignment_paths_raw={} assignment_paths_boardable={} assignment_cache_iter={}/{} assignment_cache_kpi={}/{} attempted_pax={:.3}",
+            "[runtime-perf] scenario={} first_strategic_counts zones={} stops={} links={} services={} demand_cells={} graph_nodes={} graph_edges={} active_latent={} mode_choice_rows={} assigned_od={} board_loads={} cohorts={} mode_paths_raw={} mode_paths_boardable={} assignment_paths_raw={} assignment_paths_boardable={} mode_choice_cache={}/{} assignment_cache_iter={}/{} assignment_cache_kpi={}/{} route_contexts={} route_cache={}/{} assignment_iter_requests={} assignment_kpi_requests={} kpi_requery_avoided={} assignment_to_kpi_context_blocked={} assignment_full_route_searches={} structural_candidates={} candidate_evaluations={} potential_structure_reuse={} repeated_assignment_od={} topology_same={} topology_changed={} topology_unknown={} stage_unique_od_queries={} cross_stage_duplicate_od_estimate={} assignment_to_kpi_requery_estimate={} zero_boardable_unique_od={} zero_boardable_logs_suppressed={} attempted_pax={:.3}",
             report.scenario_name,
             timing.zones,
             timing.stops,
@@ -627,13 +801,153 @@ fn print_report(report: &RuntimePerfReport) {
             timing.mode_choice_candidate_paths_boardable_total,
             timing.assignment_candidate_paths_raw_total,
             timing.assignment_candidate_paths_boardable_total,
+            timing.mode_choice_path_cache_hits,
+            timing.mode_choice_path_cache_misses,
             timing.assignment_iter_path_cache_hits,
             timing.assignment_iter_path_cache_misses,
             timing.assignment_kpi_path_cache_hits,
             timing.assignment_kpi_path_cache_misses,
+            timing.route_candidate_context_count,
+            timing.route_candidate_cache_hits,
+            timing.route_candidate_cache_misses,
+            timing.assignment_iter_path_requests,
+            timing.assignment_kpi_path_requests,
+            timing.kpi_requery_avoided_count,
+            timing.assignment_to_kpi_incompatible_context_count,
+            timing.assignment_full_route_search_count,
+            timing.assignment_structural_candidate_count,
+            timing.assignment_candidate_evaluation_count,
+            timing.assignment_potential_structure_reuse_count,
+            timing.assignment_repeated_od_across_iterations,
+            timing.assignment_topology_same_count,
+            timing.assignment_topology_changed_count,
+            timing.assignment_topology_unknown_count,
+            timing.candidate_stage_unique_od_query_count,
+            timing.candidate_cross_stage_duplicate_od_estimate,
+            timing.assignment_to_kpi_requery_estimate,
+            timing.mode_choice_zero_boardable_unique_od_count,
+            timing.mode_choice_zero_boardable_log_suppressed_count,
             timing.assignment_attempted_pax_total,
         );
+        eprintln!(
+            "[runtime-perf] scenario={} first_strategic_route_search total_ms={:.3} graph_search_ms={:.3} candidate_expansion_ms={:.3} path_reconstruct_ms={:.3} built_path_ms={:.3} dedupe_ms={:.3} classify_ms={:.3} cost_eval_ms={:.3} cache_lookup_ms={:.3} cache_insert_ms={:.3} fingerprint_ms={:.3} other_ms={:.3}",
+            report.scenario_name,
+            timing.assignment_route_search_total_ms,
+            timing.assignment_graph_search_ms,
+            timing.assignment_candidate_expansion_ms,
+            timing.assignment_path_reconstruction_ms,
+            timing.assignment_built_path_construction_ms,
+            timing.assignment_path_dedupe_ms,
+            timing.assignment_candidate_classification_ms,
+            timing.assignment_cost_eval_ms,
+            timing.assignment_route_cache_lookup_ms,
+            timing.assignment_cache_insert_ms,
+            timing.assignment_diagnostics_fingerprint_ms,
+            timing.assignment_other_route_search_ms,
+        );
+        eprintln!(
+            "[runtime-perf] scenario={} first_strategic_route_counts requests={} initial_dijkstra={} expansion_dijkstra={} expansion_attempts={} expansion_successes={} expansion_no_path={} expansion_duplicates={} expansion_heap_exhausted={} memo_hits={} memo_inserts={} skip_no_outgoing={} skip_spur_banned={} skip_target_banned={} early_exit_k_le_1={} dijkstra_relaxations={} graph_searches={} built_paths={} candidate_paths={} rejected_candidates={} links_seen={} board_events={} alight_events={} max_candidates_per_od={}",
+            report.scenario_name,
+            timing.assignment_route_search_request_count,
+            timing.assignment_initial_dijkstra_call_count,
+            timing.assignment_expansion_dijkstra_call_count,
+            timing.assignment_expansion_attempt_count,
+            timing.assignment_expansion_success_count,
+            timing.assignment_expansion_no_path_count,
+            timing.assignment_expansion_duplicate_count,
+            timing.assignment_expansion_heap_exhausted_count,
+            timing.assignment_expansion_no_path_memo_hit_count,
+            timing.assignment_expansion_no_path_memo_insert_count,
+            timing.assignment_expansion_skip_no_outgoing_count,
+            timing.assignment_expansion_skip_spur_banned_count,
+            timing.assignment_expansion_skip_target_banned_count,
+            timing.assignment_early_exit_k_le_1_count,
+            timing.assignment_dijkstra_relaxation_count,
+            timing.assignment_graph_search_invocation_count,
+            timing.assignment_built_path_count,
+            timing.assignment_route_candidate_path_count,
+            timing.assignment_route_candidate_rejected_count,
+            timing.assignment_route_total_path_links_seen,
+            timing.assignment_route_total_board_events_built,
+            timing.assignment_route_total_alight_events_built,
+            timing.assignment_route_max_candidate_count_per_od,
+        );
     }
+}
+
+fn print_msa_topology_report(report: &MsaTopologyPerfReport) {
+    eprintln!(
+        "[runtime-perf] scenario={} direct_planner=true stops={} services={} links={} requested_iters={} assignment_iters={} lifecycle_clean={} total_ms={:.3} mode_choice_ms={:.3} assignment_ms={:.3} lightweight_outputs_ms={:.3}",
+        report.scenario_name,
+        report.stop_count,
+        report.service_count,
+        report.link_count,
+        report.requested_iterations,
+        report.assignment_iterations,
+        report.lifecycle_clean,
+        report.total_ms,
+        report.mode_choice_ms,
+        report.assignment_ms,
+        report.lightweight_outputs_ms,
+    );
+    eprintln!(
+        "[runtime-perf] scenario={} msa_topology full_route_searches={} structural_candidates={} candidate_evaluations={} potential_structure_reuse={} repeated_assignment_od={} topology_same={} topology_changed={} topology_unknown={} route_contexts={} route_cache={}/{}",
+        report.scenario_name,
+        report.full_route_searches,
+        report.structural_candidates,
+        report.candidate_evaluations,
+        report.potential_structure_reuse,
+        report.repeated_assignment_od,
+        report.topology_same,
+        report.topology_changed,
+        report.topology_unknown,
+        report.route_contexts,
+        report.route_cache_hits,
+        report.route_cache_misses,
+    );
+    eprintln!(
+        "[runtime-perf] scenario={} msa_route_search total_ms={:.3} graph_search_ms={:.3} candidate_expansion_ms={:.3} path_reconstruct_ms={:.3} built_path_ms={:.3} dedupe_ms={:.3} classify_ms={:.3} cost_eval_ms={:.3} cache_lookup_ms={:.3} cache_insert_ms={:.3} fingerprint_ms={:.3} other_ms={:.3}",
+        report.scenario_name,
+        report.route_search_total_ms,
+        report.route_graph_search_ms,
+        report.route_candidate_expansion_ms,
+        report.route_path_reconstruction_ms,
+        report.route_built_path_construction_ms,
+        report.route_path_dedupe_ms,
+        report.route_candidate_classification_ms,
+        report.route_cost_eval_ms,
+        report.route_cache_lookup_ms,
+        report.route_cache_insert_ms,
+        report.route_diagnostics_fingerprint_ms,
+        report.route_other_ms,
+    );
+    eprintln!(
+        "[runtime-perf] scenario={} msa_route_counts requests={} initial_dijkstra={} expansion_dijkstra={} expansion_attempts={} expansion_successes={} expansion_no_path={} expansion_duplicates={} expansion_heap_exhausted={} memo_hits={} memo_inserts={} skip_no_outgoing={} skip_spur_banned={} skip_target_banned={} early_exit_k_le_1={} dijkstra_relaxations={} graph_searches={} built_paths={} candidate_paths={} rejected_candidates={} links_seen={} board_events={} alight_events={} max_candidates_per_od={}",
+        report.scenario_name,
+        report.route_search_requests,
+        report.initial_dijkstra_calls,
+        report.expansion_dijkstra_calls,
+        report.expansion_attempts,
+        report.expansion_successes,
+        report.expansion_no_path,
+        report.expansion_duplicates,
+        report.expansion_heap_exhausted,
+        report.expansion_no_path_memo_hits,
+        report.expansion_no_path_memo_inserts,
+        report.expansion_skip_no_outgoing,
+        report.expansion_skip_spur_banned,
+        report.expansion_skip_target_banned,
+        report.early_exit_k_le_1,
+        report.dijkstra_relaxations,
+        report.graph_search_invocations,
+        report.built_paths,
+        report.candidate_paths,
+        report.rejected_candidates,
+        report.total_path_links_seen,
+        report.total_board_events_built,
+        report.total_alight_events_built,
+        report.max_candidates_per_od,
+    );
 }
 
 #[test]
@@ -673,7 +987,74 @@ fn runtime_perf_scenario_builder_smoke() {
     assert!(first_timing.total_ms >= 0.0);
     assert!(first_timing.graph_build_ms >= 0.0);
     assert!(first_timing.assignment_ms >= 0.0);
+    assert!(first_timing.mode_choice_path_cache_misses > 0);
+    assert!(
+        first_timing.assignment_iter_path_requests
+            >= first_timing.assignment_iter_path_cache_misses
+    );
+    assert!(
+        first_timing.assignment_kpi_path_requests >= first_timing.assignment_kpi_path_cache_misses
+    );
+    assert!(first_timing.route_candidate_context_count >= 2);
+    assert_eq!(
+        first_timing.kpi_requery_avoided_count,
+        first_timing.assignment_kpi_path_cache_hits
+    );
+    assert!(
+        first_timing.assignment_full_route_search_count
+            >= first_timing.assignment_iter_path_cache_misses
+    );
+    assert!(
+        first_timing.assignment_candidate_evaluation_count
+            >= first_timing.assignment_potential_structure_reuse_count
+    );
+    assert!(first_timing.assignment_route_search_total_ms >= 0.0);
+    assert!(
+        first_timing.assignment_graph_search_invocation_count
+            >= first_timing.assignment_iter_path_cache_misses
+    );
+    assert_eq!(
+        first_timing.assignment_graph_search_invocation_count,
+        first_timing
+            .assignment_initial_dijkstra_call_count
+            .saturating_add(first_timing.assignment_expansion_dijkstra_call_count)
+    );
+    assert!(first_timing.assignment_built_path_count > 0);
+    assert!(
+        first_timing.assignment_route_search_request_count
+            >= first_timing.assignment_iter_path_requests
+    );
     assert_ne!(report.fare_source, CounterProvenance::RuntimeProjection);
+
+    let msa_report = run_msa_topology_perf_scenario();
+    assert_eq!(msa_report.requested_iterations, 4);
+    assert!(
+        msa_report.assignment_iterations > 1,
+        "MSA topology perf scenario should exercise repeated assignment iterations"
+    );
+    assert!(
+        msa_report.candidate_evaluations >= msa_report.potential_structure_reuse,
+        "potential structural reuse must be a subset of evaluated candidates"
+    );
+    assert!(msa_report.route_search_total_ms >= 0.0);
+    assert!(
+        msa_report.graph_search_invocations >= msa_report.full_route_searches,
+        "each route-search miss should invoke at least one graph search"
+    );
+    assert_eq!(
+        msa_report.graph_search_invocations,
+        msa_report
+            .initial_dijkstra_calls
+            .saturating_add(msa_report.expansion_dijkstra_calls)
+    );
+    assert!(
+        msa_report.expansion_attempts
+            >= msa_report
+                .expansion_successes
+                .saturating_add(msa_report.expansion_duplicates)
+    );
+    assert!(msa_report.built_paths > 0);
+    assert!(msa_report.lifecycle_clean);
 }
 
 #[test]
@@ -724,4 +1105,11 @@ fn runtime_perf_scenarios_report() {
         );
         print_report(&report);
     }
+
+    let msa_report = run_msa_topology_perf_scenario();
+    assert!(
+        msa_report.assignment_iterations > 1,
+        "manual MSA topology scenario must exercise repeated assignment iterations"
+    );
+    print_msa_topology_report(&msa_report);
 }

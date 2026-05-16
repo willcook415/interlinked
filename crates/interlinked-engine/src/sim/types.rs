@@ -3310,6 +3310,120 @@ pub struct StrategicPlannerTimingDiagnostics {
     #[serde(default)]
     pub assignment_kpi_path_cache_misses: usize,
     #[serde(default)]
+    pub mode_choice_path_cache_hits: usize,
+    #[serde(default)]
+    pub mode_choice_path_cache_misses: usize,
+    #[serde(default)]
+    pub mode_choice_zero_boardable_unique_od_count: usize,
+    #[serde(default)]
+    pub mode_choice_zero_boardable_log_suppressed_count: usize,
+    #[serde(default)]
+    pub assignment_iter_path_requests: usize,
+    #[serde(default)]
+    pub assignment_kpi_path_requests: usize,
+    #[serde(default)]
+    pub candidate_stage_unique_od_query_count: usize,
+    #[serde(default)]
+    pub candidate_cross_stage_duplicate_od_estimate: usize,
+    #[serde(default)]
+    pub assignment_to_kpi_requery_estimate: usize,
+    #[serde(default)]
+    pub route_candidate_context_count: usize,
+    #[serde(default)]
+    pub route_candidate_cache_hits: usize,
+    #[serde(default)]
+    pub route_candidate_cache_misses: usize,
+    #[serde(default)]
+    pub kpi_requery_avoided_count: usize,
+    #[serde(default)]
+    pub assignment_to_kpi_incompatible_context_count: usize,
+    #[serde(default)]
+    pub assignment_full_route_search_count: usize,
+    #[serde(default)]
+    pub assignment_structural_candidate_count: usize,
+    #[serde(default)]
+    pub assignment_candidate_evaluation_count: usize,
+    #[serde(default)]
+    pub assignment_potential_structure_reuse_count: usize,
+    #[serde(default)]
+    pub assignment_repeated_od_across_iterations: usize,
+    #[serde(default)]
+    pub assignment_topology_same_count: usize,
+    #[serde(default)]
+    pub assignment_topology_changed_count: usize,
+    #[serde(default)]
+    pub assignment_topology_unknown_count: usize,
+    #[serde(default)]
+    pub assignment_route_search_total_ms: f64,
+    #[serde(default)]
+    pub assignment_route_cache_lookup_ms: f64,
+    #[serde(default)]
+    pub assignment_graph_search_ms: f64,
+    #[serde(default)]
+    pub assignment_candidate_expansion_ms: f64,
+    #[serde(default)]
+    pub assignment_path_reconstruction_ms: f64,
+    #[serde(default)]
+    pub assignment_built_path_construction_ms: f64,
+    #[serde(default)]
+    pub assignment_path_dedupe_ms: f64,
+    #[serde(default)]
+    pub assignment_candidate_classification_ms: f64,
+    #[serde(default)]
+    pub assignment_cost_eval_ms: f64,
+    #[serde(default)]
+    pub assignment_cache_insert_ms: f64,
+    #[serde(default)]
+    pub assignment_diagnostics_fingerprint_ms: f64,
+    #[serde(default)]
+    pub assignment_other_route_search_ms: f64,
+    #[serde(default)]
+    pub assignment_route_search_request_count: usize,
+    #[serde(default)]
+    pub assignment_initial_dijkstra_call_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_dijkstra_call_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_attempt_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_success_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_no_path_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_duplicate_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_heap_exhausted_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_no_path_memo_hit_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_no_path_memo_insert_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_skip_no_outgoing_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_skip_spur_banned_count: usize,
+    #[serde(default)]
+    pub assignment_expansion_skip_target_banned_count: usize,
+    #[serde(default)]
+    pub assignment_early_exit_k_le_1_count: usize,
+    #[serde(default)]
+    pub assignment_dijkstra_relaxation_count: usize,
+    #[serde(default)]
+    pub assignment_graph_search_invocation_count: usize,
+    #[serde(default)]
+    pub assignment_built_path_count: usize,
+    #[serde(default)]
+    pub assignment_route_candidate_path_count: usize,
+    #[serde(default)]
+    pub assignment_route_candidate_rejected_count: usize,
+    #[serde(default)]
+    pub assignment_route_total_path_links_seen: usize,
+    #[serde(default)]
+    pub assignment_route_total_board_events_built: usize,
+    #[serde(default)]
+    pub assignment_route_total_alight_events_built: usize,
+    #[serde(default)]
+    pub assignment_route_max_candidate_count_per_od: usize,
+    #[serde(default)]
     pub assignment_attempted_pax_total: f64,
 }
 

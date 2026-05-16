@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::time::Instant;
 
 use super::graph::{BuiltPath, DState, DistEntry, Edge, EdgeKind, Graph, PathStats, SvcLayerIndex};
 use crate::model::{Scenario, Service, Stop};
@@ -451,19 +452,24 @@ pub(crate) fn hypot(dx: f64, dy: f64) -> f64 {
 }
 
 pub(crate) fn dijkstra(graph: &Graph, start: usize) -> Vec<DistEntry> {
+    dijkstra_internal(graph, start, None).0
+}
+
+fn default_dist_entry() -> DistEntry {
+    DistEntry {
+        dist: f64::INFINITY,
+        prev: None,
+        prev_edge_kind: None,
+        prev_edge_raw_time: 0.0,
+        prev_edge_gc: 0.0,
+        via_link: None,
+        prev_edge_transfer_penalty_s: 0.0,
+    }
+}
+
+fn dijkstra_internal(graph: &Graph, start: usize, goal: Option<usize>) -> (Vec<DistEntry>, usize) {
     let n = graph.adj.len();
-    let mut dist = vec![
-        DistEntry {
-            dist: f64::INFINITY,
-            prev: None,
-            prev_edge_kind: None,
-            prev_edge_raw_time: 0.0,
-            prev_edge_gc: 0.0,
-            via_link: None,
-            prev_edge_transfer_penalty_s: 0.0,
-        };
-        n
-    ];
+    let mut dist = vec![default_dist_entry(); n];
 
     dist[start].dist = 0.0;
     let mut heap = BinaryHeap::new();
@@ -471,14 +477,19 @@ pub(crate) fn dijkstra(graph: &Graph, start: usize) -> Vec<DistEntry> {
         node: start,
         dist: 0.0,
     });
+    let mut relaxations = 0usize;
 
     while let Some(DState { node, dist: d }) = heap.pop() {
         if d > dist[node].dist {
             continue;
         }
+        if Some(node) == goal {
+            break;
+        }
         for e in &graph.adj[node] {
             let nd = d + e.gc_s;
             if nd < dist[e.to].dist {
+                relaxations = relaxations.saturating_add(1);
                 dist[e.to].dist = nd;
                 dist[e.to].prev = Some(node);
                 dist[e.to].prev_edge_kind = Some(e.kind);
@@ -498,7 +509,95 @@ pub(crate) fn dijkstra(graph: &Graph, start: usize) -> Vec<DistEntry> {
             }
         }
     }
-    dist
+    (dist, relaxations)
+}
+
+struct DijkstraScratch {
+    dist: Vec<DistEntry>,
+    heap: BinaryHeap<DState>,
+}
+
+impl DijkstraScratch {
+    fn with_node_count(node_count: usize) -> Self {
+        Self {
+            dist: vec![default_dist_entry(); node_count],
+            heap: BinaryHeap::with_capacity(node_count.min(256)),
+        }
+    }
+
+    fn reset(&mut self, node_count: usize) {
+        if self.dist.len() != node_count {
+            self.dist = vec![default_dist_entry(); node_count];
+        } else {
+            for entry in &mut self.dist {
+                *entry = default_dist_entry();
+            }
+        }
+        self.heap.clear();
+    }
+}
+
+fn dijkstra_scratch_internal(
+    graph: &Graph,
+    start: usize,
+    goal: usize,
+    banned_nodes: &[usize],
+    banned_edges: &[(usize, usize)],
+    scratch: &mut DijkstraScratch,
+) -> usize {
+    let n = graph.adj.len();
+    scratch.reset(n);
+
+    if banned_nodes.contains(&start) {
+        return 0;
+    }
+
+    scratch.dist[start].dist = 0.0;
+    scratch.heap.push(DState {
+        node: start,
+        dist: 0.0,
+    });
+    let mut relaxations = 0usize;
+
+    while let Some(DState { node, dist: d }) = scratch.heap.pop() {
+        if d > scratch.dist[node].dist {
+            continue;
+        }
+        if node == goal {
+            break;
+        }
+        for e in &graph.adj[node] {
+            if banned_nodes.contains(&e.to) {
+                continue;
+            }
+            if banned_edges.contains(&(node, e.to)) {
+                continue;
+            }
+            let nd = d + e.gc_s;
+            if nd < scratch.dist[e.to].dist {
+                relaxations = relaxations.saturating_add(1);
+                scratch.dist[e.to].dist = nd;
+                scratch.dist[e.to].prev = Some(node);
+                scratch.dist[e.to].prev_edge_kind = Some(e.kind);
+                scratch.dist[e.to].prev_edge_raw_time = e.raw_time_s;
+                scratch.dist[e.to].prev_edge_gc = e.gc_s;
+                scratch.dist[e.to].via_link = e.link_idx;
+                scratch.dist[e.to].prev_edge_transfer_penalty_s =
+                    if matches!(e.kind, EdgeKind::Transfer) {
+                        e.transfer_penalty_s.unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+
+                scratch.heap.push(DState {
+                    node: e.to,
+                    dist: nd,
+                });
+            }
+        }
+    }
+
+    relaxations
 }
 
 fn best_edge_between(graph: &Graph, from: usize, to: usize) -> Option<&Edge> {
@@ -595,6 +694,166 @@ fn build_path_from_nodes(graph: &Graph, nodes: &[usize]) -> Option<BuiltPath> {
     })
 }
 
+/// Aggregate timing/counter trace for strategic route search internals.
+///
+/// This is diagnostic-only: it decomposes route search cost without changing
+/// routing, assignment, or mode-choice semantics.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RouteSearchTrace {
+    pub total_ms: f64,
+    pub shortest_path_ms: f64,
+    pub candidate_expansion_ms: f64,
+    pub path_reconstruction_ms: f64,
+    pub built_path_construction_ms: f64,
+    pub path_dedupe_ms: f64,
+    pub candidate_classification_ms: f64,
+    pub initial_dijkstra_call_count: usize,
+    pub expansion_dijkstra_call_count: usize,
+    pub expansion_attempt_count: usize,
+    pub expansion_success_count: usize,
+    pub expansion_no_path_count: usize,
+    pub expansion_duplicate_count: usize,
+    pub expansion_heap_exhausted_count: usize,
+    pub expansion_no_path_memo_hit_count: usize,
+    pub expansion_no_path_memo_insert_count: usize,
+    pub expansion_skip_no_outgoing_count: usize,
+    pub expansion_skip_spur_banned_count: usize,
+    pub expansion_skip_target_banned_count: usize,
+    pub early_exit_k_le_1_count: usize,
+    pub dijkstra_relaxation_count: usize,
+    pub graph_search_invocation_count: usize,
+    pub candidate_expansion_count: usize,
+    pub reconstructed_node_path_count: usize,
+    pub built_path_count: usize,
+    pub total_path_nodes_seen: usize,
+    pub total_path_links_seen: usize,
+    pub total_board_events_built: usize,
+    pub total_alight_events_built: usize,
+    pub max_candidate_count_per_search: usize,
+}
+
+impl RouteSearchTrace {
+    pub(crate) fn add_assign(&mut self, other: Self) {
+        self.total_ms += other.total_ms;
+        self.shortest_path_ms += other.shortest_path_ms;
+        self.candidate_expansion_ms += other.candidate_expansion_ms;
+        self.path_reconstruction_ms += other.path_reconstruction_ms;
+        self.built_path_construction_ms += other.built_path_construction_ms;
+        self.path_dedupe_ms += other.path_dedupe_ms;
+        self.candidate_classification_ms += other.candidate_classification_ms;
+        self.initial_dijkstra_call_count = self
+            .initial_dijkstra_call_count
+            .saturating_add(other.initial_dijkstra_call_count);
+        self.expansion_dijkstra_call_count = self
+            .expansion_dijkstra_call_count
+            .saturating_add(other.expansion_dijkstra_call_count);
+        self.expansion_attempt_count = self
+            .expansion_attempt_count
+            .saturating_add(other.expansion_attempt_count);
+        self.expansion_success_count = self
+            .expansion_success_count
+            .saturating_add(other.expansion_success_count);
+        self.expansion_no_path_count = self
+            .expansion_no_path_count
+            .saturating_add(other.expansion_no_path_count);
+        self.expansion_duplicate_count = self
+            .expansion_duplicate_count
+            .saturating_add(other.expansion_duplicate_count);
+        self.expansion_heap_exhausted_count = self
+            .expansion_heap_exhausted_count
+            .saturating_add(other.expansion_heap_exhausted_count);
+        self.expansion_no_path_memo_hit_count = self
+            .expansion_no_path_memo_hit_count
+            .saturating_add(other.expansion_no_path_memo_hit_count);
+        self.expansion_no_path_memo_insert_count = self
+            .expansion_no_path_memo_insert_count
+            .saturating_add(other.expansion_no_path_memo_insert_count);
+        self.expansion_skip_no_outgoing_count = self
+            .expansion_skip_no_outgoing_count
+            .saturating_add(other.expansion_skip_no_outgoing_count);
+        self.expansion_skip_spur_banned_count = self
+            .expansion_skip_spur_banned_count
+            .saturating_add(other.expansion_skip_spur_banned_count);
+        self.expansion_skip_target_banned_count = self
+            .expansion_skip_target_banned_count
+            .saturating_add(other.expansion_skip_target_banned_count);
+        self.early_exit_k_le_1_count = self
+            .early_exit_k_le_1_count
+            .saturating_add(other.early_exit_k_le_1_count);
+        self.dijkstra_relaxation_count = self
+            .dijkstra_relaxation_count
+            .saturating_add(other.dijkstra_relaxation_count);
+        self.graph_search_invocation_count = self
+            .graph_search_invocation_count
+            .saturating_add(other.graph_search_invocation_count);
+        self.candidate_expansion_count = self
+            .candidate_expansion_count
+            .saturating_add(other.candidate_expansion_count);
+        self.reconstructed_node_path_count = self
+            .reconstructed_node_path_count
+            .saturating_add(other.reconstructed_node_path_count);
+        self.built_path_count = self.built_path_count.saturating_add(other.built_path_count);
+        self.total_path_nodes_seen = self
+            .total_path_nodes_seen
+            .saturating_add(other.total_path_nodes_seen);
+        self.total_path_links_seen = self
+            .total_path_links_seen
+            .saturating_add(other.total_path_links_seen);
+        self.total_board_events_built = self
+            .total_board_events_built
+            .saturating_add(other.total_board_events_built);
+        self.total_alight_events_built = self
+            .total_alight_events_built
+            .saturating_add(other.total_alight_events_built);
+        self.max_candidate_count_per_search = self
+            .max_candidate_count_per_search
+            .max(other.max_candidate_count_per_search);
+    }
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NoPathSpurKey {
+    spur_node: usize,
+    goal_node: usize,
+    banned_nodes: Vec<usize>,
+    banned_edges: Vec<(usize, usize)>,
+}
+
+fn no_path_spur_key(
+    spur_node: usize,
+    goal_node: usize,
+    banned_nodes: &[usize],
+    banned_edges: &[(usize, usize)],
+) -> NoPathSpurKey {
+    let mut banned_nodes = banned_nodes.to_vec();
+    banned_nodes.sort_unstable();
+    banned_nodes.dedup();
+    let mut banned_edges = banned_edges.to_vec();
+    banned_edges.sort_unstable();
+    banned_edges.dedup();
+    NoPathSpurKey {
+        spur_node,
+        goal_node,
+        banned_nodes,
+        banned_edges,
+    }
+}
+
+fn has_available_spur_edge(
+    graph: &Graph,
+    spur_node: usize,
+    banned_nodes: &[usize],
+    banned_edges: &[(usize, usize)],
+) -> bool {
+    graph.adj[spur_node].iter().any(|edge| {
+        !banned_nodes.contains(&edge.to) && !banned_edges.contains(&(spur_node, edge.to))
+    })
+}
+
 pub(crate) fn dedupe_paths(paths: Vec<BuiltPath>) -> Vec<BuiltPath> {
     // Dedupe on "physical ride sequence": the ordered list of physical link indices.
     // If two candidates share the same physical sequence, keep the lower-GC one.
@@ -625,86 +884,18 @@ pub(crate) fn dedupe_paths(paths: Vec<BuiltPath>) -> Vec<BuiltPath> {
     out
 }
 
-fn shortest_path_nodes(graph: &Graph, start: usize, goal: usize) -> Option<(Vec<usize>, f64)> {
-    let dist = dijkstra(graph, start);
-    if !dist[goal].dist.is_finite() {
-        return None;
-    }
-    let mut nodes = Vec::new();
-    let mut cur = goal;
-    nodes.push(cur);
-    while cur != start {
-        cur = dist[cur].prev?;
-        nodes.push(cur);
-    }
-    nodes.reverse();
-    Some((nodes, dist[goal].dist))
-}
-
-fn dijkstra_with_bans(
+fn shortest_path_nodes_with_scratch(
     graph: &Graph,
     start: usize,
-    banned_nodes: &std::collections::HashSet<usize>,
-    banned_edges: &std::collections::HashSet<(usize, usize)>,
-) -> Vec<DistEntry> {
-    let n = graph.adj.len();
-    let mut dist = vec![
-        DistEntry {
-            dist: f64::INFINITY,
-            prev: None,
-            prev_edge_kind: None,
-            prev_edge_raw_time: 0.0,
-            prev_edge_gc: 0.0,
-            via_link: None,
-            prev_edge_transfer_penalty_s: 0.0,
-        };
-        n
-    ];
-
-    if banned_nodes.contains(&start) {
-        return dist;
+    goal: usize,
+    scratch: &mut DijkstraScratch,
+) -> Option<(Vec<usize>, f64, usize)> {
+    let relaxations = dijkstra_scratch_internal(graph, start, goal, &[], &[], scratch);
+    if !scratch.dist[goal].dist.is_finite() {
+        return None;
     }
-
-    dist[start].dist = 0.0;
-    let mut heap = BinaryHeap::new();
-    heap.push(DState {
-        node: start,
-        dist: 0.0,
-    });
-
-    while let Some(DState { node, dist: d }) = heap.pop() {
-        if d > dist[node].dist {
-            continue;
-        }
-        for e in &graph.adj[node] {
-            if banned_nodes.contains(&e.to) {
-                continue;
-            }
-            if banned_edges.contains(&(node, e.to)) {
-                continue;
-            }
-            let nd = d + e.gc_s;
-            if nd < dist[e.to].dist {
-                dist[e.to].dist = nd;
-                dist[e.to].prev = Some(node);
-                dist[e.to].prev_edge_kind = Some(e.kind);
-                dist[e.to].prev_edge_raw_time = e.raw_time_s;
-                dist[e.to].prev_edge_gc = e.gc_s;
-                dist[e.to].via_link = e.link_idx;
-                dist[e.to].prev_edge_transfer_penalty_s = if matches!(e.kind, EdgeKind::Transfer) {
-                    e.transfer_penalty_s.unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-
-                heap.push(DState {
-                    node: e.to,
-                    dist: nd,
-                });
-            }
-        }
-    }
-    dist
+    let nodes = reconstruct_nodes_from_dist(&scratch.dist, start, goal)?;
+    Some((nodes, scratch.dist[goal].dist, relaxations))
 }
 
 fn reconstruct_nodes_from_dist(
@@ -726,22 +917,64 @@ fn reconstruct_nodes_from_dist(
     Some(nodes)
 }
 
-pub(crate) fn k_shortest_paths(
+pub(crate) fn k_shortest_paths_with_trace(
     graph: &Graph,
     start: usize,
     goal: usize,
     k: usize,
-) -> Vec<BuiltPath> {
+) -> (Vec<BuiltPath>, RouteSearchTrace) {
     use std::collections::{BinaryHeap as BH, HashSet};
 
+    let total_started = Instant::now();
+    let mut trace = RouteSearchTrace::default();
     let k = k.max(1);
-    let mut a: Vec<Vec<usize>> = Vec::new();
+    let node_count = graph.adj.len();
+    let mut dijkstra_scratch = DijkstraScratch::with_node_count(node_count);
+    let mut a: Vec<Vec<usize>> = Vec::with_capacity(k);
 
-    let Some((p0, c0)) = shortest_path_nodes(graph, start, goal) else {
-        return vec![];
+    let shortest_started = Instant::now();
+    trace.initial_dijkstra_call_count = trace.initial_dijkstra_call_count.saturating_add(1);
+    trace.graph_search_invocation_count = trace.graph_search_invocation_count.saturating_add(1);
+    let Some((p0, c0, initial_relaxations)) =
+        shortest_path_nodes_with_scratch(graph, start, goal, &mut dijkstra_scratch)
+    else {
+        trace.shortest_path_ms += elapsed_ms(shortest_started);
+        trace.total_ms += elapsed_ms(total_started);
+        return (vec![], trace);
     };
+    trace.dijkstra_relaxation_count = trace
+        .dijkstra_relaxation_count
+        .saturating_add(initial_relaxations);
+    trace.shortest_path_ms += elapsed_ms(shortest_started);
+    trace.reconstructed_node_path_count = trace.reconstructed_node_path_count.saturating_add(1);
+    trace.total_path_nodes_seen = trace.total_path_nodes_seen.saturating_add(p0.len());
     a.push(p0);
     let _ = c0;
+
+    if k <= 1 {
+        trace.early_exit_k_le_1_count = trace.early_exit_k_le_1_count.saturating_add(1);
+        trace.max_candidate_count_per_search = trace.max_candidate_count_per_search.max(a.len());
+        let build_started = Instant::now();
+        let out = a
+            .into_iter()
+            .filter_map(|nodes| build_path_from_nodes(graph, &nodes))
+            .inspect(|path| {
+                trace.built_path_count = trace.built_path_count.saturating_add(1);
+                trace.total_path_links_seen = trace
+                    .total_path_links_seen
+                    .saturating_add(path.link_indices.len());
+                trace.total_board_events_built = trace
+                    .total_board_events_built
+                    .saturating_add(path.board_events.len());
+                trace.total_alight_events_built = trace
+                    .total_alight_events_built
+                    .saturating_add(path.alight_events.len());
+            })
+            .collect();
+        trace.built_path_construction_ms += elapsed_ms(build_started);
+        trace.total_ms += elapsed_ms(total_started);
+        return (out, trace);
+    }
 
     #[derive(Clone, Debug)]
     struct Cand {
@@ -768,41 +1001,117 @@ pub(crate) fn k_shortest_paths(
         }
     }
 
-    let mut b: BH<Cand> = BH::new();
-    let mut seen: HashSet<Vec<usize>> = HashSet::new();
+    let mut b: BH<Cand> = BH::with_capacity(k.saturating_sub(1));
+    let mut seen: HashSet<Vec<usize>> = HashSet::with_capacity(k);
+    let mut no_path_memo: HashSet<NoPathSpurKey> = HashSet::new();
     seen.insert(a[0].clone());
 
     for k_i in 1..k {
         let prev = &a[k_i - 1];
 
         for spur_idx in 0..prev.len().saturating_sub(1) {
+            trace.expansion_attempt_count = trace.expansion_attempt_count.saturating_add(1);
             let spur_node = prev[spur_idx];
             let root_path = &prev[..=spur_idx];
 
-            // Ban nodes in the root path except the spur node to avoid loops
-            let mut banned_nodes: HashSet<usize> = HashSet::new();
-            for &n in &root_path[..root_path.len().saturating_sub(1)] {
-                banned_nodes.insert(n);
-            }
+            // Ban nodes in the root path except the spur node to avoid loops.
+            // These sets are tiny for the candidate counts we request, so vectors
+            // avoid per-spur hash table allocations while preserving membership semantics.
+            let banned_nodes = &root_path[..root_path.len().saturating_sub(1)];
 
             // Ban edges that would recreate an already accepted path sharing this root
-            let mut banned_edges: HashSet<(usize, usize)> = HashSet::new();
+            let mut banned_edges: Vec<(usize, usize)> = Vec::with_capacity(a.len());
             for p in &a {
                 if p.len() > spur_idx + 1 && p[..=spur_idx] == *root_path {
-                    banned_edges.insert((p[spur_idx], p[spur_idx + 1]));
+                    let banned_edge = (p[spur_idx], p[spur_idx + 1]);
+                    if !banned_edges.contains(&banned_edge) {
+                        banned_edges.push(banned_edge);
+                    }
                 }
             }
 
-            let dist = dijkstra_with_bans(graph, spur_node, &banned_nodes, &banned_edges);
-            let Some(mut spur_path) = reconstruct_nodes_from_dist(&dist, spur_node, goal) else {
+            if banned_nodes.contains(&spur_node) {
+                trace.expansion_skip_spur_banned_count =
+                    trace.expansion_skip_spur_banned_count.saturating_add(1);
+                trace.expansion_no_path_count = trace.expansion_no_path_count.saturating_add(1);
                 continue;
+            }
+            if banned_nodes.contains(&goal) {
+                trace.expansion_skip_target_banned_count =
+                    trace.expansion_skip_target_banned_count.saturating_add(1);
+                trace.expansion_no_path_count = trace.expansion_no_path_count.saturating_add(1);
+                continue;
+            }
+            if !has_available_spur_edge(graph, spur_node, banned_nodes, &banned_edges) {
+                trace.expansion_skip_no_outgoing_count =
+                    trace.expansion_skip_no_outgoing_count.saturating_add(1);
+                trace.expansion_no_path_count = trace.expansion_no_path_count.saturating_add(1);
+                continue;
+            }
+
+            let no_path_key = if no_path_memo.is_empty() {
+                None
+            } else {
+                let key = no_path_spur_key(spur_node, goal, banned_nodes, &banned_edges);
+                if no_path_memo.contains(&key) {
+                    trace.expansion_no_path_memo_hit_count =
+                        trace.expansion_no_path_memo_hit_count.saturating_add(1);
+                    trace.expansion_no_path_count = trace.expansion_no_path_count.saturating_add(1);
+                    continue;
+                }
+                Some(key)
             };
 
+            let expansion_started = Instant::now();
+            trace.expansion_dijkstra_call_count =
+                trace.expansion_dijkstra_call_count.saturating_add(1);
+            trace.graph_search_invocation_count =
+                trace.graph_search_invocation_count.saturating_add(1);
+            let expansion_relaxations = dijkstra_scratch_internal(
+                graph,
+                spur_node,
+                goal,
+                banned_nodes,
+                &banned_edges,
+                &mut dijkstra_scratch,
+            );
+            trace.dijkstra_relaxation_count = trace
+                .dijkstra_relaxation_count
+                .saturating_add(expansion_relaxations);
+            trace.candidate_expansion_ms += elapsed_ms(expansion_started);
+
+            let reconstruction_started = Instant::now();
+            let Some(mut spur_path) =
+                reconstruct_nodes_from_dist(&dijkstra_scratch.dist, spur_node, goal)
+            else {
+                let no_path_key = no_path_key.unwrap_or_else(|| {
+                    no_path_spur_key(spur_node, goal, banned_nodes, &banned_edges)
+                });
+                if no_path_memo.insert(no_path_key) {
+                    trace.expansion_no_path_memo_insert_count =
+                        trace.expansion_no_path_memo_insert_count.saturating_add(1);
+                }
+                trace.expansion_no_path_count = trace.expansion_no_path_count.saturating_add(1);
+                trace.path_reconstruction_ms += elapsed_ms(reconstruction_started);
+                continue;
+            };
+            trace.path_reconstruction_ms += elapsed_ms(reconstruction_started);
+
             // Concatenate root (excluding spur node duplicate) + spur
-            let mut total = root_path[..root_path.len().saturating_sub(1)].to_vec();
+            let mut total = Vec::with_capacity(
+                root_path
+                    .len()
+                    .saturating_sub(1)
+                    .saturating_add(spur_path.len()),
+            );
+            total.extend_from_slice(&root_path[..root_path.len().saturating_sub(1)]);
             total.append(&mut spur_path);
+            trace.reconstructed_node_path_count =
+                trace.reconstructed_node_path_count.saturating_add(1);
+            trace.total_path_nodes_seen = trace.total_path_nodes_seen.saturating_add(total.len());
 
             if !seen.insert(total.clone()) {
+                trace.expansion_duplicate_count = trace.expansion_duplicate_count.saturating_add(1);
                 continue;
             }
 
@@ -821,20 +1130,148 @@ pub(crate) fn k_shortest_paths(
                 continue;
             }
 
+            trace.candidate_expansion_count = trace.candidate_expansion_count.saturating_add(1);
+            trace.expansion_success_count = trace.expansion_success_count.saturating_add(1);
             b.push(Cand { cost, nodes: total });
         }
 
         // Next best candidate becomes the next accepted path
         let Some(next) = b.pop() else {
+            trace.expansion_heap_exhausted_count =
+                trace.expansion_heap_exhausted_count.saturating_add(1);
             break;
         };
         a.push(next.nodes);
         let _ = next.cost;
     }
 
-    a.into_iter()
-        .filter_map(|nodes| build_path_from_nodes(graph, &nodes))
-        .collect()
+    trace.max_candidate_count_per_search = trace.max_candidate_count_per_search.max(a.len());
+    let build_started = Instant::now();
+    let mut out = Vec::new();
+    for nodes in a {
+        if let Some(path) = build_path_from_nodes(graph, &nodes) {
+            trace.built_path_count = trace.built_path_count.saturating_add(1);
+            trace.total_path_links_seen = trace
+                .total_path_links_seen
+                .saturating_add(path.link_indices.len());
+            trace.total_board_events_built = trace
+                .total_board_events_built
+                .saturating_add(path.board_events.len());
+            trace.total_alight_events_built = trace
+                .total_alight_events_built
+                .saturating_add(path.alight_events.len());
+            out.push(path);
+        }
+    }
+    trace.built_path_construction_ms += elapsed_ms(build_started);
+    trace.total_ms += elapsed_ms(total_started);
+    (out, trace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn two_node_walk_graph() -> Graph {
+        Graph {
+            adj: vec![
+                vec![Edge {
+                    to: 1,
+                    gc_s: 1.0,
+                    raw_time_s: 1.0,
+                    kind: EdgeKind::Walk,
+                    link_idx: None,
+                    transfer_penalty_s: None,
+                }],
+                Vec::new(),
+            ],
+            access_edges: 0,
+            egress_edges: 0,
+            transfer_edges: 0,
+            svc_index: SvcLayerIndex {
+                svcstop_of_node: HashMap::new(),
+                svc_mode_of_node: HashMap::new(),
+                zone_nodes_start: 0,
+            },
+        }
+    }
+
+    fn two_alternative_walk_graph() -> Graph {
+        let walk = |to| Edge {
+            to,
+            gc_s: 1.0,
+            raw_time_s: 1.0,
+            kind: EdgeKind::Walk,
+            link_idx: None,
+            transfer_penalty_s: None,
+        };
+        Graph {
+            adj: vec![
+                vec![walk(1), walk(2)],
+                vec![walk(3)],
+                vec![walk(3)],
+                Vec::new(),
+            ],
+            access_edges: 0,
+            egress_edges: 0,
+            transfer_edges: 0,
+            svc_index: SvcLayerIndex {
+                svcstop_of_node: HashMap::new(),
+                svc_mode_of_node: HashMap::new(),
+                zone_nodes_start: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn k_shortest_paths_k_one_skips_yen_expansion() {
+        let graph = two_node_walk_graph();
+        let (paths, trace) = k_shortest_paths_with_trace(&graph, 0, 1, 1);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(trace.initial_dijkstra_call_count, 1);
+        assert_eq!(trace.expansion_dijkstra_call_count, 0);
+        assert_eq!(trace.expansion_attempt_count, 0);
+        assert_eq!(trace.early_exit_k_le_1_count, 1);
+        assert_eq!(
+            trace.graph_search_invocation_count,
+            trace
+                .initial_dijkstra_call_count
+                .saturating_add(trace.expansion_dijkstra_call_count)
+        );
+    }
+
+    #[test]
+    fn k_shortest_paths_skips_spur_with_no_available_outgoing_edge() {
+        let graph = two_node_walk_graph();
+        let (paths, trace) = k_shortest_paths_with_trace(&graph, 0, 1, 2);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(trace.initial_dijkstra_call_count, 1);
+        assert_eq!(trace.expansion_attempt_count, 1);
+        assert_eq!(trace.expansion_dijkstra_call_count, 0);
+        assert_eq!(trace.expansion_skip_no_outgoing_count, 1);
+        assert_eq!(trace.expansion_no_path_count, 1);
+        assert_eq!(trace.expansion_heap_exhausted_count, 1);
+        assert_eq!(
+            trace.graph_search_invocation_count,
+            trace
+                .initial_dijkstra_call_count
+                .saturating_add(trace.expansion_dijkstra_call_count)
+        );
+    }
+
+    #[test]
+    fn k_shortest_paths_preserves_multiple_available_alternatives() {
+        let graph = two_alternative_walk_graph();
+        let (paths, trace) = k_shortest_paths_with_trace(&graph, 0, 3, 2);
+
+        assert_eq!(paths.len(), 2);
+        assert_eq!(trace.initial_dijkstra_call_count, 1);
+        assert!(trace.expansion_dijkstra_call_count > 0);
+        assert_eq!(trace.expansion_success_count, 1);
+        assert_eq!(trace.max_candidate_count_per_search, 2);
+    }
 }
 
 fn add_mode_aware_interchanges(

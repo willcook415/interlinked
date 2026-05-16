@@ -10,7 +10,8 @@ use super::modes::{
 };
 use super::routing::crowding_multiplier;
 use super::routing::{
-    build_graph, build_graph_with_costs, dedupe_paths, dijkstra, k_shortest_paths,
+    build_graph, build_graph_with_costs, dedupe_paths, dijkstra, k_shortest_paths_with_trace,
+    RouteSearchTrace,
 };
 use super::stateful::SimState;
 use super::types;
@@ -165,22 +166,233 @@ pub(super) fn collect_transit_path_candidates(
     goal: usize,
     requested_k: usize,
 ) -> (Vec<BuiltPath>, Vec<BuiltPath>) {
+    collect_transit_path_candidates_with_trace(graph, start, goal, requested_k, None)
+}
+
+pub(super) fn collect_transit_path_candidates_with_trace(
+    graph: &graph::Graph,
+    start: usize,
+    goal: usize,
+    requested_k: usize,
+    mut trace: Option<&mut RouteSearchTrace>,
+) -> (Vec<BuiltPath>, Vec<BuiltPath>) {
     let base_k = requested_k.max(1);
     let max_k = transit_candidate_search_cap(base_k);
     let mut search_k = base_k;
     loop {
-        let raw_paths = dedupe_paths(k_shortest_paths(graph, start, goal, search_k));
+        let (paths, route_trace) = k_shortest_paths_with_trace(graph, start, goal, search_k);
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.add_assign(route_trace);
+        }
+        let dedupe_started = Instant::now();
+        let raw_paths = dedupe_paths(paths);
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.path_dedupe_ms += dedupe_started.elapsed().as_secs_f64() * 1000.0;
+            trace.total_ms += dedupe_started.elapsed().as_secs_f64() * 1000.0;
+        }
+        let classification_started = Instant::now();
         let mut boardable_paths = raw_paths
             .iter()
             .filter(|path| path_is_boardable_transit(path))
             .cloned()
             .collect::<Vec<_>>();
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.candidate_classification_ms +=
+                classification_started.elapsed().as_secs_f64() * 1000.0;
+            trace.total_ms += classification_started.elapsed().as_secs_f64() * 1000.0;
+        }
         if boardable_paths.len() >= base_k || raw_paths.len() < search_k || search_k >= max_k {
             boardable_paths.truncate(base_k);
             return (raw_paths, boardable_paths);
         }
         search_k = search_k.saturating_mul(2).min(max_k);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum RouteCandidateContextKind {
+    BaseGraph,
+    AssignmentIteration,
+    FinalAssignmentGraph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct RouteCandidateContextId {
+    pub(super) kind: RouteCandidateContextKind,
+    pub(super) revision: usize,
+}
+
+impl RouteCandidateContextId {
+    pub(super) fn base_graph() -> Self {
+        Self {
+            kind: RouteCandidateContextKind::BaseGraph,
+            revision: 0,
+        }
+    }
+
+    pub(super) fn assignment_iteration(iteration: usize) -> Self {
+        Self {
+            kind: RouteCandidateContextKind::AssignmentIteration,
+            revision: iteration,
+        }
+    }
+
+    pub(super) fn final_assignment_graph() -> Self {
+        Self {
+            kind: RouteCandidateContextKind::FinalAssignmentGraph,
+            revision: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RouteCandidateCacheKey {
+    context: RouteCandidateContextId,
+    origin_idx: usize,
+    destination_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RouteCandidateCache<T> {
+    context: RouteCandidateContextId,
+    entries: HashMap<RouteCandidateCacheKey, T>,
+    hits: usize,
+    misses: usize,
+}
+
+impl<T> RouteCandidateCache<T> {
+    pub(super) fn new(context: RouteCandidateContextId) -> Self {
+        Self {
+            context,
+            entries: HashMap::new(),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    pub(super) fn get_or_compute(
+        &mut self,
+        origin_idx: usize,
+        destination_idx: usize,
+        compute: impl FnOnce() -> T,
+    ) -> &T {
+        let key = RouteCandidateCacheKey {
+            context: self.context,
+            origin_idx,
+            destination_idx,
+        };
+        match self.entries.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                self.hits = self.hits.saturating_add(1);
+                entry.into_mut()
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                self.misses = self.misses.saturating_add(1);
+                entry.insert(compute())
+            }
+        }
+    }
+
+    pub(super) fn hits(&self) -> usize {
+        self.hits
+    }
+
+    pub(super) fn misses(&self) -> usize {
+        self.misses
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn contains_context(
+        &self,
+        context: RouteCandidateContextId,
+        origin_idx: usize,
+        destination_idx: usize,
+    ) -> bool {
+        self.entries.contains_key(&RouteCandidateCacheKey {
+            context,
+            origin_idx,
+            destination_idx,
+        })
+    }
+}
+
+/// Compact topology-only identity for a built route candidate.
+///
+/// `BuiltPath` currently contains both route structure and evaluated
+/// graph-context costs. This fingerprint intentionally excludes `PathStats`,
+/// route shares, fare, and wait/crowding values so diagnostics can estimate
+/// whether structural candidate reuse might be safe before any future pass
+/// attempts to re-evaluate those structures under a new cost context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct StructuralRouteFingerprint {
+    link_sequence_hash: u64,
+    board_event_hash: u64,
+    alight_event_hash: u64,
+    board_mode_hash: u64,
+    link_count: usize,
+    board_event_count: usize,
+    alight_event_count: usize,
+    board_mode_count: usize,
+}
+
+pub(super) fn structural_route_fingerprint(path: &BuiltPath) -> StructuralRouteFingerprint {
+    StructuralRouteFingerprint {
+        link_sequence_hash: stable_hash_usize_sequence(&path.link_indices),
+        board_event_hash: stable_hash_string_pair_sequence(&path.board_events),
+        alight_event_hash: stable_hash_string_pair_sequence(&path.alight_events),
+        board_mode_hash: stable_hash_string_sequence(&path.board_modes),
+        link_count: path.link_indices.len(),
+        board_event_count: path.board_events.len(),
+        alight_event_count: path.alight_events.len(),
+        board_mode_count: path.board_modes.len(),
+    }
+}
+
+fn stable_hash_usize_sequence(values: &[usize]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for value in values {
+        hash = stable_hash_u64(hash, *value as u64);
+    }
+    hash
+}
+
+fn stable_hash_string_sequence(values: &[String]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for value in values {
+        hash = stable_hash_str(hash, value);
+        hash = stable_hash_u64(hash, 0xff);
+    }
+    hash
+}
+
+fn stable_hash_string_pair_sequence(values: &[(String, String)]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for (left, right) in values {
+        hash = stable_hash_str(hash, left);
+        hash = stable_hash_u64(hash, 0xfe);
+        hash = stable_hash_str(hash, right);
+        hash = stable_hash_u64(hash, 0xff);
+    }
+    hash
+}
+
+fn stable_hash_str(mut hash: u64, value: &str) -> u64 {
+    for byte in value.as_bytes() {
+        hash = stable_hash_u64(hash, *byte as u64);
+    }
+    hash
+}
+
+fn stable_hash_u64(mut hash: u64, value: u64) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 pub fn run_simulation(s: &Scenario) -> Result<SimulationOutput, String> {
@@ -378,6 +590,49 @@ fn run_simulation_internal(
         assignment_iter_path_cache_misses,
         assignment_kpi_path_cache_hits,
         assignment_kpi_path_cache_misses,
+        assignment_full_route_search_count,
+        assignment_structural_candidate_count,
+        assignment_candidate_evaluation_count,
+        assignment_potential_structure_reuse_count,
+        assignment_repeated_od_across_iterations,
+        assignment_topology_same_count,
+        assignment_topology_changed_count,
+        assignment_topology_unknown_count,
+        assignment_route_search_total_ms,
+        assignment_route_cache_lookup_ms,
+        assignment_graph_search_ms,
+        assignment_candidate_expansion_ms,
+        assignment_path_reconstruction_ms,
+        assignment_built_path_construction_ms,
+        assignment_path_dedupe_ms,
+        assignment_candidate_classification_ms,
+        assignment_cost_eval_ms,
+        assignment_cache_insert_ms,
+        assignment_diagnostics_fingerprint_ms,
+        assignment_other_route_search_ms,
+        assignment_route_search_request_count,
+        assignment_initial_dijkstra_call_count,
+        assignment_expansion_dijkstra_call_count,
+        assignment_expansion_attempt_count,
+        assignment_expansion_success_count,
+        assignment_expansion_no_path_count,
+        assignment_expansion_duplicate_count,
+        assignment_expansion_heap_exhausted_count,
+        assignment_expansion_no_path_memo_hit_count,
+        assignment_expansion_no_path_memo_insert_count,
+        assignment_expansion_skip_no_outgoing_count,
+        assignment_expansion_skip_spur_banned_count,
+        assignment_expansion_skip_target_banned_count,
+        assignment_early_exit_k_le_1_count,
+        assignment_dijkstra_relaxation_count,
+        assignment_graph_search_invocation_count,
+        assignment_built_path_count,
+        assignment_route_candidate_path_count,
+        assignment_route_candidate_rejected_count,
+        assignment_route_total_path_links_seen,
+        assignment_route_total_board_events_built,
+        assignment_route_total_alight_events_built,
+        assignment_route_max_candidate_count_per_od,
         service_stop_traces,
     } = run_assignment_kernel(
         s,
@@ -792,6 +1047,84 @@ fn run_simulation_internal(
             assignment_iter_path_cache_misses,
             assignment_kpi_path_cache_hits,
             assignment_kpi_path_cache_misses,
+            mode_choice_path_cache_hits: mode_choice_build.path_cache_hits,
+            mode_choice_path_cache_misses: mode_choice_build.path_cache_misses,
+            mode_choice_zero_boardable_unique_od_count: mode_choice_build
+                .zero_boardable_unique_od_count,
+            mode_choice_zero_boardable_log_suppressed_count: mode_choice_build
+                .zero_boardable_log_suppressed_count,
+            assignment_iter_path_requests: assignment_iter_path_cache_hits
+                .saturating_add(assignment_iter_path_cache_misses),
+            assignment_kpi_path_requests: assignment_kpi_path_cache_hits
+                .saturating_add(assignment_kpi_path_cache_misses),
+            candidate_stage_unique_od_query_count: mode_choice_build
+                .path_cache_misses
+                .saturating_add(assignment_iter_path_cache_misses)
+                .saturating_add(assignment_kpi_path_cache_misses),
+            candidate_cross_stage_duplicate_od_estimate: mode_choice_build
+                .path_cache_misses
+                .saturating_add(assignment_iter_path_cache_misses)
+                .saturating_add(assignment_kpi_path_cache_misses)
+                .saturating_sub(
+                    mode_choice_build
+                        .path_cache_misses
+                        .max(assignment_kpi_path_cache_misses),
+                ),
+            assignment_to_kpi_requery_estimate: assignment_kpi_path_cache_misses,
+            route_candidate_context_count: iters_run.saturating_add(2),
+            route_candidate_cache_hits: mode_choice_build
+                .path_cache_hits
+                .saturating_add(assignment_iter_path_cache_hits)
+                .saturating_add(assignment_kpi_path_cache_hits),
+            route_candidate_cache_misses: mode_choice_build
+                .path_cache_misses
+                .saturating_add(assignment_iter_path_cache_misses)
+                .saturating_add(assignment_kpi_path_cache_misses),
+            kpi_requery_avoided_count: assignment_kpi_path_cache_hits,
+            assignment_to_kpi_incompatible_context_count: assignment_kpi_path_cache_misses,
+            assignment_full_route_search_count,
+            assignment_structural_candidate_count,
+            assignment_candidate_evaluation_count,
+            assignment_potential_structure_reuse_count,
+            assignment_repeated_od_across_iterations,
+            assignment_topology_same_count,
+            assignment_topology_changed_count,
+            assignment_topology_unknown_count,
+            assignment_route_search_total_ms,
+            assignment_route_cache_lookup_ms,
+            assignment_graph_search_ms,
+            assignment_candidate_expansion_ms,
+            assignment_path_reconstruction_ms,
+            assignment_built_path_construction_ms,
+            assignment_path_dedupe_ms,
+            assignment_candidate_classification_ms,
+            assignment_cost_eval_ms,
+            assignment_cache_insert_ms,
+            assignment_diagnostics_fingerprint_ms,
+            assignment_other_route_search_ms,
+            assignment_route_search_request_count,
+            assignment_initial_dijkstra_call_count,
+            assignment_expansion_dijkstra_call_count,
+            assignment_expansion_attempt_count,
+            assignment_expansion_success_count,
+            assignment_expansion_no_path_count,
+            assignment_expansion_duplicate_count,
+            assignment_expansion_heap_exhausted_count,
+            assignment_expansion_no_path_memo_hit_count,
+            assignment_expansion_no_path_memo_insert_count,
+            assignment_expansion_skip_no_outgoing_count,
+            assignment_expansion_skip_spur_banned_count,
+            assignment_expansion_skip_target_banned_count,
+            assignment_early_exit_k_le_1_count,
+            assignment_dijkstra_relaxation_count,
+            assignment_graph_search_invocation_count,
+            assignment_built_path_count,
+            assignment_route_candidate_path_count,
+            assignment_route_candidate_rejected_count,
+            assignment_route_total_path_links_seen,
+            assignment_route_total_board_events_built,
+            assignment_route_total_alight_events_built,
+            assignment_route_max_candidate_count_per_od,
             assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
             ..StrategicPlannerTimingDiagnostics::default()
         };
@@ -1677,6 +2010,84 @@ fn run_simulation_internal(
         assignment_iter_path_cache_misses,
         assignment_kpi_path_cache_hits,
         assignment_kpi_path_cache_misses,
+        mode_choice_path_cache_hits: mode_choice_build.path_cache_hits,
+        mode_choice_path_cache_misses: mode_choice_build.path_cache_misses,
+        mode_choice_zero_boardable_unique_od_count: mode_choice_build
+            .zero_boardable_unique_od_count,
+        mode_choice_zero_boardable_log_suppressed_count: mode_choice_build
+            .zero_boardable_log_suppressed_count,
+        assignment_iter_path_requests: assignment_iter_path_cache_hits
+            .saturating_add(assignment_iter_path_cache_misses),
+        assignment_kpi_path_requests: assignment_kpi_path_cache_hits
+            .saturating_add(assignment_kpi_path_cache_misses),
+        candidate_stage_unique_od_query_count: mode_choice_build
+            .path_cache_misses
+            .saturating_add(assignment_iter_path_cache_misses)
+            .saturating_add(assignment_kpi_path_cache_misses),
+        candidate_cross_stage_duplicate_od_estimate: mode_choice_build
+            .path_cache_misses
+            .saturating_add(assignment_iter_path_cache_misses)
+            .saturating_add(assignment_kpi_path_cache_misses)
+            .saturating_sub(
+                mode_choice_build
+                    .path_cache_misses
+                    .max(assignment_kpi_path_cache_misses),
+            ),
+        assignment_to_kpi_requery_estimate: assignment_kpi_path_cache_misses,
+        route_candidate_context_count: iters_run.saturating_add(2),
+        route_candidate_cache_hits: mode_choice_build
+            .path_cache_hits
+            .saturating_add(assignment_iter_path_cache_hits)
+            .saturating_add(assignment_kpi_path_cache_hits),
+        route_candidate_cache_misses: mode_choice_build
+            .path_cache_misses
+            .saturating_add(assignment_iter_path_cache_misses)
+            .saturating_add(assignment_kpi_path_cache_misses),
+        kpi_requery_avoided_count: assignment_kpi_path_cache_hits,
+        assignment_to_kpi_incompatible_context_count: assignment_kpi_path_cache_misses,
+        assignment_full_route_search_count,
+        assignment_structural_candidate_count,
+        assignment_candidate_evaluation_count,
+        assignment_potential_structure_reuse_count,
+        assignment_repeated_od_across_iterations,
+        assignment_topology_same_count,
+        assignment_topology_changed_count,
+        assignment_topology_unknown_count,
+        assignment_route_search_total_ms,
+        assignment_route_cache_lookup_ms,
+        assignment_graph_search_ms,
+        assignment_candidate_expansion_ms,
+        assignment_path_reconstruction_ms,
+        assignment_built_path_construction_ms,
+        assignment_path_dedupe_ms,
+        assignment_candidate_classification_ms,
+        assignment_cost_eval_ms,
+        assignment_cache_insert_ms,
+        assignment_diagnostics_fingerprint_ms,
+        assignment_other_route_search_ms,
+        assignment_route_search_request_count,
+        assignment_initial_dijkstra_call_count,
+        assignment_expansion_dijkstra_call_count,
+        assignment_expansion_attempt_count,
+        assignment_expansion_success_count,
+        assignment_expansion_no_path_count,
+        assignment_expansion_duplicate_count,
+        assignment_expansion_heap_exhausted_count,
+        assignment_expansion_no_path_memo_hit_count,
+        assignment_expansion_no_path_memo_insert_count,
+        assignment_expansion_skip_no_outgoing_count,
+        assignment_expansion_skip_spur_banned_count,
+        assignment_expansion_skip_target_banned_count,
+        assignment_early_exit_k_le_1_count,
+        assignment_dijkstra_relaxation_count,
+        assignment_graph_search_invocation_count,
+        assignment_built_path_count,
+        assignment_route_candidate_path_count,
+        assignment_route_candidate_rejected_count,
+        assignment_route_total_path_links_seen,
+        assignment_route_total_board_events_built,
+        assignment_route_total_alight_events_built,
+        assignment_route_max_candidate_count_per_od,
         assignment_attempted_pax_total: assignment_attempted_pax_total.max(0.0),
         ..StrategicPlannerTimingDiagnostics::default()
     };
@@ -1809,6 +2220,10 @@ struct ActiveModeChoiceOd {
 struct ModeChoiceBuild {
     rows: Vec<ActiveModeChoiceOd>,
     results: Vec<ModeChoiceResult>,
+    path_cache_hits: usize,
+    path_cache_misses: usize,
+    zero_boardable_unique_od_count: usize,
+    zero_boardable_log_suppressed_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1836,6 +2251,76 @@ struct Phase3PlanningOutputs {
     build_preview_metrics: Vec<BuildPreviewMetrics>,
     service_gap_rankings: ServiceGapRankings,
     planning_debug_summary: PlanningDebugSummary,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_candidate_cache_reuses_same_od_with_same_context() {
+        let context = RouteCandidateContextId::final_assignment_graph();
+        let mut cache = RouteCandidateCache::<usize>::new(context);
+
+        assert_eq!(*cache.get_or_compute(1, 2, || 42), 42);
+        assert_eq!(*cache.get_or_compute(1, 2, || 99), 42);
+
+        assert_eq!(cache.hits(), 1);
+        assert_eq!(cache.misses(), 1);
+        assert!(cache.contains_context(context, 1, 2));
+    }
+
+    #[test]
+    fn route_candidate_cache_context_identity_prevents_cross_context_reuse() {
+        let mut final_cache =
+            RouteCandidateCache::<usize>::new(RouteCandidateContextId::final_assignment_graph());
+        assert_eq!(*final_cache.get_or_compute(3, 4, || 7), 7);
+
+        assert!(!final_cache.contains_context(RouteCandidateContextId::base_graph(), 3, 4));
+        assert!(!final_cache.contains_context(
+            RouteCandidateContextId::assignment_iteration(1),
+            3,
+            4
+        ));
+        assert!(final_cache.contains_context(
+            RouteCandidateContextId::final_assignment_graph(),
+            3,
+            4
+        ));
+    }
+
+    #[test]
+    fn structural_route_fingerprint_ignores_cost_sensitive_stats() {
+        let mut base = BuiltPath {
+            link_indices: vec![1, 2, 3],
+            board_events: vec![("svc-a".to_string(), "stop-a".to_string())],
+            alight_events: vec![("svc-a".to_string(), "stop-b".to_string())],
+            board_modes: vec!["metro".to_string()],
+            board_times_s: vec![90.0],
+            stats: graph::PathStats {
+                gc_s: 120.0,
+                walk_s: 10.0,
+                wait_s: 20.0,
+                ivt_s: 90.0,
+                fare_base: 2.5,
+                transfer_time_s: 0.0,
+                transfer_penalty_s: 0.0,
+                transfer_count: 0.0,
+                boardings: 1.0,
+            },
+        };
+        let original = structural_route_fingerprint(&base);
+
+        base.board_times_s = vec![240.0];
+        base.stats.gc_s = 999.0;
+        base.stats.wait_s = 180.0;
+        base.stats.fare_base = 7.5;
+
+        assert_eq!(original, structural_route_fingerprint(&base));
+
+        base.link_indices.push(4);
+        assert_ne!(original, structural_route_fingerprint(&base));
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1,9 +1,14 @@
 use crate::commands::build_mutation::world_xy_to_lonlat_safe;
 use crate::commands::content_library::{primary_project_country_iso2, resolve_demand_surface_path};
 use crate::*;
+use geo::algorithm::area::Area;
+use geo::BooleanOps;
+use geo::{Coord, LineString, MultiPolygon, Polygon};
 use h3o::CellIndex;
 use interlinked_engine::model::{DemandCell, Scenario};
+use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 use tauri::AppHandle;
 
@@ -1172,6 +1177,11 @@ struct DemandRegionLookup {
     region_lonlat_by_id: HashMap<String, (f64, f64)>,
     region_centers_xy: Vec<(String, f64, f64)>,
     region_id_by_zone_token: HashMap<String, String>,
+    unlocked_geometry: Option<MultiPolygon<f64>>,
+    unlocked_geometry_region_ids: Vec<String>,
+    unlocked_geometry_missing_region_ids: Vec<String>,
+    explicit_geometry_region_count: usize,
+    h3_fallback_geometry_region_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1180,6 +1190,490 @@ struct StrategicOverlayLayers {
     run_id: Option<String>,
     service_gap_layer: Vec<interlinked_engine::sim::ZoneServiceGapLayerData>,
     corridor_desire_lines: Vec<interlinked_engine::sim::CorridorDesireLineData>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DemandOverlayGeometryClipResult {
+    display_geometry: Option<JsonValue>,
+    rendered_geometry: Option<MultiPolygon<f64>>,
+    clipped: bool,
+    fully_inside: bool,
+    invalid_display_geometry: bool,
+    clip_failed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemandOverlayRegionGeometrySource {
+    Explicit,
+    H3Fallback,
+}
+
+#[derive(Debug, Clone)]
+struct DemandOverlayRegionGeometry {
+    geometry: MultiPolygon<f64>,
+    source: DemandOverlayRegionGeometrySource,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DemandOverlayCoverageDiagnostics {
+    debug_enabled: bool,
+    failed: bool,
+    error: Option<String>,
+    unlocked_union_area: f64,
+    rendered_union_area: f64,
+    uncovered_unlocked_area: f64,
+    uncovered_ratio: f64,
+    outside_rendered_area: f64,
+    outside_ratio: f64,
+    expected_intersecting_cell_count: usize,
+    existing_intersecting_cell_count: usize,
+    missing_intersecting_cell_count: usize,
+    filtered_intersecting_cell_count: usize,
+}
+
+fn demand_overlay_debug_coverage_enabled() -> bool {
+    std::env::var("INTERLINKED_DEBUG_DEMAND_COVERAGE")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn geometry_panic_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown geometry panic".to_string()
+    }
+}
+
+fn safe_geometry_intersection(
+    left: &MultiPolygon<f64>,
+    right: &MultiPolygon<f64>,
+    label: &str,
+) -> Result<MultiPolygon<f64>, String> {
+    catch_unwind(AssertUnwindSafe(|| left.intersection(right)))
+        .map_err(|payload| format!("{label}: {}", geometry_panic_message(payload)))
+}
+
+fn safe_geometry_difference(
+    left: &MultiPolygon<f64>,
+    right: &MultiPolygon<f64>,
+    label: &str,
+) -> Result<MultiPolygon<f64>, String> {
+    catch_unwind(AssertUnwindSafe(|| left.difference(right)))
+        .map_err(|payload| format!("{label}: {}", geometry_panic_message(payload)))
+}
+
+fn safe_geometry_union(
+    left: &MultiPolygon<f64>,
+    right: &MultiPolygon<f64>,
+    label: &str,
+) -> Result<MultiPolygon<f64>, String> {
+    catch_unwind(AssertUnwindSafe(|| left.union(right)))
+        .map_err(|payload| format!("{label}: {}", geometry_panic_message(payload)))
+}
+
+fn geojson_value_to_geometry(value: &JsonValue, label: &str) -> Result<geo::Geometry<f64>, String> {
+    let geometry = if let Ok(geometry) = serde_json::from_value::<geojson::Geometry>(value.clone())
+    {
+        geometry
+    } else if let Ok(feature) = serde_json::from_value::<geojson::Feature>(value.clone()) {
+        feature
+            .geometry
+            .ok_or_else(|| format!("{label} geometry feature missing geometry"))?
+    } else {
+        return Err(format!(
+            "{label} geometry is not a parseable GeoJSON Geometry/Feature"
+        ));
+    };
+
+    geo::Geometry::try_from(&geometry.value)
+        .map_err(|error| format!("{label} geometry conversion failed: {error}"))
+}
+
+fn geometry_to_multipolygon(geometry: geo::Geometry<f64>) -> Option<MultiPolygon<f64>> {
+    match geometry {
+        geo::Geometry::Polygon(polygon) => Some(MultiPolygon(vec![polygon])),
+        geo::Geometry::MultiPolygon(multipolygon) => Some(multipolygon),
+        geo::Geometry::GeometryCollection(collection) => {
+            let mut out = None::<MultiPolygon<f64>>;
+            for geometry in collection {
+                let Some(part) = geometry_to_multipolygon(geometry) else {
+                    continue;
+                };
+                out = Some(match out {
+                    Some(existing) => {
+                        safe_geometry_union(&existing, &part, "region geometry collection union")
+                            .unwrap_or_else(|error| {
+                                eprintln!("[demand-overlay-geometry] {error}");
+                                let mut polygons = existing.0;
+                                polygons.extend(part.0);
+                                MultiPolygon(polygons)
+                            })
+                    }
+                    None => part,
+                });
+            }
+            out
+        }
+        _ => None,
+    }
+}
+
+fn merge_unlocked_geometry(target: &mut Option<MultiPolygon<f64>>, incoming: MultiPolygon<f64>) {
+    *target = Some(match target.take() {
+        Some(existing) => {
+            safe_geometry_union(&existing, &incoming, "merge unlocked overlay geometry")
+                .unwrap_or_else(|error| {
+                    eprintln!("[demand-overlay-geometry] {error}");
+                    let mut polygons = existing.0;
+                    polygons.extend(incoming.0);
+                    MultiPolygon(polygons)
+                })
+        }
+        None => incoming,
+    });
+}
+
+fn h3_cell_boundary_polygon(cell: CellIndex) -> Option<Polygon<f64>> {
+    let boundary = cell.boundary();
+    let mut coords = boundary
+        .iter()
+        .map(|point| Coord {
+            x: point.lng(),
+            y: point.lat(),
+        })
+        .collect::<Vec<_>>();
+    let first = coords.first().copied()?;
+    if coords.last().copied() != Some(first) {
+        coords.push(first);
+    }
+    if coords.len() < 4 {
+        return None;
+    }
+    Some(Polygon::new(LineString::from(coords), vec![]))
+}
+
+fn h3_cell_id_multipolygon(cell_id: &str) -> Option<MultiPolygon<f64>> {
+    let h3_cell_id = normalized_h3_cell_id(cell_id)?;
+    let cell = h3_cell_id.parse::<CellIndex>().ok()?;
+    Some(MultiPolygon(vec![h3_cell_boundary_polygon(cell)?]))
+}
+
+fn closed_ring_coordinates(line: &LineString<f64>) -> Option<Vec<Vec<f64>>> {
+    let mut coords = line
+        .points()
+        .map(|point| vec![point.x(), point.y()])
+        .collect::<Vec<_>>();
+    if coords.len() < 3 {
+        return None;
+    }
+    if coords.first() != coords.last() {
+        let first = coords.first()?.clone();
+        coords.push(first);
+    }
+    (coords.len() >= 4).then_some(coords)
+}
+
+fn polygon_to_geojson_coordinates(polygon: &Polygon<f64>) -> Option<Vec<Vec<Vec<f64>>>> {
+    let exterior = closed_ring_coordinates(polygon.exterior())?;
+    let mut rings = vec![exterior];
+    for interior in polygon.interiors() {
+        if let Some(ring) = closed_ring_coordinates(interior) {
+            rings.push(ring);
+        }
+    }
+    Some(rings)
+}
+
+fn multipolygon_to_geojson_geometry(multipolygon: &MultiPolygon<f64>) -> Option<JsonValue> {
+    let mut polygons = multipolygon
+        .0
+        .iter()
+        .filter(|polygon| polygon.unsigned_area() > 1e-18)
+        .filter_map(polygon_to_geojson_coordinates)
+        .collect::<Vec<_>>();
+    if polygons.is_empty() {
+        return None;
+    }
+    let geometry = if polygons.len() == 1 {
+        geojson::Geometry::new(geojson::Value::Polygon(polygons.pop()?))
+    } else {
+        geojson::Geometry::new(geojson::Value::MultiPolygon(polygons))
+    };
+    serde_json::to_value(geometry).ok()
+}
+
+fn region_overlay_geometry_multipolygon(
+    region: &SurfaceRegionInfo,
+) -> Result<Option<DemandOverlayRegionGeometry>, String> {
+    if let Some(geometry_value) = region.geometry.as_ref() {
+        let label = format!("region {}", region.region_id);
+        if let Some(geometry) =
+            geometry_to_multipolygon(geojson_value_to_geometry(geometry_value, &label)?)
+        {
+            return Ok(Some(DemandOverlayRegionGeometry {
+                geometry,
+                source: DemandOverlayRegionGeometrySource::Explicit,
+            }));
+        }
+    }
+
+    // Some unlocked planning-region rows are H3-backed fallback regions rather
+    // than authored polygons. They are still player-facing unlocked geometry,
+    // so the overlay clip union must include their H3 region cell.
+    for candidate in [
+        region.h3_cell_id.as_deref(),
+        Some(region.region_id.as_str()),
+        Some(region.cell_id.as_str()),
+        Some(region.region_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(geometry) = h3_cell_id_multipolygon(candidate) {
+            return Ok(Some(DemandOverlayRegionGeometry {
+                geometry,
+                source: DemandOverlayRegionGeometrySource::H3Fallback,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn h3_cell_multipolygon_intersects_geometry(cell: CellIndex, geometry: &MultiPolygon<f64>) -> bool {
+    h3_cell_boundary_polygon(cell)
+        .and_then(|polygon| {
+            safe_geometry_intersection(
+                &MultiPolygon(vec![polygon]),
+                geometry,
+                "H3 coverage candidate intersection",
+            )
+            .ok()
+        })
+        .map(|intersection| intersection.unsigned_area() > 1e-18)
+        .unwrap_or(false)
+}
+
+fn include_neighboring_h3_cells_intersecting_geometry(
+    geometry: &MultiPolygon<f64>,
+    cells: &mut HashSet<CellIndex>,
+) -> usize {
+    let mut frontier = cells.iter().copied().collect::<Vec<_>>();
+    let mut cursor = 0usize;
+    let mut added = 0usize;
+    while cursor < frontier.len() {
+        let seed = frontier[cursor];
+        cursor += 1;
+        for candidate in seed.grid_disk::<Vec<_>>(1) {
+            if candidate.resolution() != h3o::Resolution::Eight || cells.contains(&candidate) {
+                continue;
+            }
+            if h3_cell_multipolygon_intersects_geometry(candidate, geometry) {
+                cells.insert(candidate);
+                frontier.push(candidate);
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
+fn h3_res8_cells_intersecting_multipolygon(geometry: &MultiPolygon<f64>) -> HashSet<CellIndex> {
+    let mut out = HashSet::<CellIndex>::new();
+    if geometry.0.is_empty() || geometry.unsigned_area() <= 1e-18 {
+        return out;
+    }
+    let geo_geometry = geo::Geometry::MultiPolygon(geometry.clone());
+    if let Ok(h3_geometry) = h3o::geom::Geometry::from_degrees(geo_geometry) {
+        let config = h3o::geom::PolyfillConfig::new(h3o::Resolution::Eight)
+            .containment_mode(h3o::geom::ContainmentMode::Covers);
+        use h3o::geom::ToCells;
+        for cell in h3_geometry.to_cells(config) {
+            if cell.resolution() == h3o::Resolution::Eight {
+                out.insert(cell);
+            }
+        }
+    }
+    include_neighboring_h3_cells_intersecting_geometry(geometry, &mut out);
+    out
+}
+
+fn demand_overlay_coverage_diagnostics(
+    enabled: bool,
+    unlocked_geometry: Option<&MultiPolygon<f64>>,
+    rendered_geometry: Option<&MultiPolygon<f64>>,
+    existing_h3_cells: &HashSet<CellIndex>,
+    rendered_h3_cells: &HashSet<CellIndex>,
+) -> DemandOverlayCoverageDiagnostics {
+    if !enabled {
+        let unlocked_union_area = unlocked_geometry
+            .map(|geometry| geometry.unsigned_area().max(0.0))
+            .unwrap_or(0.0);
+        return DemandOverlayCoverageDiagnostics {
+            debug_enabled: false,
+            unlocked_union_area,
+            ..DemandOverlayCoverageDiagnostics::default()
+        };
+    }
+    let Some(unlocked_geometry) = unlocked_geometry else {
+        return DemandOverlayCoverageDiagnostics {
+            debug_enabled: true,
+            ..DemandOverlayCoverageDiagnostics::default()
+        };
+    };
+    let unlocked_union_area = unlocked_geometry.unsigned_area().max(0.0);
+    if unlocked_union_area <= 1e-18 {
+        return DemandOverlayCoverageDiagnostics {
+            debug_enabled: true,
+            ..DemandOverlayCoverageDiagnostics::default()
+        };
+    }
+
+    let empty_rendered = MultiPolygon::<f64>(Vec::new());
+    let rendered_geometry = rendered_geometry.unwrap_or(&empty_rendered);
+    let rendered_union_area = rendered_geometry.unsigned_area().max(0.0);
+    let uncovered_geometry = match safe_geometry_difference(
+        unlocked_geometry,
+        rendered_geometry,
+        "demand overlay coverage unlocked-minus-rendered difference",
+    ) {
+        Ok(geometry) => geometry,
+        Err(error) => {
+            return DemandOverlayCoverageDiagnostics {
+                debug_enabled: true,
+                failed: true,
+                error: Some(error),
+                unlocked_union_area,
+                rendered_union_area,
+                ..DemandOverlayCoverageDiagnostics::default()
+            };
+        }
+    };
+    let uncovered_unlocked_area = uncovered_geometry.unsigned_area().max(0.0);
+    let outside_rendered_area = match safe_geometry_difference(
+        rendered_geometry,
+        unlocked_geometry,
+        "demand overlay coverage rendered-minus-unlocked difference",
+    ) {
+        Ok(geometry) => geometry.unsigned_area().max(0.0),
+        Err(error) => {
+            return DemandOverlayCoverageDiagnostics {
+                debug_enabled: true,
+                failed: true,
+                error: Some(error),
+                unlocked_union_area,
+                rendered_union_area,
+                uncovered_unlocked_area,
+                uncovered_ratio: (uncovered_unlocked_area / unlocked_union_area).clamp(0.0, 1.0),
+                ..DemandOverlayCoverageDiagnostics::default()
+            };
+        }
+    };
+    let expected_cells = h3_res8_cells_intersecting_multipolygon(unlocked_geometry);
+    let uncovered_cells = if uncovered_unlocked_area > unlocked_union_area * 1e-9 {
+        h3_res8_cells_intersecting_multipolygon(&uncovered_geometry)
+    } else {
+        HashSet::<CellIndex>::new()
+    };
+    let mut existing_intersecting_cell_count = 0usize;
+    let mut missing_intersecting_cell_count = 0usize;
+    let mut filtered_intersecting_cell_count = 0usize;
+    for cell in &expected_cells {
+        if existing_h3_cells.contains(cell) {
+            existing_intersecting_cell_count += 1;
+        }
+    }
+    for cell in &uncovered_cells {
+        if existing_h3_cells.contains(cell) {
+            if !rendered_h3_cells.contains(cell) {
+                filtered_intersecting_cell_count += 1;
+            }
+        } else {
+            missing_intersecting_cell_count += 1;
+        }
+    }
+
+    DemandOverlayCoverageDiagnostics {
+        debug_enabled: true,
+        failed: false,
+        error: None,
+        unlocked_union_area,
+        rendered_union_area,
+        uncovered_unlocked_area,
+        uncovered_ratio: (uncovered_unlocked_area / unlocked_union_area).clamp(0.0, 1.0),
+        outside_rendered_area,
+        outside_ratio: (outside_rendered_area / unlocked_union_area).max(0.0),
+        expected_intersecting_cell_count: expected_cells.len(),
+        existing_intersecting_cell_count,
+        missing_intersecting_cell_count,
+        filtered_intersecting_cell_count,
+    }
+}
+
+/// Demand overlay display geometry contract:
+/// H3 demand cells remain the unique internal substrate, but player-facing
+/// overlay geometry is intersected and clipped against the merged unlocked
+/// planning-region geometry. Boundary cells may render as partial polygons;
+/// cells outside the unlocked geometry are omitted from the overlay payload.
+fn clip_demand_overlay_cell_geometry(
+    cell_id: &str,
+    unlocked_geometry: Option<&MultiPolygon<f64>>,
+) -> Option<DemandOverlayGeometryClipResult> {
+    let Some(unlocked_geometry) = unlocked_geometry else {
+        return Some(DemandOverlayGeometryClipResult::default());
+    };
+    let h3_cell_id = normalized_h3_cell_id(cell_id)?;
+    let cell = h3_cell_id.parse::<CellIndex>().ok()?;
+    let cell_multipolygon = h3_cell_id_multipolygon(&cell.to_string())?;
+    let cell_area = cell_multipolygon.unsigned_area().max(1e-18);
+    let clipped = match safe_geometry_intersection(
+        &cell_multipolygon,
+        unlocked_geometry,
+        "demand overlay cell clip intersection",
+    ) {
+        Ok(clipped) => clipped,
+        Err(error) => {
+            eprintln!("[demand-overlay-geometry] {error}");
+            return Some(DemandOverlayGeometryClipResult {
+                clipped: true,
+                invalid_display_geometry: true,
+                clip_failed: true,
+                ..DemandOverlayGeometryClipResult::default()
+            });
+        }
+    };
+    let clipped_area = clipped.unsigned_area();
+    if clipped_area <= cell_area * 1e-9 {
+        return None;
+    }
+    if clipped_area >= cell_area * (1.0 - 1e-7) {
+        return Some(DemandOverlayGeometryClipResult {
+            display_geometry: None,
+            rendered_geometry: Some(cell_multipolygon),
+            clipped: false,
+            fully_inside: true,
+            invalid_display_geometry: false,
+            clip_failed: false,
+        });
+    }
+    let display_geometry = multipolygon_to_geojson_geometry(&clipped);
+    let invalid_display_geometry = display_geometry.is_none();
+    Some(DemandOverlayGeometryClipResult {
+        display_geometry,
+        rendered_geometry: (!invalid_display_geometry).then_some(clipped),
+        clipped: true,
+        fully_inside: false,
+        invalid_display_geometry,
+        clip_failed: false,
+    })
 }
 
 fn normalized_token(token: &str) -> Option<String> {
@@ -1325,6 +1819,24 @@ fn build_demand_region_lookup(
                 .region_id_by_zone_token
                 .entry(region.region_id.to_ascii_lowercase())
                 .or_insert_with(|| region.region_id.clone());
+            if let Some(region_geometry) = region_overlay_geometry_multipolygon(region)? {
+                merge_unlocked_geometry(&mut lookup.unlocked_geometry, region_geometry.geometry);
+                match region_geometry.source {
+                    DemandOverlayRegionGeometrySource::Explicit => {
+                        lookup.explicit_geometry_region_count += 1;
+                    }
+                    DemandOverlayRegionGeometrySource::H3Fallback => {
+                        lookup.h3_fallback_geometry_region_count += 1;
+                    }
+                }
+                lookup
+                    .unlocked_geometry_region_ids
+                    .push(region.region_id.clone());
+            } else {
+                lookup
+                    .unlocked_geometry_missing_region_ids
+                    .push(region.region_id.clone());
+            }
             if let Some(token) = normalized_token(&region.cell_id) {
                 lookup
                     .region_id_by_zone_token
@@ -1614,9 +2126,47 @@ fn build_demand_cell_overlay_payload(
     let total_cells = scenario.world.demand_cells.len();
     let mut mappable_cells = 0usize;
     let mut fallback_cells = 0usize;
+    let mut overlay_cells_fully_inside = 0usize;
+    let mut overlay_cells_clipped = 0usize;
+    let mut overlay_cells_outside_unlocked = 0usize;
+    let mut overlay_duplicate_cell_ids = 0usize;
+    let mut overlay_invalid_clipped_geometry_count = 0usize;
+    let mut overlay_clipped_geometry_failed_count = 0usize;
     let mut cell_rows = Vec::<DemandOverlayCellDatum>::new();
+    let mut seen_cell_ids = HashSet::<String>::new();
+    let mut existing_h3_cells = HashSet::<CellIndex>::new();
+    let mut rendered_h3_cells = HashSet::<CellIndex>::new();
+    let mut rendered_overlay_geometry = None::<MultiPolygon<f64>>;
+    let coverage_debug_enabled = demand_overlay_debug_coverage_enabled();
+    let mut coverage_debug_failed = false;
+    let mut coverage_debug_error = None::<String>;
 
     for cell in &scenario.world.demand_cells {
+        if let Some(h3_cell_id) = normalized_h3_cell_id(&cell.cell_id)
+            .and_then(|value| value.parse::<CellIndex>().ok())
+            .filter(|cell| cell.resolution() == h3o::Resolution::Eight)
+        {
+            existing_h3_cells.insert(h3_cell_id);
+        }
+    }
+
+    for cell in &scenario.world.demand_cells {
+        let normalized_cell_key = normalized_h3_cell_id(&cell.cell_id)
+            .unwrap_or_else(|| cell.cell_id.trim().to_ascii_lowercase());
+        if !normalized_cell_key.is_empty() && !seen_cell_ids.insert(normalized_cell_key) {
+            overlay_duplicate_cell_ids += 1;
+            continue;
+        }
+        let Some(geometry_clip) =
+            clip_demand_overlay_cell_geometry(&cell.cell_id, lookup.unlocked_geometry.as_ref())
+        else {
+            overlay_cells_outside_unlocked += 1;
+            continue;
+        };
+        if geometry_clip.invalid_display_geometry {
+            overlay_invalid_clipped_geometry_count += 1;
+            continue;
+        }
         let Some(planning_region_id) = resolve_demand_cell_region_id(cell, scenario, lookup) else {
             continue;
         };
@@ -1653,10 +2203,49 @@ fn build_demand_cell_overlay_payload(
         if fallback_reason.is_some() {
             fallback_cells += 1;
         }
+        if geometry_clip.clipped {
+            overlay_cells_clipped += 1;
+        } else if geometry_clip.fully_inside {
+            overlay_cells_fully_inside += 1;
+        }
+        if geometry_clip.clip_failed {
+            overlay_clipped_geometry_failed_count += 1;
+        }
+        if let Some(h3_cell_id) = normalized_h3_cell_id(&cell.cell_id)
+            .and_then(|value| value.parse::<CellIndex>().ok())
+            .filter(|cell| cell.resolution() == h3o::Resolution::Eight)
+        {
+            rendered_h3_cells.insert(h3_cell_id);
+        }
+        if coverage_debug_enabled {
+            if let Some(rendered_geometry) = geometry_clip.rendered_geometry.as_ref() {
+                // Exact rendered-union coverage diagnostics are useful for QA,
+                // but geo boolean union can panic on pathological slivers. Keep
+                // it out of the normal overlay path.
+                rendered_overlay_geometry = match rendered_overlay_geometry.take() {
+                    Some(existing) if !coverage_debug_failed => match safe_geometry_union(
+                        &existing,
+                        rendered_geometry,
+                        "demand overlay rendered coverage union",
+                    ) {
+                        Ok(merged) => Some(merged),
+                        Err(error) => {
+                            coverage_debug_failed = true;
+                            coverage_debug_error = Some(error);
+                            Some(existing)
+                        }
+                    },
+                    Some(existing) => Some(existing),
+                    None => Some(rendered_geometry.clone()),
+                };
+            }
+        }
 
         cell_rows.push(DemandOverlayCellDatum {
             cell_id: cell.cell_id.clone(),
             planning_region_id: Some(planning_region_id),
+            display_geometry: geometry_clip.display_geometry,
+            display_geometry_clipped: geometry_clip.clipped,
             lon,
             lat,
             area_m2: cell.area_m2.max(0.0),
@@ -1721,13 +2310,66 @@ fn build_demand_cell_overlay_payload(
         .take(5)
         .map(|row| row.cell_id.clone())
         .collect::<Vec<_>>();
+    let mut unlocked_geometry_region_ids = lookup.unlocked_geometry_region_ids.clone();
+    unlocked_geometry_region_ids.sort();
+    let mut unlocked_geometry_missing_region_ids =
+        lookup.unlocked_geometry_missing_region_ids.clone();
+    unlocked_geometry_missing_region_ids.sort();
+    let coverage = if coverage_debug_failed {
+        DemandOverlayCoverageDiagnostics {
+            debug_enabled: true,
+            failed: true,
+            error: coverage_debug_error,
+            unlocked_union_area: lookup
+                .unlocked_geometry
+                .as_ref()
+                .map(|geometry| geometry.unsigned_area().max(0.0))
+                .unwrap_or(0.0),
+            ..DemandOverlayCoverageDiagnostics::default()
+        }
+    } else {
+        demand_overlay_coverage_diagnostics(
+            coverage_debug_enabled,
+            lookup.unlocked_geometry.as_ref(),
+            rendered_overlay_geometry.as_ref(),
+            &existing_h3_cells,
+            &rendered_h3_cells,
+        )
+    };
     eprintln!(
-        "[demand-overlay-cell] mode={} total_cells={} mappable_cells={} payload_rows={} fallback_cells={} by_region={} sample_cells={}",
+        "[demand-overlay-cell] mode={} coverage_debug_enabled={} coverage_debug_failed={} coverage_debug_error={} unlocked_regions={} geometry_regions={} explicit_geometry_regions={} h3_fallback_regions={} geometry_missing={} total_cells={} mappable_cells={} payload_rows={} fallback_cells={} unlocked_geometry={} fully_inside={} clipped={} outside_unlocked={} duplicate_cell_ids={} invalid_clipped={} clipped_failed={} unlocked_area={:.9} rendered_area={:.9} uncovered_area={:.9} uncovered_ratio={:.6} outside_area={:.9} outside_ratio={:.6} expected_cells={} existing_cells={} missing_cells={} filtered_cells={} geometry_region_ids={} missing_geometry_region_ids={} by_region={} sample_cells={}",
         demand_cell_overlay_mode_label(mode),
+        coverage.debug_enabled,
+        coverage.failed,
+        coverage.error.as_deref().unwrap_or(""),
+        lookup.unlocked_region_ids.len(),
+        lookup.unlocked_geometry_region_ids.len(),
+        lookup.explicit_geometry_region_count,
+        lookup.h3_fallback_geometry_region_count,
+        lookup.unlocked_geometry_missing_region_ids.len(),
         total_cells,
         mappable_cells,
         cell_rows.len(),
         fallback_cells,
+        lookup.unlocked_geometry.is_some(),
+        overlay_cells_fully_inside,
+        overlay_cells_clipped,
+        overlay_cells_outside_unlocked,
+        overlay_duplicate_cell_ids,
+        overlay_invalid_clipped_geometry_count,
+        overlay_clipped_geometry_failed_count,
+        coverage.unlocked_union_area,
+        coverage.rendered_union_area,
+        coverage.uncovered_unlocked_area,
+        coverage.uncovered_ratio,
+        coverage.outside_rendered_area,
+        coverage.outside_ratio,
+        coverage.expected_intersecting_cell_count,
+        coverage.existing_intersecting_cell_count,
+        coverage.missing_intersecting_cell_count,
+        coverage.filtered_intersecting_cell_count,
+        unlocked_geometry_region_ids.join("|"),
+        unlocked_geometry_missing_region_ids.join("|"),
         by_region_rows.join(","),
         sample_cells.join("|"),
     );
@@ -1745,6 +2387,33 @@ fn build_demand_cell_overlay_payload(
         cell_data_total: total_cells,
         cell_data_mappable: mappable_cells,
         cell_fallback_count: fallback_cells,
+        overlay_unlocked_region_count: lookup.unlocked_region_ids.len(),
+        overlay_unlocked_geometry_region_count: lookup.unlocked_geometry_region_ids.len(),
+        overlay_unlocked_geometry_missing_region_count: lookup
+            .unlocked_geometry_missing_region_ids
+            .len(),
+        overlay_unlocked_geometry_available: lookup.unlocked_geometry.is_some(),
+        overlay_explicit_geometry_region_count: lookup.explicit_geometry_region_count,
+        overlay_h3_fallback_region_count: lookup.h3_fallback_geometry_region_count,
+        overlay_unlocked_union_area: coverage.unlocked_union_area,
+        overlay_rendered_union_area: coverage.rendered_union_area,
+        overlay_uncovered_unlocked_area: coverage.uncovered_unlocked_area,
+        overlay_uncovered_ratio: coverage.uncovered_ratio,
+        overlay_outside_rendered_area: coverage.outside_rendered_area,
+        overlay_outside_ratio: coverage.outside_ratio,
+        overlay_expected_intersecting_cell_count: coverage.expected_intersecting_cell_count,
+        overlay_existing_intersecting_cell_count: coverage.existing_intersecting_cell_count,
+        overlay_missing_intersecting_cell_count: coverage.missing_intersecting_cell_count,
+        overlay_filtered_intersecting_cell_count: coverage.filtered_intersecting_cell_count,
+        overlay_invalid_clipped_geometry_count,
+        overlay_clipped_geometry_failed_count,
+        overlay_coverage_debug_enabled: coverage.debug_enabled,
+        overlay_coverage_debug_failed: coverage.failed,
+        overlay_coverage_debug_error: coverage.error.clone(),
+        overlay_cells_fully_inside,
+        overlay_cells_clipped,
+        overlay_cells_outside_unlocked,
+        overlay_duplicate_cell_ids,
         cell_data: cell_rows,
         region_data: Vec::new(),
         corridor_data: Vec::new(),
@@ -2049,6 +2718,37 @@ pub(crate) fn get_demand_overlay_payload(
         cell_data_total: 0,
         cell_data_mappable: 0,
         cell_fallback_count: 0,
+        overlay_unlocked_region_count: lookup.unlocked_region_ids.len(),
+        overlay_unlocked_geometry_region_count: lookup.unlocked_geometry_region_ids.len(),
+        overlay_unlocked_geometry_missing_region_count: lookup
+            .unlocked_geometry_missing_region_ids
+            .len(),
+        overlay_unlocked_geometry_available: lookup.unlocked_geometry.is_some(),
+        overlay_explicit_geometry_region_count: lookup.explicit_geometry_region_count,
+        overlay_h3_fallback_region_count: lookup.h3_fallback_geometry_region_count,
+        overlay_unlocked_union_area: lookup
+            .unlocked_geometry
+            .as_ref()
+            .map(|geometry| geometry.unsigned_area().max(0.0))
+            .unwrap_or(0.0),
+        overlay_rendered_union_area: 0.0,
+        overlay_uncovered_unlocked_area: 0.0,
+        overlay_uncovered_ratio: 0.0,
+        overlay_outside_rendered_area: 0.0,
+        overlay_outside_ratio: 0.0,
+        overlay_expected_intersecting_cell_count: 0,
+        overlay_existing_intersecting_cell_count: 0,
+        overlay_missing_intersecting_cell_count: 0,
+        overlay_filtered_intersecting_cell_count: 0,
+        overlay_invalid_clipped_geometry_count: 0,
+        overlay_clipped_geometry_failed_count: 0,
+        overlay_coverage_debug_enabled: false,
+        overlay_coverage_debug_failed: false,
+        overlay_coverage_debug_error: None,
+        overlay_cells_fully_inside: 0,
+        overlay_cells_clipped: 0,
+        overlay_cells_outside_unlocked: 0,
+        overlay_duplicate_cell_ids: 0,
         cell_data: Vec::new(),
         region_data: region_rows,
         corridor_data,
@@ -2068,4 +2768,325 @@ pub(crate) fn get_demand_overlay_payload(
         payload.reason.as_deref().unwrap_or("none"),
     );
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use h3o::Resolution;
+
+    fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon<f64> {
+        Polygon::new(
+            LineString::from(vec![
+                Coord { x: min_x, y: min_y },
+                Coord { x: max_x, y: min_y },
+                Coord { x: max_x, y: max_y },
+                Coord { x: min_x, y: max_y },
+                Coord { x: min_x, y: min_y },
+            ]),
+            vec![],
+        )
+    }
+
+    fn test_cell() -> CellIndex {
+        h3o::LatLng::new(53.4808, -2.2426)
+            .expect("valid lon/lat")
+            .to_cell(Resolution::Eight)
+    }
+
+    fn cell_bbox(cell: CellIndex) -> (f64, f64, f64, f64) {
+        let polygon = h3_cell_boundary_polygon(cell).expect("cell polygon");
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for point in polygon.exterior().points() {
+            min_x = min_x.min(point.x());
+            min_y = min_y.min(point.y());
+            max_x = max_x.max(point.x());
+            max_y = max_y.max(point.y());
+        }
+        (min_x, min_y, max_x, max_y)
+    }
+
+    fn test_region_for_cell(region_id: &str, cell: CellIndex) -> SurfaceRegionInfo {
+        let center: h3o::LatLng = cell.into();
+        let (x, y) = lonlat_to_web_mercator_m(center.lng(), center.lat());
+        SurfaceRegionInfo {
+            region_id: region_id.to_string(),
+            country_iso2: "UK".to_string(),
+            region_kind: "planning_hex_unassigned".to_string(),
+            region_token: cell.to_string(),
+            h3_cell_id: Some(cell.to_string()),
+            name: region_id.to_string(),
+            admin_level: "planning_hex_res8_test".to_string(),
+            nation: None,
+            source_code: Some("test".to_string()),
+            adjacency_source: "test".to_string(),
+            geometry_source: "planning_surface_h3_fallback".to_string(),
+            cell_id: cell.to_string(),
+            x,
+            y,
+            area_m2: 1.0,
+            residents_smooth: 1.0,
+            jobs_smooth: 1.0,
+            activity_mix_residential: 1.0,
+            activity_mix_office: 0.0,
+            activity_mix_retail: 0.0,
+            activity_mix_recreation: 0.0,
+            activity_mix_industrial: 0.0,
+            activity_mix_education: 0.0,
+            activity_mix_health: 0.0,
+            adjacent_region_ids: vec![],
+            geometry: None,
+            canonical_hex_number: None,
+            constituent_hex_numbers: vec![],
+        }
+    }
+
+    fn display_geometry_multipolygon(value: &JsonValue) -> MultiPolygon<f64> {
+        geometry_to_multipolygon(
+            geojson_value_to_geometry(value, "test display geometry").expect("valid geometry"),
+        )
+        .expect("polygonal display geometry")
+    }
+
+    #[test]
+    fn demand_overlay_geometry_clips_boundary_cell_to_unlocked_polygon() {
+        let cell = test_cell();
+        let (min_x, min_y, max_x, max_y) = cell_bbox(cell);
+        let mid_x = (min_x + max_x) * 0.5;
+        let unlocked = MultiPolygon(vec![rectangle(
+            min_x - 0.001,
+            min_y - 0.001,
+            mid_x,
+            max_y + 0.001,
+        )]);
+
+        let clipped = clip_demand_overlay_cell_geometry(&cell.to_string(), Some(&unlocked))
+            .expect("intersecting boundary cell should be included");
+
+        assert!(clipped.clipped);
+        assert!(!clipped.fully_inside);
+        assert!(
+            clipped.display_geometry.is_some(),
+            "boundary cells should carry clipped display geometry"
+        );
+        let rendered = display_geometry_multipolygon(
+            clipped
+                .display_geometry
+                .as_ref()
+                .expect("clipped display geometry"),
+        );
+        assert!(
+            rendered.difference(&unlocked).unsigned_area() <= 1e-18,
+            "clipped overlay display geometry must not extend outside the unlocked geometry"
+        );
+    }
+
+    #[test]
+    fn demand_overlay_geometry_omits_fully_outside_cell() {
+        let cell = test_cell();
+        let (_, _, max_x, max_y) = cell_bbox(cell);
+        let unlocked = MultiPolygon(vec![rectangle(
+            max_x + 0.01,
+            max_y + 0.01,
+            max_x + 0.02,
+            max_y + 0.02,
+        )]);
+
+        assert!(clip_demand_overlay_cell_geometry(&cell.to_string(), Some(&unlocked)).is_none());
+    }
+
+    #[test]
+    fn demand_overlay_geometry_keeps_full_cell_inside_unlocked_polygon() {
+        let cell = test_cell();
+        let (min_x, min_y, max_x, max_y) = cell_bbox(cell);
+        let unlocked = MultiPolygon(vec![rectangle(
+            min_x - 0.001,
+            min_y - 0.001,
+            max_x + 0.001,
+            max_y + 0.001,
+        )]);
+
+        let result = clip_demand_overlay_cell_geometry(&cell.to_string(), Some(&unlocked))
+            .expect("inside cell should be included");
+
+        assert!(result.fully_inside);
+        assert!(!result.clipped);
+        assert!(
+            result.display_geometry.is_none(),
+            "inside cells can render from the H3 id without payload bloat"
+        );
+    }
+
+    #[test]
+    fn adjacent_unlocked_polygons_are_merged_before_overlay_clipping() {
+        let cell = test_cell();
+        let (min_x, min_y, max_x, max_y) = cell_bbox(cell);
+        let mid_x = (min_x + max_x) * 0.5;
+        let mut unlocked = None::<MultiPolygon<f64>>;
+        merge_unlocked_geometry(
+            &mut unlocked,
+            MultiPolygon(vec![rectangle(
+                min_x - 0.001,
+                min_y - 0.001,
+                mid_x,
+                max_y + 0.001,
+            )]),
+        );
+        merge_unlocked_geometry(
+            &mut unlocked,
+            MultiPolygon(vec![rectangle(
+                mid_x,
+                min_y - 0.001,
+                max_x + 0.001,
+                max_y + 0.001,
+            )]),
+        );
+
+        let result = clip_demand_overlay_cell_geometry(&cell.to_string(), unlocked.as_ref())
+            .expect("cell spanning adjacent unlocked regions should be included once");
+
+        assert!(result.fully_inside);
+        assert!(!result.clipped);
+    }
+
+    #[test]
+    fn h3_backed_unlocked_regions_contribute_to_merged_overlay_geometry() {
+        let first_cell = test_cell();
+        let second_cell = h3o::LatLng::new(53.6208, -2.2426)
+            .expect("valid lon/lat")
+            .to_cell(Resolution::Eight);
+        let (min_x, min_y, max_x, max_y) = cell_bbox(first_cell);
+        let mut unlocked = None::<MultiPolygon<f64>>;
+        merge_unlocked_geometry(
+            &mut unlocked,
+            MultiPolygon(vec![rectangle(
+                min_x - 0.001,
+                min_y - 0.001,
+                max_x + 0.001,
+                max_y + 0.001,
+            )]),
+        );
+        let h3_backed_region = test_region_for_cell("r6:UK:test-north", second_cell);
+        merge_unlocked_geometry(
+            &mut unlocked,
+            region_overlay_geometry_multipolygon(&h3_backed_region)
+                .expect("valid region geometry")
+                .expect("H3-backed region geometry fallback")
+                .geometry,
+        );
+
+        let first = clip_demand_overlay_cell_geometry(&first_cell.to_string(), unlocked.as_ref())
+            .expect("initial region cell should still be included");
+        let second = clip_demand_overlay_cell_geometry(&second_cell.to_string(), unlocked.as_ref())
+            .expect("newly unlocked H3-backed adjacent region cell should be included");
+
+        assert!(first.fully_inside);
+        assert!(second.fully_inside);
+    }
+
+    #[test]
+    fn overlay_coverage_diagnostics_are_debug_gated() {
+        let first_cell = test_cell();
+        let second_cell = h3o::LatLng::new(53.6208, -2.2426)
+            .expect("valid lon/lat")
+            .to_cell(Resolution::Eight);
+        let mut unlocked = None::<MultiPolygon<f64>>;
+        let first_geometry = h3_cell_id_multipolygon(&first_cell.to_string()).expect("first cell");
+        let second_geometry =
+            h3_cell_id_multipolygon(&second_cell.to_string()).expect("second cell");
+        merge_unlocked_geometry(&mut unlocked, first_geometry.clone());
+        merge_unlocked_geometry(&mut unlocked, second_geometry);
+        let unlocked = unlocked.expect("unlocked union");
+        let mut existing = HashSet::<CellIndex>::new();
+        let mut rendered_cells = HashSet::<CellIndex>::new();
+        existing.insert(first_cell);
+        rendered_cells.insert(first_cell);
+
+        let coverage = demand_overlay_coverage_diagnostics(
+            false,
+            Some(&unlocked),
+            Some(&first_geometry),
+            &existing,
+            &rendered_cells,
+        );
+
+        assert!(!coverage.debug_enabled);
+        assert!(!coverage.failed);
+        assert_eq!(coverage.uncovered_unlocked_area, 0.0);
+        assert_eq!(coverage.missing_intersecting_cell_count, 0);
+    }
+
+    #[test]
+    fn overlay_coverage_diagnostics_detect_missing_intersecting_cells() {
+        let first_cell = test_cell();
+        let second_cell = h3o::LatLng::new(53.6208, -2.2426)
+            .expect("valid lon/lat")
+            .to_cell(Resolution::Eight);
+        let mut unlocked = None::<MultiPolygon<f64>>;
+        let first_geometry = h3_cell_id_multipolygon(&first_cell.to_string()).expect("first cell");
+        let second_geometry =
+            h3_cell_id_multipolygon(&second_cell.to_string()).expect("second cell");
+        merge_unlocked_geometry(&mut unlocked, first_geometry.clone());
+        merge_unlocked_geometry(&mut unlocked, second_geometry.clone());
+        let unlocked = unlocked.expect("unlocked union");
+        let mut existing = HashSet::<CellIndex>::new();
+        let mut rendered_cells = HashSet::<CellIndex>::new();
+        existing.insert(first_cell);
+        rendered_cells.insert(first_cell);
+
+        let coverage = demand_overlay_coverage_diagnostics(
+            true,
+            Some(&unlocked),
+            Some(&first_geometry),
+            &existing,
+            &rendered_cells,
+        );
+
+        assert!(coverage.uncovered_unlocked_area > 0.0);
+        assert!(coverage.uncovered_ratio > 0.0);
+        assert!(
+            coverage.missing_intersecting_cell_count > 0,
+            "coverage audit should identify H3 cells intersecting unlocked geometry but absent from world.demand_cells"
+        );
+    }
+
+    #[test]
+    fn overlay_coverage_diagnostics_accept_complete_adjacent_cell_coverage() {
+        let first_cell = test_cell();
+        let second_cell = h3o::LatLng::new(53.6208, -2.2426)
+            .expect("valid lon/lat")
+            .to_cell(Resolution::Eight);
+        let mut unlocked = None::<MultiPolygon<f64>>;
+        let first_geometry = h3_cell_id_multipolygon(&first_cell.to_string()).expect("first cell");
+        let second_geometry =
+            h3_cell_id_multipolygon(&second_cell.to_string()).expect("second cell");
+        merge_unlocked_geometry(&mut unlocked, first_geometry.clone());
+        merge_unlocked_geometry(&mut unlocked, second_geometry.clone());
+        let unlocked = unlocked.expect("unlocked union");
+        let mut rendered = None::<MultiPolygon<f64>>;
+        merge_unlocked_geometry(&mut rendered, first_geometry);
+        merge_unlocked_geometry(&mut rendered, second_geometry);
+        let rendered = rendered.expect("rendered union");
+        let mut existing = HashSet::<CellIndex>::new();
+        let mut rendered_cells = HashSet::<CellIndex>::new();
+        existing.insert(first_cell);
+        existing.insert(second_cell);
+        rendered_cells.insert(first_cell);
+        rendered_cells.insert(second_cell);
+
+        let coverage = demand_overlay_coverage_diagnostics(
+            true,
+            Some(&unlocked),
+            Some(&rendered),
+            &existing,
+            &rendered_cells,
+        );
+
+        assert!(coverage.uncovered_ratio <= 1e-9);
+        assert_eq!(coverage.missing_intersecting_cell_count, 0);
+        assert_eq!(coverage.filtered_intersecting_cell_count, 0);
+    }
 }

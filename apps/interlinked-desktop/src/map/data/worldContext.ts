@@ -650,6 +650,18 @@ export function buildRegionDisplayFeatures(
       sourceCode.startsWith("manual_region_");
 
     if (isManual) {
+      if (
+        sourceCode === "manual_region_unassigned_hex" &&
+        region.geometry &&
+        typeof region.h3_cell_id === "string" &&
+        isValidCell(region.h3_cell_id)
+      ) {
+        // Single H3-backed planning regions already carry backend-authoritative
+        // geometry. Keep that exact boundary so demand-overlay clipping and the
+        // visible unlocked outline share one geometry source.
+        outputFeatures.push(feature);
+        continue;
+      }
       const cells = hexesByRegion.get(regionId);
       if (cells && cells.length > 0) {
         try {

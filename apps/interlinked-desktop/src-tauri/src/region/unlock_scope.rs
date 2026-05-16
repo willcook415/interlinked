@@ -376,27 +376,68 @@ fn sample_landuse_signal_at_point(
     })
 }
 
+fn h3_cell_from_region_geometry_token(token: &str) -> Option<CellIndex> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(cell) = trimmed.parse::<CellIndex>() {
+        return Some(cell);
+    }
+    trimmed.rsplit(':').next()?.trim().parse::<CellIndex>().ok()
+}
+
+fn canonical_h3_cell_for_region_geometry(region: &SurfaceRegionInfo) -> Option<CellIndex> {
+    [
+        region.h3_cell_id.as_deref(),
+        Some(region.region_id.as_str()),
+        Some(region.cell_id.as_str()),
+        Some(region.region_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(h3_cell_from_region_geometry_token)
+}
+
+fn h3_cell_boundary_geojson_value(cell: CellIndex) -> Option<serde_json::Value> {
+    let polygon = h3_cell_boundary_polygon(cell)?;
+    let coords = polygon
+        .exterior()
+        .points()
+        .map(|point| vec![point.x(), point.y()])
+        .collect::<Vec<_>>();
+    serde_json::to_value(geojson::Geometry::new(geojson::Value::Polygon(vec![
+        coords,
+    ])))
+    .ok()
+}
+
+fn canonical_region_geometry_value(region: &SurfaceRegionInfo) -> Option<serde_json::Value> {
+    region.geometry.clone().or_else(|| {
+        canonical_h3_cell_for_region_geometry(region).and_then(h3_cell_boundary_geojson_value)
+    })
+}
+
 fn region_geo_geometry(region: &SurfaceRegionInfo) -> Result<Option<geo::Geometry<f64>>, String> {
-    let Some(geometry_value) = region.geometry.as_ref() else {
+    let Some(geometry_value) = canonical_region_geometry_value(region) else {
         return Ok(None);
     };
-    let geometry = if let Ok(geometry) =
-        serde_json::from_value::<geojson::Geometry>(geometry_value.clone())
-    {
-        geometry
-    } else if let Ok(feature) = serde_json::from_value::<geojson::Feature>(geometry_value.clone()) {
-        feature.geometry.ok_or_else(|| {
-            format!(
-                "region {} geometry feature missing geometry",
+    let geometry =
+        if let Ok(geometry) = serde_json::from_value::<geojson::Geometry>(geometry_value.clone()) {
+            geometry
+        } else if let Ok(feature) = serde_json::from_value::<geojson::Feature>(geometry_value) {
+            feature.geometry.ok_or_else(|| {
+                format!(
+                    "region {} geometry feature missing geometry",
+                    region.region_id
+                )
+            })?
+        } else {
+            return Err(format!(
+                "region {} geometry is not a parseable GeoJSON Geometry/Feature",
                 region.region_id
-            )
-        })?
-    } else {
-        return Err(format!(
-            "region {} geometry is not a parseable GeoJSON Geometry/Feature",
-            region.region_id
-        ));
-    };
+            ));
+        };
 
     let geo_geometry = geo::Geometry::try_from(&geometry.value).map_err(|error| {
         format!(
@@ -478,6 +519,27 @@ fn include_intersecting_country_surface_cells(
     added
 }
 
+fn include_intersecting_candidate_cells<I>(
+    geometry: &geo::Geometry<f64>,
+    cells: &mut HashSet<CellIndex>,
+    candidates: I,
+) -> usize
+where
+    I: IntoIterator<Item = CellIndex>,
+{
+    let mut added = 0usize;
+    for cell in candidates {
+        if cells.contains(&cell) || cell.resolution() != Resolution::Eight {
+            continue;
+        }
+        if h3_cell_intersects_geometry(cell, geometry) {
+            cells.insert(cell);
+            added += 1;
+        }
+    }
+    added
+}
+
 fn h3_cell_boundary_polygon(cell: CellIndex) -> Option<Polygon<f64>> {
     let boundary = cell.boundary();
     let mut coords = boundary
@@ -507,9 +569,12 @@ fn include_intersecting_boundary_neighbors(
     geometry: &geo::Geometry<f64>,
     cells: &mut HashSet<CellIndex>,
 ) -> usize {
-    let seeds = cells.iter().copied().collect::<Vec<_>>();
+    let mut frontier = cells.iter().copied().collect::<Vec<_>>();
+    let mut cursor = 0usize;
     let mut added = 0usize;
-    for seed in seeds {
+    while cursor < frontier.len() {
+        let seed = frontier[cursor];
+        cursor += 1;
         let candidates = seed.grid_disk::<Vec<_>>(1);
         for candidate in candidates {
             if cells.contains(&candidate) || candidate.resolution() != Resolution::Eight {
@@ -517,6 +582,7 @@ fn include_intersecting_boundary_neighbors(
             }
             if h3_cell_intersects_geometry(candidate, geometry) {
                 cells.insert(candidate);
+                frontier.push(candidate);
                 added += 1;
             }
         }
@@ -649,6 +715,7 @@ fn expand_surface_cells_to_region_res8_lattice(
             substrate_children.insert(child);
         }
     }
+    let substrate_children_for_intersection = substrate_children.clone();
 
     let source_sample_cell_ids = source_surface_cells
         .iter()
@@ -694,9 +761,17 @@ fn expand_surface_cells_to_region_res8_lattice(
             substrate_children
         }
     };
-    if !membership_cells.is_empty() {
-        match region_geo_geometry(region) {
-            Ok(Some(geometry)) => {
+    match region_geo_geometry(region) {
+        Ok(Some(geometry)) => {
+            let substrate_intersection_cells_added = include_intersecting_candidate_cells(
+                &geometry,
+                &mut membership_cells,
+                substrate_children_for_intersection.iter().copied(),
+            );
+            if substrate_intersection_cells_added > 0 {
+                source_kind.push_str("+substrate_intersections");
+            }
+            if !membership_cells.is_empty() {
                 surface_intersection_cells_added = include_intersecting_country_surface_cells(
                     &geometry,
                     &mut membership_cells,
@@ -706,13 +781,13 @@ fn expand_surface_cells_to_region_res8_lattice(
                     source_kind.push_str("+country_surface_intersections");
                 }
             }
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!(
-                    "[demand-materialization] region={} surface_intersection_geometry_error={}",
-                    region.region_id, error
-                );
-            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!(
+                "[demand-materialization] region={} surface_intersection_geometry_error={}",
+                region.region_id, error
+            );
         }
     }
 
@@ -2173,7 +2248,12 @@ pub(crate) fn region_status_rows_for_manifest(
                 jobs_smooth: region.jobs_smooth,
                 employment_estimate,
                 cells_res8,
-                geometry: region.geometry.clone(),
+                // RegionStatus geometry is the player-facing planning boundary.
+                // H3-backed regions without authored polygons get the same
+                // canonical H3 boundary used by demand materialisation and
+                // demand-overlay clipping, so visible boundaries and overlay
+                // coverage do not drift apart.
+                geometry: canonical_region_geometry_value(&region),
                 canonical_hex_number: region.canonical_hex_number,
                 constituent_hex_numbers: region.constituent_hex_numbers.clone(),
             });
@@ -2441,6 +2521,63 @@ mod tests {
         })
     }
 
+    fn sample_h3_backed_region(parent: CellIndex) -> SurfaceRegionInfo {
+        let mut region = sample_region_info(&format!("r6:GB:{parent}"));
+        region.region_kind = "planning_hex_unassigned".to_string();
+        region.region_token = parent.to_string();
+        region.h3_cell_id = Some(parent.to_string());
+        region.source_code = Some("manual_region_unassigned_hex".to_string());
+        region.geometry_source = "planning_surface_res6".to_string();
+        region.cell_id = parent.to_string();
+        region.geometry = None;
+        region
+    }
+
+    #[test]
+    fn h3_backed_region_without_authored_geometry_has_canonical_boundary() {
+        let parent = "861951b2fffffff"
+            .parse::<CellIndex>()
+            .expect("res6 parent should parse");
+        let region = sample_h3_backed_region(parent);
+
+        let value = canonical_region_geometry_value(&region)
+            .expect("H3-backed region should expose canonical display geometry");
+        let parsed = region_geo_geometry(&region)
+            .expect("canonical geometry should parse")
+            .expect("H3 fallback geometry should be available");
+
+        assert_eq!(
+            value.get("type").and_then(|value| value.as_str()),
+            Some("Polygon")
+        );
+        assert!(
+            parsed.intersects(&h3_cell_boundary_polygon(parent).expect("parent polygon")),
+            "canonical fallback should describe the same H3 planning boundary used by the overlay"
+        );
+    }
+
+    #[test]
+    fn h3_backed_region_res8_members_include_edge_intersecting_neighbors() {
+        let parent = "861951b2fffffff"
+            .parse::<CellIndex>()
+            .expect("res6 parent should parse");
+        let region = sample_h3_backed_region(parent);
+        let direct_children = parent.children(Resolution::Eight).collect::<HashSet<_>>();
+
+        let members = region_geometry_res8_members(&region)
+            .expect("region geometry membership should compute")
+            .expect("H3-backed region should use fallback geometry");
+
+        assert!(
+            members.len() > direct_children.len(),
+            "the visible res6 planning boundary needs intersecting res8 edge cells beyond strict descendants"
+        );
+        assert!(
+            members.iter().any(|cell| !direct_children.contains(cell)),
+            "boundary sliver coverage should include non-descendant res8 cells that intersect the visible H3 region"
+        );
+    }
+
     #[test]
     fn allocation_preserves_region_totals() {
         let inputs = vec![
@@ -2647,6 +2784,20 @@ mod tests {
             &mut members,
             &country_surface_cells,
         );
+
+        assert_eq!(added, 1);
+        assert!(members.contains(&cell));
+    }
+
+    #[test]
+    fn substrate_intersections_add_materialization_cells_missed_by_seed_set() {
+        let cell = "88194ad109fffff"
+            .parse::<CellIndex>()
+            .expect("res8 cell should parse");
+        let geometry = geo::Geometry::Polygon(h3_cell_boundary_polygon(cell).expect("polygon"));
+        let mut members = HashSet::<CellIndex>::new();
+
+        let added = include_intersecting_candidate_cells(&geometry, &mut members, [cell]);
 
         assert_eq!(added, 1);
         assert!(members.contains(&cell));

@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashSet;
+use std::time::Instant;
 
 pub(super) struct AssignmentKernelOutputs {
     pub(super) link_loads: Vec<LinkLoad>,
@@ -43,6 +44,49 @@ pub(super) struct AssignmentKernelOutputs {
     pub(super) assignment_iter_path_cache_misses: usize,
     pub(super) assignment_kpi_path_cache_hits: usize,
     pub(super) assignment_kpi_path_cache_misses: usize,
+    pub(super) assignment_full_route_search_count: usize,
+    pub(super) assignment_structural_candidate_count: usize,
+    pub(super) assignment_candidate_evaluation_count: usize,
+    pub(super) assignment_potential_structure_reuse_count: usize,
+    pub(super) assignment_repeated_od_across_iterations: usize,
+    pub(super) assignment_topology_same_count: usize,
+    pub(super) assignment_topology_changed_count: usize,
+    pub(super) assignment_topology_unknown_count: usize,
+    pub(super) assignment_route_search_total_ms: f64,
+    pub(super) assignment_route_cache_lookup_ms: f64,
+    pub(super) assignment_graph_search_ms: f64,
+    pub(super) assignment_candidate_expansion_ms: f64,
+    pub(super) assignment_path_reconstruction_ms: f64,
+    pub(super) assignment_built_path_construction_ms: f64,
+    pub(super) assignment_path_dedupe_ms: f64,
+    pub(super) assignment_candidate_classification_ms: f64,
+    pub(super) assignment_cost_eval_ms: f64,
+    pub(super) assignment_cache_insert_ms: f64,
+    pub(super) assignment_diagnostics_fingerprint_ms: f64,
+    pub(super) assignment_other_route_search_ms: f64,
+    pub(super) assignment_route_search_request_count: usize,
+    pub(super) assignment_initial_dijkstra_call_count: usize,
+    pub(super) assignment_expansion_dijkstra_call_count: usize,
+    pub(super) assignment_expansion_attempt_count: usize,
+    pub(super) assignment_expansion_success_count: usize,
+    pub(super) assignment_expansion_no_path_count: usize,
+    pub(super) assignment_expansion_duplicate_count: usize,
+    pub(super) assignment_expansion_heap_exhausted_count: usize,
+    pub(super) assignment_expansion_no_path_memo_hit_count: usize,
+    pub(super) assignment_expansion_no_path_memo_insert_count: usize,
+    pub(super) assignment_expansion_skip_no_outgoing_count: usize,
+    pub(super) assignment_expansion_skip_spur_banned_count: usize,
+    pub(super) assignment_expansion_skip_target_banned_count: usize,
+    pub(super) assignment_early_exit_k_le_1_count: usize,
+    pub(super) assignment_dijkstra_relaxation_count: usize,
+    pub(super) assignment_graph_search_invocation_count: usize,
+    pub(super) assignment_built_path_count: usize,
+    pub(super) assignment_route_candidate_path_count: usize,
+    pub(super) assignment_route_candidate_rejected_count: usize,
+    pub(super) assignment_route_total_path_links_seen: usize,
+    pub(super) assignment_route_total_board_events_built: usize,
+    pub(super) assignment_route_total_alight_events_built: usize,
+    pub(super) assignment_route_max_candidate_count_per_od: usize,
     pub(super) service_stop_traces: Vec<PlannerServiceStopTrace>,
 }
 
@@ -120,16 +164,32 @@ pub(super) fn run_assignment_kernel(
     #[derive(Debug, Clone, Default)]
     struct AssignmentKpiPathCacheEntry {
         raw_paths: Vec<BuiltPath>,
+        raw_path_classifications: Vec<BoardableTransitClassification>,
         boardable_paths_with_fare: Vec<BuiltPath>,
         route_shares: Vec<f64>,
         expected_fare_base: f64,
     }
     let mut assignment_iter_path_cache_hits = 0usize;
     let mut assignment_iter_path_cache_misses = 0usize;
-    let mut assignment_kpi_path_cache_hits = 0usize;
-    let mut assignment_kpi_path_cache_misses = 0usize;
+    let mut assignment_full_route_search_count = 0usize;
+    let mut assignment_structural_candidate_count = 0usize;
+    let mut assignment_candidate_evaluation_count = 0usize;
+    let mut assignment_potential_structure_reuse_count = 0usize;
+    let mut assignment_repeated_od_across_iterations = 0usize;
+    let mut assignment_topology_same_count = 0usize;
+    let mut assignment_topology_changed_count = 0usize;
+    let mut assignment_topology_unknown_count = 0usize;
+    let mut assignment_route_search_trace = RouteSearchTrace::default();
+    let mut assignment_route_cache_lookup_ms = 0.0_f64;
+    let mut assignment_cost_eval_ms = 0.0_f64;
+    let mut assignment_cache_insert_ms = 0.0_f64;
+    let mut assignment_diagnostics_fingerprint_ms = 0.0_f64;
+    let mut assignment_route_candidate_rejected_count = 0usize;
+    let mut first_iteration_fingerprints =
+        HashMap::<(usize, usize), Vec<StructuralRouteFingerprint>>::new();
 
     for iter in 1..=max_iters {
+        let _iter_candidate_context = RouteCandidateContextId::assignment_iteration(iter);
         // Copy previous iteration flows
         prev_link_passengers.clone_from(&link_passengers);
 
@@ -161,17 +221,71 @@ pub(super) fn run_assignment_kernel(
 
                 let dest_node = graph.svc_index.zone_nodes_start + zone_count + od.destination_idx;
                 let od_key = (od.origin_idx, od.destination_idx);
-                let cache_entry = if let Some(entry) = iter_path_cache.get(&od_key) {
+                let cache_lookup_started = Instant::now();
+                let cached_entry = iter_path_cache.get(&od_key);
+                assignment_route_cache_lookup_ms +=
+                    cache_lookup_started.elapsed().as_secs_f64() * 1000.0;
+                let cache_entry = if let Some(entry) = cached_entry {
                     iter_cache_hits = iter_cache_hits.saturating_add(1);
                     entry
                 } else {
                     iter_cache_misses = iter_cache_misses.saturating_add(1);
-                    let (_raw_paths, boardable_paths) = super::collect_transit_path_candidates(
-                        &graph,
-                        origin_node,
-                        dest_node,
-                        settings.k_paths,
-                    );
+                    assignment_full_route_search_count =
+                        assignment_full_route_search_count.saturating_add(1);
+                    let mut route_trace = RouteSearchTrace::default();
+                    let (raw_paths, boardable_paths) =
+                        super::collect_transit_path_candidates_with_trace(
+                            &graph,
+                            origin_node,
+                            dest_node,
+                            settings.k_paths,
+                            Some(&mut route_trace),
+                        );
+                    assignment_route_search_trace.add_assign(route_trace);
+                    assignment_route_candidate_rejected_count =
+                        assignment_route_candidate_rejected_count
+                            .saturating_add(raw_paths.len().saturating_sub(boardable_paths.len()));
+                    assignment_route_search_trace.max_candidate_count_per_search =
+                        assignment_route_search_trace
+                            .max_candidate_count_per_search
+                            .max(raw_paths.len());
+                    assignment_structural_candidate_count =
+                        assignment_structural_candidate_count.saturating_add(raw_paths.len());
+                    assignment_candidate_evaluation_count =
+                        assignment_candidate_evaluation_count.saturating_add(raw_paths.len());
+
+                    // Audit-only: compare topology fingerprints across assignment iterations.
+                    // We do not reuse these candidates yet because the graph's generalized costs
+                    // can change by iteration through crowding and queue wait feedback.
+                    let fingerprint_started = Instant::now();
+                    let fingerprints = raw_paths
+                        .iter()
+                        .map(super::structural_route_fingerprint)
+                        .collect::<Vec<_>>();
+                    assignment_diagnostics_fingerprint_ms +=
+                        fingerprint_started.elapsed().as_secs_f64() * 1000.0;
+                    if iter == 1 {
+                        first_iteration_fingerprints.insert(od_key, fingerprints);
+                    } else if let Some(first_fingerprints) =
+                        first_iteration_fingerprints.get(&od_key)
+                    {
+                        assignment_repeated_od_across_iterations =
+                            assignment_repeated_od_across_iterations.saturating_add(1);
+                        if first_fingerprints == &fingerprints {
+                            assignment_topology_same_count =
+                                assignment_topology_same_count.saturating_add(1);
+                            assignment_potential_structure_reuse_count =
+                                assignment_potential_structure_reuse_count
+                                    .saturating_add(fingerprints.len());
+                        } else {
+                            assignment_topology_changed_count =
+                                assignment_topology_changed_count.saturating_add(1);
+                        }
+                    } else {
+                        assignment_topology_unknown_count =
+                            assignment_topology_unknown_count.saturating_add(1);
+                    }
+                    let cost_eval_started = Instant::now();
                     let paths = apply_fare_to_paths(boardable_paths, &s.params);
                     let shares = if paths.is_empty() {
                         Vec::new()
@@ -183,13 +297,19 @@ pub(super) fn run_assignment_kernel(
                         .zip(shares.iter())
                         .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
                         .sum::<f64>();
-                    iter_path_cache
-                        .entry(od_key)
-                        .or_insert(AssignmentTransitPathCacheEntry {
-                            boardable_paths_with_fare: paths,
-                            route_shares: shares,
-                            expected_fare_base: expected_fare.max(0.0),
-                        })
+                    assignment_cost_eval_ms += cost_eval_started.elapsed().as_secs_f64() * 1000.0;
+                    let cache_insert_started = Instant::now();
+                    let entry =
+                        iter_path_cache
+                            .entry(od_key)
+                            .or_insert(AssignmentTransitPathCacheEntry {
+                                boardable_paths_with_fare: paths,
+                                route_shares: shares,
+                                expected_fare_base: expected_fare.max(0.0),
+                            });
+                    assignment_cache_insert_ms +=
+                        cache_insert_started.elapsed().as_secs_f64() * 1000.0;
+                    entry
                 };
                 let paths = &cache_entry.boardable_paths_with_fare;
                 if paths.is_empty() {
@@ -528,7 +648,12 @@ pub(super) fn run_assignment_kernel(
                 });
         }
     }
-    let mut kpi_path_cache = HashMap::<(usize, usize), AssignmentKpiPathCacheEntry>::new();
+    // Final KPI/output candidates use the final assignment graph context. This is
+    // intentionally separate from per-iteration assignment caches because MSA
+    // iterations are built on different crowding/queue-adjusted cost contexts.
+    let mut kpi_path_cache = RouteCandidateCache::<AssignmentKpiPathCacheEntry>::new(
+        RouteCandidateContextId::final_assignment_graph(),
+    );
 
     for od_row in &mode_choice_build.rows {
         let od = &od_row.latent;
@@ -544,18 +669,32 @@ pub(super) fn run_assignment_kernel(
                 assignment_od_rows_with_transit_latent.saturating_add(1);
         }
 
-        let od_key = (od.origin_idx, od.destination_idx);
-        let cache_entry = if let Some(entry) = kpi_path_cache.get(&od_key) {
-            assignment_kpi_path_cache_hits = assignment_kpi_path_cache_hits.saturating_add(1);
-            entry
-        } else {
-            assignment_kpi_path_cache_misses = assignment_kpi_path_cache_misses.saturating_add(1);
-            let (raw_paths, boardable_paths) = super::collect_transit_path_candidates(
+        let cache_entry = kpi_path_cache.get_or_compute(od.origin_idx, od.destination_idx, || {
+            let mut route_trace = RouteSearchTrace::default();
+            let (raw_paths, boardable_paths) = super::collect_transit_path_candidates_with_trace(
                 &final_graph,
                 origin_node,
                 dest_node,
                 settings.k_paths,
+                Some(&mut route_trace),
             );
+            assignment_route_search_trace.add_assign(route_trace);
+            assignment_route_candidate_rejected_count = assignment_route_candidate_rejected_count
+                .saturating_add(raw_paths.len().saturating_sub(boardable_paths.len()));
+            assignment_route_search_trace.max_candidate_count_per_search =
+                assignment_route_search_trace
+                    .max_candidate_count_per_search
+                    .max(raw_paths.len());
+            let classification_started = Instant::now();
+            let raw_path_classifications = raw_paths
+                .iter()
+                .map(super::classify_boardable_transit)
+                .collect::<Vec<_>>();
+            assignment_route_search_trace.candidate_classification_ms +=
+                classification_started.elapsed().as_secs_f64() * 1000.0;
+            assignment_route_search_trace.total_ms +=
+                classification_started.elapsed().as_secs_f64() * 1000.0;
+            let cost_eval_started = Instant::now();
             let paths = apply_fare_to_paths(boardable_paths, &s.params);
             let shares = if paths.is_empty() {
                 Vec::new()
@@ -567,20 +706,22 @@ pub(super) fn run_assignment_kernel(
                 .zip(shares.iter())
                 .map(|(p, sh)| p.stats.fare_base.max(0.0) * sh.max(0.0))
                 .sum::<f64>();
-            kpi_path_cache
-                .entry(od_key)
-                .or_insert(AssignmentKpiPathCacheEntry {
-                    raw_paths,
-                    boardable_paths_with_fare: paths,
-                    route_shares: shares,
-                    expected_fare_base: expected_fare.max(0.0),
-                })
-        };
+            assignment_cost_eval_ms += cost_eval_started.elapsed().as_secs_f64() * 1000.0;
+            AssignmentKpiPathCacheEntry {
+                raw_paths,
+                raw_path_classifications,
+                boardable_paths_with_fare: paths,
+                route_shares: shares,
+                expected_fare_base: expected_fare.max(0.0),
+            }
+        });
         let raw_paths = &cache_entry.raw_paths;
         assignment_candidate_paths_raw_total =
             assignment_candidate_paths_raw_total.saturating_add(raw_paths.len());
-        for path in raw_paths {
-            let class = super::classify_boardable_transit(path);
+        for (path, class) in raw_paths
+            .iter()
+            .zip(cache_entry.raw_path_classifications.iter())
+        {
             let mut unique_board_keys = HashSet::<(String, String)>::new();
             for (service_id, board_stop_id) in &path.board_events {
                 unique_board_keys.insert((service_id.clone(), board_stop_id.clone()));
@@ -594,7 +735,7 @@ pub(super) fn run_assignment_kernel(
                         ..PlannerServiceStopTrace::default()
                     });
                 entry.raw_candidate_paths = entry.raw_candidate_paths.saturating_add(1);
-                match class {
+                match *class {
                     super::BoardableTransitClassification::MissingBoardOrAlight => {
                         entry.rejected_no_board_or_alight_paths =
                             entry.rejected_no_board_or_alight_paths.saturating_add(1);
@@ -606,7 +747,7 @@ pub(super) fn run_assignment_kernel(
                     super::BoardableTransitClassification::Boardable => {}
                 }
             }
-            match class {
+            match *class {
                 super::BoardableTransitClassification::MissingBoardOrAlight => {
                     assignment_rejected_no_board_or_alight_total =
                         assignment_rejected_no_board_or_alight_total.saturating_add(1);
@@ -807,6 +948,8 @@ pub(super) fn run_assignment_kernel(
             chosen_paths,
         });
     }
+    let assignment_kpi_path_cache_hits = kpi_path_cache.hits();
+    let assignment_kpi_path_cache_misses = kpi_path_cache.misses();
 
     let tph = s.meta.time_period_hours;
 
@@ -1198,6 +1341,29 @@ pub(super) fn run_assignment_kernel(
         assignment_kpi_path_cache_misses,
     );
 
+    let assignment_graph_search_ms = assignment_route_search_trace.shortest_path_ms
+        + assignment_route_search_trace.candidate_expansion_ms;
+    let assignment_route_search_total_ms = assignment_route_search_trace.total_ms
+        + assignment_route_cache_lookup_ms
+        + assignment_cost_eval_ms
+        + assignment_cache_insert_ms
+        + assignment_diagnostics_fingerprint_ms;
+    let known_route_search_ms = assignment_graph_search_ms
+        + assignment_route_search_trace.path_reconstruction_ms
+        + assignment_route_search_trace.built_path_construction_ms
+        + assignment_route_search_trace.path_dedupe_ms
+        + assignment_route_search_trace.candidate_classification_ms
+        + assignment_route_cache_lookup_ms
+        + assignment_cost_eval_ms
+        + assignment_cache_insert_ms
+        + assignment_diagnostics_fingerprint_ms;
+    let assignment_other_route_search_ms =
+        (assignment_route_search_total_ms - known_route_search_ms).max(0.0);
+    let assignment_route_search_request_count = assignment_iter_path_cache_hits
+        .saturating_add(assignment_iter_path_cache_misses)
+        .saturating_add(assignment_kpi_path_cache_hits)
+        .saturating_add(assignment_kpi_path_cache_misses);
+
     Ok(AssignmentKernelOutputs {
         link_loads,
         final_board_loads,
@@ -1240,6 +1406,71 @@ pub(super) fn run_assignment_kernel(
         assignment_iter_path_cache_misses,
         assignment_kpi_path_cache_hits,
         assignment_kpi_path_cache_misses,
+        assignment_full_route_search_count,
+        assignment_structural_candidate_count,
+        assignment_candidate_evaluation_count,
+        assignment_potential_structure_reuse_count,
+        assignment_repeated_od_across_iterations,
+        assignment_topology_same_count,
+        assignment_topology_changed_count,
+        assignment_topology_unknown_count,
+        assignment_route_search_total_ms: assignment_route_search_total_ms.max(0.0),
+        assignment_route_cache_lookup_ms: assignment_route_cache_lookup_ms.max(0.0),
+        assignment_graph_search_ms: assignment_graph_search_ms.max(0.0),
+        assignment_candidate_expansion_ms: assignment_route_search_trace
+            .candidate_expansion_ms
+            .max(0.0),
+        assignment_path_reconstruction_ms: assignment_route_search_trace
+            .path_reconstruction_ms
+            .max(0.0),
+        assignment_built_path_construction_ms: assignment_route_search_trace
+            .built_path_construction_ms
+            .max(0.0),
+        assignment_path_dedupe_ms: assignment_route_search_trace.path_dedupe_ms.max(0.0),
+        assignment_candidate_classification_ms: assignment_route_search_trace
+            .candidate_classification_ms
+            .max(0.0),
+        assignment_cost_eval_ms: assignment_cost_eval_ms.max(0.0),
+        assignment_cache_insert_ms: assignment_cache_insert_ms.max(0.0),
+        assignment_diagnostics_fingerprint_ms: assignment_diagnostics_fingerprint_ms.max(0.0),
+        assignment_other_route_search_ms: assignment_other_route_search_ms.max(0.0),
+        assignment_route_search_request_count,
+        assignment_initial_dijkstra_call_count: assignment_route_search_trace
+            .initial_dijkstra_call_count,
+        assignment_expansion_dijkstra_call_count: assignment_route_search_trace
+            .expansion_dijkstra_call_count,
+        assignment_expansion_attempt_count: assignment_route_search_trace.expansion_attempt_count,
+        assignment_expansion_success_count: assignment_route_search_trace.expansion_success_count,
+        assignment_expansion_no_path_count: assignment_route_search_trace.expansion_no_path_count,
+        assignment_expansion_duplicate_count: assignment_route_search_trace
+            .expansion_duplicate_count,
+        assignment_expansion_heap_exhausted_count: assignment_route_search_trace
+            .expansion_heap_exhausted_count,
+        assignment_expansion_no_path_memo_hit_count: assignment_route_search_trace
+            .expansion_no_path_memo_hit_count,
+        assignment_expansion_no_path_memo_insert_count: assignment_route_search_trace
+            .expansion_no_path_memo_insert_count,
+        assignment_expansion_skip_no_outgoing_count: assignment_route_search_trace
+            .expansion_skip_no_outgoing_count,
+        assignment_expansion_skip_spur_banned_count: assignment_route_search_trace
+            .expansion_skip_spur_banned_count,
+        assignment_expansion_skip_target_banned_count: assignment_route_search_trace
+            .expansion_skip_target_banned_count,
+        assignment_early_exit_k_le_1_count: assignment_route_search_trace.early_exit_k_le_1_count,
+        assignment_dijkstra_relaxation_count: assignment_route_search_trace
+            .dijkstra_relaxation_count,
+        assignment_graph_search_invocation_count: assignment_route_search_trace
+            .graph_search_invocation_count,
+        assignment_built_path_count: assignment_route_search_trace.built_path_count,
+        assignment_route_candidate_path_count: assignment_route_search_trace.built_path_count,
+        assignment_route_candidate_rejected_count,
+        assignment_route_total_path_links_seen: assignment_route_search_trace.total_path_links_seen,
+        assignment_route_total_board_events_built: assignment_route_search_trace
+            .total_board_events_built,
+        assignment_route_total_alight_events_built: assignment_route_search_trace
+            .total_alight_events_built,
+        assignment_route_max_candidate_count_per_od: assignment_route_search_trace
+            .max_candidate_count_per_search,
         service_stop_traces,
     })
 }

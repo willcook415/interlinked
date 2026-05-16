@@ -112,6 +112,16 @@ function buildCellGeometry(cellId: string): GeoFeature["geometry"] | null {
   };
 }
 
+function normalizeDisplayGeometry(
+  geometry: DemandOverlayCellDatum["display_geometry"]
+): GeoFeature["geometry"] | null {
+  if (!geometry) return null;
+  if (geometry.type === "Polygon" || geometry.type === "MultiPolygon") {
+    return geometry;
+  }
+  return null;
+}
+
 function overlayValueFor(row: DemandOverlayCellDatum, overlayType: DemandOverlayType): number {
   const residential = toNonNegative(row.allocated_residential_mass);
   const employment = toNonNegative(row.allocated_employment_mass);
@@ -141,7 +151,7 @@ function buildCellFeatureSeeds(
   let droppedInvalidGeometry = 0;
   const droppedInvalidGeometrySample: string[] = [];
   for (const row of payload.cell_data ?? []) {
-    const geometry = buildCellGeometry(row.cell_id);
+    const geometry = normalizeDisplayGeometry(row.display_geometry) ?? buildCellGeometry(row.cell_id);
     if (!geometry) {
       droppedInvalidGeometry += 1;
       if (droppedInvalidGeometrySample.length < 5) {
@@ -238,6 +248,7 @@ export function buildDemandOverlayGeojson(
         overlay_value: overlayValue,
         overlay_norm: overlayNorm,
         overlay_band: bandForValue(overlayValue, thresholds),
+        display_geometry_clipped: row.display_geometry_clipped ? 1 : 0,
         fallback_flag: seed.fallbackFlag,
         fallback_reason: row.fallback_reason?.trim() || null,
       },

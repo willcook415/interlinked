@@ -172,6 +172,17 @@ pub struct DemandOverlayCellDatum {
     pub cell_id: String,
     #[serde(default)]
     pub planning_region_id: Option<String>,
+    /// Optional backend-clipped render geometry for boundary demand cells.
+    ///
+    /// Demand overlay geometry contract:
+    /// - inclusion is based on intersection with the merged unlocked planning geometry;
+    /// - boundary cells are clipped to that merged geometry before rendering;
+    /// - full cells inside the unlocked geometry may omit this field and render from `cell_id`;
+    /// - simulation demand mass remains attached to the unique substrate cell and is not split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_geometry: Option<JsonValue>,
+    #[serde(default)]
+    pub display_geometry_clipped: bool,
     pub lon: f64,
     pub lat: f64,
     #[serde(default)]
@@ -235,6 +246,56 @@ pub struct DemandOverlayPayload {
     pub cell_data_mappable: usize,
     #[serde(default)]
     pub cell_fallback_count: usize,
+    #[serde(default)]
+    pub overlay_unlocked_region_count: usize,
+    #[serde(default)]
+    pub overlay_unlocked_geometry_region_count: usize,
+    #[serde(default)]
+    pub overlay_unlocked_geometry_missing_region_count: usize,
+    #[serde(default)]
+    pub overlay_unlocked_geometry_available: bool,
+    #[serde(default)]
+    pub overlay_explicit_geometry_region_count: usize,
+    #[serde(default)]
+    pub overlay_h3_fallback_region_count: usize,
+    #[serde(default)]
+    pub overlay_unlocked_union_area: f64,
+    #[serde(default)]
+    pub overlay_rendered_union_area: f64,
+    #[serde(default)]
+    pub overlay_uncovered_unlocked_area: f64,
+    #[serde(default)]
+    pub overlay_uncovered_ratio: f64,
+    #[serde(default)]
+    pub overlay_outside_rendered_area: f64,
+    #[serde(default)]
+    pub overlay_outside_ratio: f64,
+    #[serde(default)]
+    pub overlay_expected_intersecting_cell_count: usize,
+    #[serde(default)]
+    pub overlay_existing_intersecting_cell_count: usize,
+    #[serde(default)]
+    pub overlay_missing_intersecting_cell_count: usize,
+    #[serde(default)]
+    pub overlay_filtered_intersecting_cell_count: usize,
+    #[serde(default)]
+    pub overlay_invalid_clipped_geometry_count: usize,
+    #[serde(default)]
+    pub overlay_clipped_geometry_failed_count: usize,
+    #[serde(default)]
+    pub overlay_coverage_debug_enabled: bool,
+    #[serde(default)]
+    pub overlay_coverage_debug_failed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_coverage_debug_error: Option<String>,
+    #[serde(default)]
+    pub overlay_cells_fully_inside: usize,
+    #[serde(default)]
+    pub overlay_cells_clipped: usize,
+    #[serde(default)]
+    pub overlay_cells_outside_unlocked: usize,
+    #[serde(default)]
+    pub overlay_duplicate_cell_ids: usize,
     #[serde(default)]
     pub cell_data: Vec<DemandOverlayCellDatum>,
     #[serde(default)]
